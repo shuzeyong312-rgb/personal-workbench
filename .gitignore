@@ -2,3 +2,4 @@
 .browser-profile/
 __pycache__/
 poc_collect_debug.json
+poc_history_debug.json
