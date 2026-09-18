@@ -1,0 +1,252 @@
+# Architecture
+
+## 1. 架构目标
+
+当前 V1 只服务一个人、本地运行、每天采集一次 1688 竞品数据。
+
+优先级：
+
+1. 简单；
+2. 稳定；
+3. 低维护；
+4. 容易让 AI 理解和修改；
+5. 出问题容易定位和回滚。
+
+因此 V1 采用模块化单体，不使用微服务、消息队列或复杂任务系统。
+
+## 2. 技术栈
+
+### Frontend
+
+- React
+- TypeScript
+- Vite
+- Vitest
+
+### Backend
+
+- Python
+- FastAPI
+- SQLAlchemy
+- Alembic
+- pytest
+
+### Database
+
+- SQLite
+
+### Collection
+
+- Playwright
+- 本机 Chrome
+- 独立浏览器 Profile 保存 1688 登录状态
+
+## 3. 总体结构
+
+```text
+React Web
+   ↓ HTTP API
+FastAPI
+   ↓
+Application / Domain Services
+   ↓
+SQLAlchemy
+   ↓
+SQLite
+
+FastAPI
+   ↓
+Collector Module
+   ↓
+Playwright + 1688
+```
+
+## 4. 模块边界
+
+V1 建议拆成以下业务模块：
+
+```text
+competitors
+groups
+collection
+snapshots
+changes
+dashboard
+```
+
+职责：
+
+- competitors：竞品商品本身；
+- groups：竞品分组；
+- collection：采集 1688 数据；
+- snapshots：保存每天采集到的事实数据；
+- changes：比较前后快照并生成变化记录；
+- dashboard：首页查询和聚合；
+- shared：少量真正跨模块共享的基础能力。
+
+不要提前创建大量抽象层。
+
+## 5. 后端分层
+
+后端保持简单：
+
+```text
+API Router
+   ↓
+Service
+   ↓
+Repository / Database
+```
+
+规则：
+
+- Router 只处理 HTTP 输入输出，不写业务逻辑；
+- Service 负责业务规则；
+- 数据访问集中在数据库层；
+- Playwright 采集逻辑独立于 API 和数据库模型；
+- 变化判断逻辑不能写在 React 组件中。
+
+如果一个功能不需要某一层，不要为了“架构完整”强行新增文件。
+
+## 6. 前端边界
+
+React 负责：
+
+- 页面展示；
+- 用户输入；
+- 调用后端 API；
+- Loading / Empty / Error / Normal 状态；
+- 简单的界面交互。
+
+React 不负责：
+
+- 1688 页面采集；
+- 业务规则判断；
+- 数据持久化；
+- 历史趋势计算的核心逻辑；
+- 直接访问 SQLite。
+
+## 7. 采集架构
+
+采集入口统一通过 Collector Module。
+
+优先级：
+
+1. HTML / 内嵌 JSON；
+2. Network Response / XHR；
+3. DOM 文本兜底。
+
+Playwright 主要负责：
+
+- 维持 1688 登录环境；
+- 打开商品页；
+- 获取 HTML；
+- 捕获必要的网络响应。
+
+不要把“模拟人工点击页面”作为主要采集方式。
+
+官方采购助手接口属于补充数据源，不能成为系统唯一历史数据来源。
+
+## 8. 数据原则
+
+长期趋势以本系统每天保存的快照为准。
+
+外部数据进入系统后，需要转换成内部统一模型。
+
+禁止业务代码到处直接依赖：
+
+```text
+skuInfoMap
+canBookCount
+saleQuantityList
+tradePriceList
+mtop.1688...
+```
+
+这些属于外部数据结构，只允许集中在采集适配层处理。
+
+内部统一使用项目自己的字段。
+
+## 9. 数据库原则
+
+V1 使用 SQLite。
+
+原因：
+
+- 单用户；
+- 本地运行；
+- 数据量可控；
+- 几乎零维护；
+- 适合当前开发阶段。
+
+所有 Schema 修改必须通过 Alembic migration。
+
+禁止手工修改数据库后不留下 migration。
+
+当未来出现明确的多用户、云部署、高并发需求时，再评估迁移 PostgreSQL。
+
+## 10. 调度原则
+
+V1 每天采集一次。
+
+当前不引入：
+
+- Celery；
+- Redis；
+- RabbitMQ；
+- Kafka；
+- 分布式任务系统。
+
+优先使用简单的本地调度方式。
+
+只有当前方案无法满足真实需求时，才升级任务架构。
+
+## 11. 错误隔离
+
+单个竞品采集失败时：
+
+- 记录失败状态；
+- 保存错误信息；
+- 不影响其他竞品继续采集。
+
+禁止因为一个商品失败导致整个每日采集任务终止。
+
+## 12. 明确禁止
+
+V1 不引入：
+
+- 微服务；
+- Redis；
+- Celery；
+- Docker 作为开发前提；
+- 消息队列；
+- DDD 全家桶；
+- Repository / Factory / Manager 等无实际必要的抽象；
+- 多 Agent 编排；
+- 为未来假设需求提前设计复杂架构。
+
+## 13. 修改原则
+
+每个开发任务：
+
+- 只修改完成任务真正需要的文件；
+- 不顺手重构；
+- 不无理由升级依赖；
+- Feature 与 Refactor 分开；
+- 数据库变更必须 migration；
+- 完成后必须检查 Git Diff；
+- 优先复用现有模块，而不是创建新体系。
+
+## 14. 架构升级条件
+
+只有出现真实问题时才升级架构。
+
+例如：
+
+- SQLite 明确成为瓶颈；
+- 本地调度无法可靠运行；
+- 多用户成为真实需求；
+- 数据规模明显增长；
+- 单体模块边界已经无法维护。
+
+在这些问题出现之前，保持当前简单架构。
