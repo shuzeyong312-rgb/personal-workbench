@@ -2,6 +2,8 @@
 * { box-sizing: border-box; } body { min-width: 320px; margin: 0; } button, input, select { font: inherit; } button { cursor: pointer; }
 button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid rgba(42, 113, 239, .24); outline-offset: 2px; } button:disabled, input:disabled, select:disabled { cursor: default; }
 
+.change-cell { color: #5f6f99; font-weight: 600; }
+
 .app-shell { position: relative; display: flex; min-height: 100vh; overflow: hidden; background: radial-gradient(ellipse 52% 34% at 49% -3%, rgba(197, 216, 255, .78), transparent 72%), radial-gradient(ellipse 34% 30% at 97% 12%, rgba(227, 218, 255, .7), transparent 74%), radial-gradient(ellipse 42% 24% at 63% 100%, rgba(220, 231, 255, .54), transparent 76%), #f6f8ff; }
 .sidebar { position: relative; z-index: 1; width: 248px; flex: 0 0 248px; min-height: 100vh; padding: 24px 16px; border-right: 1px solid rgba(210, 221, 245, .82); background: linear-gradient(180deg, rgba(251, 253, 255, .92), rgba(239, 246, 255, .76)); box-shadow: 14px 0 38px rgba(72, 98, 161, .05); backdrop-filter: blur(22px); }
 .sidebar::after { position: absolute; right: -68px; bottom: 28px; width: 155px; height: 155px; border: 1px solid rgba(170, 193, 255, .35); border-radius: 50%; box-shadow: -30px -14px 0 21px rgba(219, 231, 255, .34); content: ""; pointer-events: none; }

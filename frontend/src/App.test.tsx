@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, Competitor, getCollectionErrorMessage, getCollectionRequestErrorMessage, getResponseStatus, ListPage } from "./App";
+import { AddDialog, Competitor, formatLatestChange, getCollectionErrorMessage, getCollectionRequestErrorMessage, getResponseStatus, ListPage } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -16,10 +16,21 @@ const competitor: Competitor = {
   created_at: "2026-09-19T10:00:00Z",
   last_collected_at: null,
   latest_snapshot: null,
+  latest_change: null,
 };
 
 const noop = () => undefined;
 const listProps = { collectingCompetitorId: null, onCollect: noop };
+const latestChange = (overrides: Partial<NonNullable<Competitor["latest_change"]>> = {}): NonNullable<Competitor["latest_change"]> => ({
+  id: 1,
+  snapshot_id: 2,
+  change_type: "title_changed",
+  entity_key: null,
+  old_value: null,
+  new_value: null,
+  detected_at: "2026-09-20T10:00:00Z",
+  ...overrides,
+});
 
 test.each([
   [true, undefined, "success"],
@@ -49,6 +60,44 @@ test("renders real snapshot price and SKU values", () => {
   expect(html).toContain("¥40.00 ~ ¥45.00");
   expect(html).toContain(">3<");
   expect(html).toContain(">0<");
+});
+
+test.each([
+  [latestChange({ change_type: "price_increase", old_value: "40.00", new_value: "45.00" }), "价格上涨 40.00 → 45.00"],
+  [latestChange({ change_type: "price_decrease", old_value: "45.00", new_value: "40.00" }), "价格下降 45.00 → 40.00"],
+  [latestChange({ change_type: "sku_added", new_value: "红色" }), "新增 SKU：红色"],
+  [latestChange({ change_type: "sku_removed", old_value: "蓝色" }), "移除 SKU：蓝色"],
+  [latestChange({ change_type: "stock_changed", old_value: "10", new_value: "20" }), "库存变化 10 → 20"],
+  [latestChange({ change_type: "stock_changed", old_value: "10", new_value: "0" }), "库存变化 10 → 0"],
+  [latestChange({ change_type: "title_changed" }), "标题已变更"],
+  [latestChange({ change_type: "new_change_type" }), "发生变化"],
+  [null, "暂无变化记录"],
+] as const)("formats latest change %s", (change, expected) => {
+  expect(formatLatestChange(change)).toBe(expected);
+});
+
+test.each([
+  [latestChange({ change_type: "sku_added", entity_key: "红色" }), "新增 SKU：红色"],
+  [latestChange({ change_type: "sku_removed", entity_key: "蓝色" }), "移除 SKU：蓝色"],
+] as const)("falls back to entity key when SKU value is missing", (change, expected) => {
+  expect(formatLatestChange(change)).toBe(expected);
+});
+
+test("renders the real latest change in the recent change column", () => {
+  const changed = {
+    ...competitor,
+    latest_change: {
+      id: 7,
+      snapshot_id: 8,
+      change_type: "price_increase",
+      entity_key: null,
+      old_value: "40.00",
+      new_value: "45.00",
+      detected_at: "2026-09-20T10:00:00Z",
+    },
+  };
+  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[changed]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain("价格上涨 40.00 → 45.00");
 });
 
 test("displays collecting state and disables every collect button", () => {
