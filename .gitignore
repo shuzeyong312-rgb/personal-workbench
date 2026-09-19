@@ -3,3 +3,10 @@
 __pycache__/
 poc_collect_debug.json
 poc_history_debug.json
+node_modules/
+dist/
+*.db
+backend/data/*.db
+.env
+.env.*
+coverage/
