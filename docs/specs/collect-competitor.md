@@ -16,7 +16,7 @@
 6. 后端使用该竞品保存的 canonical 1688 URL 进行采集。
 7. 成功后返回结果，前端重新请求 GET /api/competitors 并显示成功 Toast。
 8. 失败后显示可读错误、保留上一次有效数据，并允许重试。
-9. 1688 明确显示商品下架时，采集任务仍视为成功，保存 product_status = offline。
+9. 当前 MVP 不判断商品是否下架，正常商品可以保存 product_status = unknown；下架判定保留为后续能力。
 
 第一版全局一次只允许一个真实采集任务。后端进程内全局采集锁是真正并发控制，409 collection_in_progress 是并发安全兜底。
 
@@ -28,7 +28,7 @@
 4. 创建 CollectionRun，状态为 running。
 5. 使用项目根目录解析出的 .browser-profile 启动 Playwright persistent context。
 6. 打开 canonical 1688 URL，检查登录页、验证页和访问异常。
-7. 按 HTML / embedded JSON → Network/XHR → DOM fallback 的优先级提取数据。
+7. 当前 MVP 仅从 HTML / embedded JSON 提取数据；未来需要时再扩展 Network/XHR → DOM fallback。
 8. 通过 collection adapter 转换为内部标准字段。
 9. 校验 offer_id 与目标 Competitor 一致。
 10. 校验标题、店铺名称和商品状态等最小核心数据。
@@ -41,13 +41,16 @@ CollectionRun.running 只表示执行状态，不承担锁职责；真正并发�
 
 ## 4. Collection Sources
 
-采集来源优先级：
+当前实现的采集来源：
 
-1. HTML / embedded JSON；
-2. Network Response / XHR JSON；
-3. DOM fallback。
+- HTML / embedded JSON
 
-Playwright 只负责本地 Chrome、持久化登录目录、页面访问、HTML 获取和必要网络响应捕获，不以模拟人工点击为主要采集方式。
+未来需要时的扩展顺序：
+
+1. Network Response / XHR JSON；
+2. DOM fallback。
+
+Network/XHR 和 DOM fallback 不属于当前 Feature，不在本轮实现或 Acceptance Criteria 内。Playwright 当前只负责本地 Chrome、持久化登录目录、页面访问和 HTML 获取，不以模拟人工点击为主要采集方式。
 
 已验证 POC 能力包括：offerId、商品标题、店铺名称、商品价格、skuInfoMap、SKU 属性、skuId、canBookCount 和 skuPriceScale。
 
@@ -89,7 +92,7 @@ mtop.1688.pc.plugin.od.data.query 的历史销量、累计销量、销量历史�
 - 缺失价格保存 null，不能保存为 0。
 - SKU 独立价格不可靠时保存 null，不从商品级价格猜测。
 - active 只表示页面明确显示商品正常可售。
-- offline 只允许在商品页面明确显示下架、失效或不可售时保存。
+- 当前 MVP 不实现 offline 判定，正常商品可以返回 unknown；未来只有明确页面证据时才允许保存 offline。
 - 解析失败、登录失效、超时和结构变化不能标记为 offline。
 
 ## 6. Data Model Changes
@@ -192,12 +195,14 @@ Competitor 只保存当前基础信息：
 | 404 | competitor_not_found |
 | 409 | collection_in_progress |
 | 401 | 1688_login_required |
+| 403 | 1688_verification_required |
 | 422 | collection_parse_failed / offer_id_mismatch |
+| 422 | collection_partial_data |
 | 502 | 1688_page_unavailable |
 | 504 | collection_timeout |
-| 500 | collection_save_failed |
+| 500 | collection_failed / collection_save_failed |
 
-明确下架是成功采集，不返回失败错误。
+当前 MVP 不识别下架，因此不会主动产生 offline 结果；未来增加下架识别后，明确下架应视为成功采集，不返回失败错误。
 
 ### 竞品列表
 
@@ -305,17 +310,20 @@ latest_snapshot 可以为 null。
 | offer_id_mismatch | 页面商品与目标竞品不一致 | 否 |
 | collection_timeout | 采集超时 | 否 |
 | collection_partial_data | 必要字段缺失 | 否 |
+| collection_failed | 未分类采集执行异常 | 否 |
 | collection_save_failed | 数据库事务保存失败 | 否 |
 
 错误信息必须可读、稳定且脱敏，不暴露 Cookie、Token、HTML、请求头或完整异常堆栈。
 
-商品明确下架时保存：
+未分类采集执行异常固定返回 HTTP 500、code = collection_failed、message = `采集失败，请稍后重试`，并将同一脱敏摘要写入 CollectionRun.error_message。数据库事务保存失败固定使用 code = collection_save_failed，两者不能混用。
+
+当前 MVP 不识别商品下架，正常商品仍可保存：
 
     CollectionRun.status = success
-    ProductSnapshot.product_status = offline
-    Competitor.status = offline
+    ProductSnapshot.product_status = unknown
+    Competitor.status = unknown
 
-解析失败、登录失败和超时不能保存 offline。
+未来增加下架识别后，只有明确页面证据才允许保存 offline；解析失败、登录失败和超时不能保存 offline。
 
 ## 13. Security Rules
 
@@ -344,7 +352,7 @@ Parser fixture 只能使用最小、脱敏的 HTML / embedded JSON 数据。禁�
 
 ### Collection Service
 
-使用可替换 collector adapter 验证目标 URL、offerId 一致性、登录页和验证页处理、明确下架处理、超时、失败数据保留、全局锁，以及 CollectionRun.running 不承担锁职责。
+使用可替换 collector adapter 验证目标 URL、offerId 一致性、登录页和验证页处理、当前 unknown 处理、超时、失败数据保留、全局锁，以及 CollectionRun.running 不承担锁职责。
 
 ### Persistence
 
@@ -370,11 +378,11 @@ Parser fixture 只能使用最小、脱敏的 HTML / embedded JSON 数据。禁�
 8. 后端保留 409 collection_in_progress 兜底。
 9. 使用项目根目录解析的 .browser-profile。
 10. Playwright context 在所有路径关闭。
-11. 采集优先级为 HTML / embedded JSON → Network/XHR → DOM fallback。
+11. 当前采集来源为 HTML / embedded JSON；Network/XHR → DOM fallback 为未来扩展，不属于本 Feature。
 12. offerId 不一致时失败。
 13. 登录失效、验证页面、解析失败和超时有稳定错误类型。
 14. 解析失败不能标记 offline。
-15. 只有明确下架才保存 offline。
+15. 当前不实现 offline 判定，正常商品可以保存 unknown；未来只有明确下架证据才允许保存 offline。
 16. 采集失败不覆盖上一次成功数据。
 17. ProductSnapshot、SkuSnapshot、CollectionRun 通过 migration 正式引入。
 18. 不引入 ChangeEvent。
@@ -425,8 +433,8 @@ Parser fixture 只能使用最小、脱敏的 HTML / embedded JSON 数据。禁�
 - Plugin 历史销量 / 历史价格本 Feature 不接入。
 - ProductSnapshot migration 不创建 sales_30d、total_sales、total_orders。
 - SKU 独立价格不可靠时保存 null，缺失价格不能保存为 0。
-- 解析失败不能标记 offline，商品明确下架才允许保存 offline。
-- 采集优先级是 HTML / embedded JSON → Network/XHR → DOM fallback。
+- 当前不实现 offline 判定，正常商品可以保存 unknown；解析失败、网络失败、登录/验证失败不能标记 offline。
+- 当前采集来源是 HTML / embedded JSON；Network/XHR → DOM fallback 是未来扩展能力。
 - .browser-profile 基于项目根目录解析。
 - Cookie、Token、HTML、请求头和登录数据不得进入数据库、日志、前端或 Git。
 - Parser fixture 只能使用最小脱敏数据。
@@ -442,7 +450,7 @@ Parser fixture 只能使用最小、脱敏的 HTML / embedded JSON 数据。禁�
 - 标题、店铺名称和 offerId 是成功保存所需的最小核心字段。
 - 主图或商品价格缺失时可以保存 null，不伪造数据。
 - SKU 没有可靠独立价格时仍可保存 SKU，但 price = null。
-- 商品下架必须基于明确页面证据。
+- 当前不实现商品下架判定，未来实现时必须基于明确页面证据。
 - 失败 CollectionRun 只保存脱敏错误摘要。
 - 前端成功后始终重新获取列表。
 - Playwright 可以写入 Backend 正式依赖文件。

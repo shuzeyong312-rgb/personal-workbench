@@ -120,6 +120,7 @@ def test_lists_all_competitors_in_created_at_and_id_desc_order(
         "is_active",
         "created_at",
         "last_collected_at",
+        "latest_snapshot",
     }
 
 

@@ -4,12 +4,19 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.collection.service import (
+    CollectionError,
+    CollectionInProgressError,
+    CompetitorNotFoundError,
+    CollectionResult,
+    collect_competitor,
+)
 from app.database import get_db
-from app.models import Competitor
+from app.models import Competitor, ProductSnapshot, SkuSnapshot
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
@@ -32,6 +39,12 @@ class CompetitorResponse(BaseModel):
     created_at: datetime
 
 
+class LatestSnapshotResponse(BaseModel):
+    price_min: str | None
+    price_max: str | None
+    sku_count: int
+
+
 class CompetitorListResponse(BaseModel):
     id: int
     platform: str
@@ -44,6 +57,37 @@ class CompetitorListResponse(BaseModel):
     is_active: bool
     created_at: datetime
     last_collected_at: datetime | None
+    latest_snapshot: "LatestSnapshotResponse | None"
+
+
+class SnapshotResponse(BaseModel):
+    id: int
+    competitor_id: int
+    captured_at: datetime
+    title: str
+    shop_name: str
+    main_image_url: str | None
+    price_min: str | None
+    price_max: str | None
+    product_status: str
+    collection_source: str
+    sku_count: int
+
+
+class CollectionRunResponse(BaseModel):
+    id: int
+    competitor_id: int
+    started_at: datetime
+    finished_at: datetime | None
+    status: str
+    error_type: str | None
+    error_message: str | None
+
+
+class CollectCompetitorResponse(BaseModel):
+    competitor: CompetitorListResponse
+    snapshot: SnapshotResponse
+    collection_run: CollectionRunResponse
 
 
 def parse_1688_url(url: str) -> tuple[str, str]:
@@ -73,9 +117,111 @@ def error(code: str, message: str, status_code: int) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
+def _price_text(value: object) -> str | None:
+    if value is None:
+        return None
+    return f"{value:.2f}"
+
+
+def _latest_snapshots(db: Session, competitor_ids: list[int]) -> dict[int, LatestSnapshotResponse]:
+    if not competitor_ids:
+        return {}
+
+    ranked = (
+        select(
+            ProductSnapshot.id.label("snapshot_id"),
+            ProductSnapshot.competitor_id,
+            ProductSnapshot.price_min,
+            ProductSnapshot.price_max,
+            func.row_number()
+            .over(
+                partition_by=ProductSnapshot.competitor_id,
+                order_by=(ProductSnapshot.captured_at.desc(), ProductSnapshot.id.desc()),
+            )
+            .label("snapshot_rank"),
+        )
+        .where(ProductSnapshot.competitor_id.in_(competitor_ids))
+        .subquery()
+    )
+    rows = db.execute(
+        select(
+            ranked.c.competitor_id,
+            ranked.c.price_min,
+            ranked.c.price_max,
+            func.count(SkuSnapshot.id).label("sku_count"),
+        )
+        .outerjoin(SkuSnapshot, SkuSnapshot.product_snapshot_id == ranked.c.snapshot_id)
+        .where(ranked.c.snapshot_rank == 1)
+        .group_by(
+            ranked.c.competitor_id,
+            ranked.c.snapshot_id,
+            ranked.c.price_min,
+            ranked.c.price_max,
+        )
+    ).all()
+    return {
+        int(row.competitor_id): LatestSnapshotResponse(
+            price_min=_price_text(row.price_min),
+            price_max=_price_text(row.price_max),
+            sku_count=int(row.sku_count),
+        )
+        for row in rows
+    }
+
+
+def _competitor_payload(
+    competitor: Competitor,
+    latest_snapshot: LatestSnapshotResponse | None,
+) -> dict[str, object]:
+    return {
+        "id": competitor.id,
+        "platform": competitor.platform,
+        "offer_id": competitor.offer_id,
+        "url": competitor.url,
+        "title": competitor.title,
+        "shop_name": competitor.shop_name,
+        "main_image_url": competitor.main_image_url,
+        "status": competitor.status,
+        "is_active": competitor.is_active,
+        "created_at": competitor.created_at,
+        "last_collected_at": competitor.last_collected_at,
+        "latest_snapshot": latest_snapshot,
+    }
+
+
+def _snapshot_payload(result: CollectionResult) -> dict[str, object]:
+    snapshot = result.snapshot
+    return {
+        "id": snapshot.id,
+        "competitor_id": snapshot.competitor_id,
+        "captured_at": snapshot.captured_at,
+        "title": snapshot.title,
+        "shop_name": snapshot.shop_name,
+        "main_image_url": snapshot.main_image_url,
+        "price_min": _price_text(snapshot.price_min),
+        "price_max": _price_text(snapshot.price_max),
+        "product_status": snapshot.product_status,
+        "collection_source": snapshot.collection_source,
+        "sku_count": result.sku_count,
+    }
+
+
+def _collection_run_payload(result: CollectionResult) -> dict[str, object]:
+    run = result.collection_run
+    return {
+        "id": run.id,
+        "competitor_id": run.competitor_id,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "status": run.status,
+        "error_type": run.error_type,
+        "error_message": run.error_message,
+    }
+
+
 @router.get("", response_model=list[CompetitorListResponse])
-def list_competitors(db: Session = Depends(get_db)) -> list[Competitor]:
-    return list(
+def list_competitors(db: Session = Depends(get_db)) -> list[dict[str, object]]:
+    competitors = list(
         db.scalars(
             select(Competitor).order_by(
                 Competitor.created_at.desc(),
@@ -83,6 +229,11 @@ def list_competitors(db: Session = Depends(get_db)) -> list[Competitor]:
             )
         ).all()
     )
+    latest_by_competitor = _latest_snapshots(db, [competitor.id for competitor in competitors])
+    return [
+        _competitor_payload(competitor, latest_by_competitor.get(competitor.id))
+        for competitor in competitors
+    ]
 
 
 @router.post("", response_model=CompetitorResponse, status_code=status.HTTP_201_CREATED)
@@ -129,3 +280,50 @@ def create_competitor(payload: CreateCompetitorRequest, db: Session = Depends(ge
         raise
     db.refresh(competitor)
     return competitor
+
+
+_COLLECTION_STATUS_CODES = {
+    "1688_login_required": status.HTTP_401_UNAUTHORIZED,
+    "1688_verification_required": status.HTTP_403_FORBIDDEN,
+    "1688_page_unavailable": status.HTTP_502_BAD_GATEWAY,
+    "collection_timeout": status.HTTP_504_GATEWAY_TIMEOUT,
+    "collection_parse_failed": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "collection_partial_data": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "offer_id_mismatch": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "collection_save_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
+    "collection_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
+}
+
+
+@router.post("/{competitor_id}/collect", response_model=CollectCompetitorResponse)
+def collect_competitor_now(
+    competitor_id: int,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        result = collect_competitor(db, competitor_id)
+    except CompetitorNotFoundError as exc:
+        raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND) from exc
+    except CollectionInProgressError as exc:
+        raise error(
+            "collection_in_progress",
+            "已有竞品正在采集，请稍后重试",
+            status.HTTP_409_CONFLICT,
+        ) from exc
+    except CollectionError as exc:
+        raise error(
+            exc.code,
+            exc.message,
+            _COLLECTION_STATUS_CODES.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR),
+        ) from exc
+
+    latest_snapshot = LatestSnapshotResponse(
+        price_min=_price_text(result.snapshot.price_min),
+        price_max=_price_text(result.snapshot.price_max),
+        sku_count=result.sku_count,
+    )
+    return {
+        "competitor": _competitor_payload(result.competitor, latest_snapshot),
+        "snapshot": _snapshot_payload(result),
+        "collection_run": _collection_run_payload(result),
+    }
