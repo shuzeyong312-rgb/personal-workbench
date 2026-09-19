@@ -32,6 +32,20 @@ class CompetitorResponse(BaseModel):
     created_at: datetime
 
 
+class CompetitorListResponse(BaseModel):
+    id: int
+    platform: str
+    offer_id: str
+    url: str
+    title: str | None
+    shop_name: str | None
+    main_image_url: str | None
+    status: str
+    is_active: bool
+    created_at: datetime
+    last_collected_at: datetime | None
+
+
 def parse_1688_url(url: str) -> tuple[str, str]:
     value = url.strip()
     if not value:
@@ -57,6 +71,18 @@ def parse_1688_url(url: str) -> tuple[str, str]:
 
 def error(code: str, message: str, status_code: int) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+@router.get("", response_model=list[CompetitorListResponse])
+def list_competitors(db: Session = Depends(get_db)) -> list[Competitor]:
+    return list(
+        db.scalars(
+            select(Competitor).order_by(
+                Competitor.created_at.desc(),
+                Competitor.id.desc(),
+            )
+        ).all()
+    )
 
 
 @router.post("", response_model=CompetitorResponse, status_code=status.HTTP_201_CREATED)

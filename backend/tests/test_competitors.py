@@ -56,6 +56,83 @@ def test_adds_competitor_and_normalizes_url(client: tuple[TestClient, sessionmak
         assert competitors[0].offer_id == "123456789"
 
 
+def test_lists_empty_competitors(client: tuple[TestClient, sessionmaker[Session]]) -> None:
+    response = client[0].get("/api/competitors")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_lists_all_competitors_in_created_at_and_id_desc_order(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    with session_factory() as session:
+        session.add_all(
+            [
+                Competitor(
+                    platform="1688",
+                    offer_id="111",
+                    url="https://detail.1688.com/offer/111.html",
+                    title="older",
+                    status="unknown",
+                    is_active=True,
+                    created_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
+                ),
+                Competitor(
+                    platform="1688",
+                    offer_id="222",
+                    url="https://detail.1688.com/offer/222.html",
+                    title="newer low id",
+                    status="active",
+                    is_active=True,
+                    created_at=datetime(2026, 9, 19, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 9, 19, tzinfo=timezone.utc),
+                ),
+                Competitor(
+                    platform="1688",
+                    offer_id="333",
+                    url="https://detail.1688.com/offer/333.html",
+                    status="offline",
+                    is_active=False,
+                    created_at=datetime(2026, 9, 19, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 9, 19, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        session.commit()
+
+    response = test_client.get("/api/competitors")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["offer_id"] for item in body] == ["333", "222", "111"]
+    assert set(body[0]) == {
+        "id",
+        "platform",
+        "offer_id",
+        "url",
+        "title",
+        "shop_name",
+        "main_image_url",
+        "status",
+        "is_active",
+        "created_at",
+        "last_collected_at",
+    }
+
+
+def test_listing_does_not_trigger_collection_side_effects(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    response = client[0].get("/api/competitors")
+
+    assert response.status_code == 200
+    with client[1]() as session:
+        assert session.query(Competitor).count() == 0
+
+
 @pytest.mark.parametrize(
     "url",
     [
