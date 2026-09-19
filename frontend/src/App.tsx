@@ -51,27 +51,35 @@ export function ListPage({ competitors, status, error, onRetry, onAdd }: ListPag
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>工作提效工具集</span></div></div>
         <nav aria-label="主导航">
-          <button className="nav-item nav-disabled" disabled>首页</button>
-          <div className="nav-group"><div className="nav-group-title">竞品监控</div>
-            <button className="nav-item nav-child nav-disabled" disabled>竞品监控大屏</button>
-            <button className="nav-item nav-child nav-active" aria-current="page">竞品列表</button>
-            <button className="nav-item nav-child nav-disabled" disabled>竞品分组</button>
-            <button className="nav-item nav-child nav-disabled" disabled>采集记录</button>
+          <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⌂</span>首页</button>
+          <div className="nav-group"><div className="nav-group-title"><span className="nav-icon" aria-hidden="true">⌁</span>竞品监控<span className="nav-chevron" aria-hidden="true">⌃</span></div>
+            <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
+            <button className="nav-item nav-child nav-active" aria-current="page"><span className="nav-dot" aria-hidden="true" />竞品列表</button>
+            <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />竞品分组</button>
+            <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />采集记录</button>
           </div>
-          <button className="nav-item nav-disabled" disabled>自动上架</button><button className="nav-item nav-disabled" disabled>系统设置</button>
+          <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">▣</span>自动上架</button><button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⚙</span>系统设置</button>
         </nav>
+        <div className="sidebar-note"><strong>让工作更高效</strong><span>v1.0.0</span></div>
       </aside>
       <main className="main-content">
-        <div className="breadcrumb">个人工作台 <span>/</span> 竞品监控 <span>/</span> <strong>竞品列表</strong></div>
+        <div className="workspace-header">
+          <div className="breadcrumb">个人工作台 <span>/</span> 竞品监控 <span>/</span> <strong>竞品列表</strong></div>
+          <div className="workspace-tools" aria-label="工作台工具区">
+            <div className="workspace-search" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.5" /><path d="m16 16 4 4" /></svg><span>搜索商品名称、链接或关键词</span></div>
+            <span className="workspace-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></span>
+            <span className="workspace-user" aria-hidden="true"><span className="workspace-avatar">W</span><span>工作台</span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></span>
+          </div>
+        </div>
         <header className="page-header"><div><h1>竞品列表</h1><p className="page-description">查看当前已添加的 1688 竞品，并管理监控对象。</p></div><button className="primary-button" onClick={onAdd}>添加竞品</button></header>
         <section className="filter-card" aria-label="搜索和筛选">
-          <div className="filter-field filter-search"><label htmlFor="search">搜索商品名称 / offerId / 店铺</label><input id="search" disabled placeholder="暂未开放" /></div>
+          <div className="filter-field filter-search"><label htmlFor="search">搜索商品名称 / offerId / 店铺</label><input id="search" disabled placeholder="搜索商品名称 / offerId / 店铺" /></div>
           <div className="filter-field"><label htmlFor="product-status">商品状态</label><select id="product-status" disabled><option>全部状态</option></select></div>
           <div className="filter-field"><label htmlFor="collection-status">采集状态</label><select id="collection-status" disabled><option>全部状态</option></select></div>
           <button className="secondary-button" disabled>筛选</button><button className="text-button" disabled>重置</button><span className="filter-hint">搜索与筛选暂未开放</span>
         </section>
         <section className="stats-strip" aria-label="列表统计">
-          <div className="stat-item"><span>当前竞品总数</span><strong>{status === "ready" ? competitors.length : "—"}</strong></div>
+          <div className="stat-total"><strong>共 {status === "ready" ? competitors.length : "—"} 个竞品</strong></div>
           <div className="stat-item"><span>已采集数量</span><strong>{status === "ready" ? collectedCount : "—"}</strong></div>
           <div className="stat-item"><span>未采集数量</span><strong>{status === "ready" ? competitors.length - collectedCount : "—"}</strong></div>
         </section>
