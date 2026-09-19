@@ -118,9 +118,6 @@ shop_name
 main_image_url
 price_min
 price_max
-sales_30d
-total_sales
-total_orders
 product_status
 collection_source
 ```
@@ -130,11 +127,11 @@ collection_source
 - 每次成功采集都新增一条；
 - 不覆盖旧快照；
 - `price_min` / `price_max` 用于兼容阶梯价或多 SKU 价格；
-- `sales_30d`、`total_sales`、`total_orders` 允许为空；
 - `collection_source` 只记录简短来源，例如：
   - `html`
-  - `plugin_api`
+  - `network`
   - `mixed`
+- 本 Feature 不接入插件历史数据。
 
 规则：
 
@@ -164,8 +161,8 @@ price
 - 一个 ProductSnapshot 可以对应多个 SkuSnapshot；
 - `sku_id` 保存 1688 的 SKU ID；
 - `sku_name` 保存内部标准化后的规格名称，例如 `米白色`；
-- `stock` 保存当前可售库存；
-- `price` 如果无法取得 SKU 独立价格，可以为空。
+- `stock` 保存当前可售库存，缺失时可以为空；
+- `price` 如果无法取得 SKU 独立价格，可以为空，缺失时不保存为 0。
 
 重要：
 
@@ -198,12 +195,15 @@ error_type
 error_message
 ```
 
-`status` 建议只保留：
+`status` 正式值为：
 
 ```text
+running
 success
 failed
 ```
+
+`running` 只表示采集任务正在执行，不承担数据库锁职责；真正的并发控制由应用层进程内全局采集锁负责。
 
 用途：
 
@@ -288,7 +288,7 @@ CompetitorGroup
 → ProductSnapshot.price_min / price_max
 
 销量趋势
-→ ProductSnapshot.sales_30d / total_sales
+→ 不属于本 Feature，待未来独立 migration 增加
 
 库存趋势
 → SkuSnapshot.stock
