@@ -4,6 +4,23 @@ import "./App.css";
 
 type AddStatus = "initial" | "submitting" | "success" | "invalid" | "duplicate" | "server-error";
 type ListStatus = "loading" | "error" | "ready";
+type Notice = { message: string; type: "success" | "error" };
+
+type CollectionErrorBody = { code?: string; message?: string };
+
+const collectionErrorMessages: Record<string, string> = {
+  competitor_not_found: "竞品不存在",
+  collection_in_progress: "已有竞品正在采集，请稍后重试",
+  "1688_login_required": "1688 登录状态已失效，请重新登录后再试",
+  "1688_verification_required": "1688 当前需要完成安全验证",
+  "1688_page_unavailable": "商品页面暂时无法访问，请稍后重试",
+  collection_timeout: "商品页面加载超时，请稍后重试",
+  collection_parse_failed: "无法解析该商品页面，请稍后重试",
+  collection_partial_data: "商品数据不完整，暂时无法采集",
+  offer_id_mismatch: "采集到的商品与当前竞品不匹配",
+  collection_failed: "采集失败，请稍后重试",
+  collection_save_failed: "商品数据保存失败，请稍后重试",
+};
 
 export type Competitor = {
   id: number;
@@ -17,6 +34,11 @@ export type Competitor = {
   is_active: boolean;
   created_at: string;
   last_collected_at: string | null;
+  latest_snapshot: {
+    price_min: string | null;
+    price_max: string | null;
+    sku_count: number;
+  } | null;
 };
 
 export function getResponseStatus(responseOk: boolean, code?: string): AddStatus {
@@ -24,6 +46,25 @@ export function getResponseStatus(responseOk: boolean, code?: string): AddStatus
   if (code === "invalid_competitor_url") return "invalid";
   if (code === "competitor_already_exists") return "duplicate";
   return "server-error";
+}
+
+export function formatPriceDisplay(snapshot: Competitor["latest_snapshot"]): string {
+  const min = snapshot?.price_min?.trim() || "";
+  const max = snapshot?.price_max?.trim() || "";
+  if (!min && !max) return "未采集";
+  if (min && max && min === max) return `¥${min}`;
+  if (min && max) return `¥${min} ~ ¥${max}`;
+  return `¥${min || max}`;
+}
+
+export function getCollectionErrorMessage(code?: string, message?: unknown): string {
+  const backendMessage = typeof message === "string" ? message.trim() : "";
+  if (backendMessage && !/[<>]/.test(backendMessage) && !/traceback|stack trace|File "/i.test(backendMessage)) return backendMessage;
+  return (code && collectionErrorMessages[code]) || "采集失败，请稍后重试";
+}
+
+export function getCollectionRequestErrorMessage(_error: unknown): string {
+  return "无法连接服务，请检查后端是否正常运行后重试";
 }
 
 function formatDate(value: string | null): string {
@@ -42,9 +83,9 @@ function StatusBadge({ status }: { status: Competitor["status"] }) {
   return <span className={"status-badge status-" + status}>{labels[status]}</span>;
 }
 
-type ListPageProps = { competitors: Competitor[]; status: ListStatus; error: string | null; onRetry: () => void; onAdd: () => void };
+type ListPageProps = { competitors: Competitor[]; status: ListStatus; error: string | null; onRetry: () => void; onAdd: () => void; collectingCompetitorId: number | null; onCollect: (competitorId: number) => void };
 
-export function ListPage({ competitors, status, error, onRetry, onAdd }: ListPageProps) {
+export function ListPage({ competitors, status, error, onRetry, onAdd, collectingCompetitorId, onCollect }: ListPageProps) {
   const collectedCount = competitors.filter((item) => item.last_collected_at !== null).length;
   return (
     <div className="app-shell">
@@ -88,8 +129,8 @@ export function ListPage({ competitors, status, error, onRetry, onAdd }: ListPag
           {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载竞品列表…</strong></div>}
           {status === "error" && <div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品列表。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div>}
           {status === "ready" && competitors.length === 0 && <div className="state-panel"><div className="empty-icon">+</div><strong>还没有添加竞品</strong><span>添加一个 1688 商品链接，开始建立你的监控列表。</span><button className="primary-button" onClick={onAdd}>添加竞品</button></div>}
-          {status === "ready" && competitors.length > 0 && <div className="table-scroll"><table><thead><tr><th>商品信息</th><th>店铺名称</th><th>当前价格</th><th>SKU 数量</th><th>最近变化</th><th>最近采集时间</th><th>商品状态</th></tr></thead><tbody>
-            {competitors.map((competitor) => <tr key={competitor.id}><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td className="muted-cell">未采集</td><td className="muted-cell">未采集</td><td className="muted-cell">未采集</td><td>{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td></tr>)}
+          {status === "ready" && competitors.length > 0 && <div className="table-scroll"><table><thead><tr><th>商品信息</th><th>店铺名称</th><th>当前价格</th><th>SKU 数量</th><th>最近变化</th><th>最近采集时间</th><th>商品状态</th><th>操作</th></tr></thead><tbody>
+            {competitors.map((competitor) => { const isCollecting = collectingCompetitorId === competitor.id; return <tr key={competitor.id}><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className="muted-cell">暂无变化记录</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><button type="button" className={"collect-button" + (isCollecting ? " collect-button-loading" : "")} onClick={() => onCollect(competitor.id)} disabled={collectingCompetitorId !== null}>{isCollecting ? "采集中..." : "立即采集"}</button></td></tr>; })}
           </tbody></table></div>}
         </section>
         <div className="pagination-bar"><span>显示全部竞品</span><button disabled>上一页</button><span className="page-number">1</span><button disabled>下一页</button><span>分页暂未开放</span></div>
@@ -116,7 +157,8 @@ function App() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [addStatus, setAddStatus] = useState<AddStatus>("initial");
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [collectingCompetitorId, setCollectingCompetitorId] = useState<number | null>(null);
 
   async function loadCompetitors() {
     setListStatus("loading"); setListError(null);
@@ -124,17 +166,36 @@ function App() {
     catch { setListError("暂时无法获取竞品列表，请检查服务是否正常运行。"); setListStatus("error"); }
   }
   useEffect(() => { void loadCompetitors(); }, []);
-  function openDialog() { setNotice(""); setAddStatus("initial"); setDialogOpen(true); }
+  function openDialog() { setNotice(null); setAddStatus("initial"); setDialogOpen(true); }
   function closeDialog() { if (addStatus !== "submitting") { setDialogOpen(false); setUrl(""); setAddStatus("initial"); } }
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setAddStatus("submitting");
     try {
       const response = await fetch("/api/competitors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, group_id: null }) });
-      if (response.ok) { setDialogOpen(false); setUrl(""); setAddStatus("initial"); setNotice("竞品已添加，列表已更新。"); await loadCompetitors(); return; }
+      if (response.ok) { setDialogOpen(false); setUrl(""); setAddStatus("initial"); setNotice({ message: "竞品已添加，列表已更新。", type: "success" }); await loadCompetitors(); return; }
       const body = await response.json() as { code?: string }; setAddStatus(getResponseStatus(false, body.code));
     } catch { setAddStatus("server-error"); }
   }
-  return <><ListPage competitors={competitors} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} />{notice && <div className="toast" role="status">{notice}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} />}</>;
+  async function handleCollect(competitorId: number) {
+    if (collectingCompetitorId !== null) return;
+    setCollectingCompetitorId(competitorId);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/competitors/${competitorId}/collect`, { method: "POST" });
+      if (!response.ok) {
+        let body: CollectionErrorBody = {};
+        try { body = await response.json() as CollectionErrorBody; } catch { /* use the stable fallback below */ }
+        throw new Error(getCollectionErrorMessage(body.code, body.message));
+      }
+      await loadCompetitors();
+      setNotice({ message: "采集成功，商品数据已更新。", type: "success" });
+    } catch (error) {
+      setNotice({ message: getCollectionRequestErrorMessage(error), type: "error" });
+    } finally {
+      setCollectingCompetitorId(null);
+    }
+  }
+  return <><ListPage competitors={competitors} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} collectingCompetitorId={collectingCompetitorId} onCollect={(competitorId) => void handleCollect(competitorId)} />{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} />}</>;
 }
 
 export default App;
