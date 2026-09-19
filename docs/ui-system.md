@@ -658,3 +658,13 @@ Reference Page 中出现的：
 ```
 
 当前三张 Reference Page 已作为 V1 视觉基线冻结。除非出现明确可用性问题，否则不主动推翻重做。
+
+---
+
+## 23. Reference Assets
+
+- `docs/reference-ui/competitor-dashboard.png`：Dashboard Reference Page；
+- `docs/reference-ui/competitor-list.png`：List Reference Page；
+- `docs/reference-ui/competitor-detail.png`：Detail Reference Page。
+
+这些图片是视觉参考，不是业务数据来源。实现页面时同时遵守本文件和对应 Reference Page；图片中的商品、价格、数量、日期等均为示例数据，不得写死到产品中。
