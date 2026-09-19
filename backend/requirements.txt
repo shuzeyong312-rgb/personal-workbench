@@ -4,3 +4,4 @@ sqlalchemy
 alembic
 pytest
 httpx
+playwright
