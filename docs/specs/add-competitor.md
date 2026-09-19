@@ -30,7 +30,8 @@
 
 API 保留以下可选字段：
 
-- group_id：竞品组 ID。第一版允许为空，默认使用 null。当前 UI 不提供竞品组选择器。
+- group_id：本 Feature 只允许 omitted 或 null，默认使用 null。当前 UI 不提供竞品组选择器。
+- 非 null group_id 不属于本 Feature 支持范围，留待后续竞品组 Feature 处理。
 
 不输入：
 
@@ -64,7 +65,7 @@ API 保留以下可选字段：
 12. 初始尚未采集商品资料，因此标题、店铺、主图等字段为空。
 13. status 正式允许的值为：unknown、active、offline。
 14. 新添加但尚未采集的商品，status = unknown。
-15. group_id 正式允许为 NULL。
+15. 本 Feature 的 group_id 只允许为 NULL；竞品组关联留待后续 Feature。
 16. 添加操作不触发 Playwright，不访问 1688 商品详情页。
 17. 添加操作不创建 ProductSnapshot、CollectionRun 或 ChangeEvent。
 18. 不通过前端判断唯一性，数据库唯一约束必须作为最终兜底。
@@ -77,6 +78,8 @@ API 保留以下可选字段：
 - 必须是合法 URL。
 - Scheme 必须为 https。
 - Host 必须为 detail.1688.com。
+- 不允许 userinfo。
+- 端口必须省略或为 HTTPS 默认端口 443。
 - Path 必须匹配 /offer/{offerId}.html。
 - offerId 必须为纯数字。
 - 允许存在 Query 和 Fragment，但标准化保存时必须移除。
@@ -92,7 +95,7 @@ API 保留以下可选字段：
 ### 数据校验
 
 - group_id 为空时允许创建。
-- 如果传入 group_id，必须对应已存在的竞品组。
+- 本 Feature 不接受非 null group_id；不创建 CompetitorGroup model/table，也不实现竞品组查询。
 - 不接受用户提交的标题、价格等未经采集的数据作为初始事实。
 
 ## 6. Data Changes
@@ -104,7 +107,7 @@ API 保留以下可选字段：
     platform          = "1688"
     offer_id          = 从链接提取的纯数字字符串
     url               = https://detail.1688.com/offer/{offerId}.html
-    group_id          = null 或有效竞品组 ID
+    group_id          = null（非 null 值留待后续竞品组 Feature）
     title             = null
     shop_name         = null
     main_image_url    = null
@@ -118,7 +121,7 @@ API 保留以下可选字段：
 
     UNIQUE(platform, offer_id)
 
-group_id 正式定义为 nullable。当前尚无正式 Competitor 表，因此直接按可空字段创建，不需要先做修改 migration。
+group_id 正式定义为 nullable。当前尚无正式 CompetitorGroup 表，因此直接按可空字段创建，不需要先做修改 migration。
 
 ## 7. API Contract
 
@@ -152,7 +155,6 @@ group_id 正式定义为 nullable。当前尚无正式 Competitor 表，因此�
 错误：
 
 - 400 Bad Request：URL 为空、格式错误、域名不支持或无法提取 offerId。
-- 404 Not Found：传入的 group_id 不存在。
 - 409 Conflict：该 offerId 已添加。
 - 500 Internal Server Error：未预期的服务端错误。
 
@@ -186,10 +188,7 @@ group_id 正式定义为 nullable。当前尚无正式 Competitor 表，因此�
 6. offerId 重复：
    - 明确提示该商品已经添加；
    - 不创建新记录。
-7. 竞品组不存在：
-   - 显示竞品组无效；
-   - 不创建记录。
-8. 服务端异常：
+7. 服务端异常：
    - 显示通用失败提示；
    - 不伪造成功状态。
 
@@ -210,7 +209,7 @@ group_id 正式定义为 nullable。当前尚无正式 Competitor 表，因此�
 13. 不会创建快照、采集记录或变化记录。
 14. 初始未采集字段保持为空，status 为 unknown，不填充猜测值。
 15. 前端具备 Loading、Success、Validation Error、Duplicate、Server Error 状态。
-16. 前端不提供竞品组选择器。
+16. 前端不提供竞品组选择器，API 的 group_id 只允许 omitted 或 null。
 17. 数据库唯一约束能够阻止重复 platform + offer_id。
 
 ## 10. Non-goals
@@ -246,7 +245,7 @@ group_id 正式定义为 nullable。当前尚无正式 Competitor 表，因此�
 - 系统需要提取 offerId。
 - 相同 1688 offerId 不能重复添加。
 - 添加成功后保存为 Competitor。
-- group_id 正式允许为 NULL。
+- 本 Feature 的 group_id 只允许 omitted 或 NULL；非 NULL group_id 留待后续竞品组 Feature。
 - 第一版 UI 不提供竞品组选择器。
 - 新添加但尚未采集的商品 status = unknown。
 - status 正式允许 unknown、active、offline。
@@ -263,7 +262,7 @@ group_id 正式定义为 nullable。当前尚无正式 Competitor 表，因此�
 - 初始竞品默认 is_active = true。
 - 尚未采集的标题、店铺、主图等字段为空。
 - 当前阶段不要求验证商品链接实际可访问，只要求验证格式并提取 offerId。
-- group_id 虽由 API 预留，但本垂直切片的 UI 固定提交 null。
+- 本垂直切片的 UI 固定提交 null，CompetitorGroup 由后续 Feature 实现。
 
 ## 13. Unknowns
 
