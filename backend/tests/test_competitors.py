@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Base, Competitor
+from app.models import Base, ChangeEvent, Competitor, ProductSnapshot
 
 
 @pytest.fixture()
@@ -121,7 +121,112 @@ def test_lists_all_competitors_in_created_at_and_id_desc_order(
         "created_at",
         "last_collected_at",
         "latest_snapshot",
+        "latest_change",
     }
+    assert body[0]["latest_change"] is None
+
+
+def test_listing_returns_latest_real_change_per_competitor_with_id_tiebreak(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    detected_at = datetime(2026, 9, 19, 12, tzinfo=timezone.utc)
+    with session_factory() as session:
+        first = Competitor(
+            platform="1688",
+            offer_id="111",
+            url="https://detail.1688.com/offer/111.html",
+            status="active",
+            is_active=True,
+            created_at=detected_at,
+            updated_at=detected_at,
+        )
+        second = Competitor(
+            platform="1688",
+            offer_id="222",
+            url="https://detail.1688.com/offer/222.html",
+            status="active",
+            is_active=True,
+            created_at=detected_at,
+            updated_at=detected_at,
+        )
+        session.add_all([first, second])
+        session.flush()
+        snapshots = [
+            ProductSnapshot(
+                competitor_id=first.id,
+                captured_at=detected_at,
+                title="一",
+                shop_name="店",
+                product_status="active",
+                collection_source="html",
+            ),
+            ProductSnapshot(
+                competitor_id=first.id,
+                captured_at=detected_at,
+                title="二",
+                shop_name="店",
+                product_status="active",
+                collection_source="html",
+            ),
+            ProductSnapshot(
+                competitor_id=second.id,
+                captured_at=detected_at,
+                title="三",
+                shop_name="店",
+                product_status="active",
+                collection_source="html",
+            ),
+        ]
+        session.add_all(snapshots)
+        session.flush()
+        session.add(
+            ChangeEvent(
+                competitor_id=first.id,
+                snapshot_id=snapshots[0].id,
+                change_type="title_changed",
+                old_value="一",
+                new_value="二",
+                detected_at=detected_at,
+            )
+        )
+        session.flush()
+        newest_first_event = ChangeEvent(
+            competitor_id=first.id,
+            snapshot_id=snapshots[1].id,
+            change_type="price_increase",
+            old_value="1.00",
+            new_value="2.00",
+            detected_at=detected_at,
+        )
+        session.add_all(
+            [
+                newest_first_event,
+                ChangeEvent(
+                    competitor_id=second.id,
+                    snapshot_id=snapshots[2].id,
+                    change_type="sku_added",
+                    entity_key="sku-2",
+                    new_value="蓝色",
+                    detected_at=detected_at,
+                ),
+            ]
+        )
+        session.commit()
+
+    body = {item["offer_id"]: item for item in test_client.get("/api/competitors").json()}
+    first_change = body["111"]["latest_change"]
+    assert first_change == {
+        "id": newest_first_event.id,
+        "snapshot_id": snapshots[1].id,
+        "change_type": "price_increase",
+        "entity_key": None,
+        "old_value": "1.00",
+        "new_value": "2.00",
+        "detected_at": "2026-09-19T12:00:00",
+    }
+    assert body["222"]["latest_change"]["change_type"] == "sku_added"
+    assert "changes" not in body["111"]
 
 
 def test_listing_does_not_trigger_collection_side_effects(

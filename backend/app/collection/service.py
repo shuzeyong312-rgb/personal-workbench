@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from threading import Lock
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.collection.collector_1688 import (
     CollectionTimeoutError,
@@ -15,7 +15,8 @@ from app.collection.collector_1688 import (
 )
 from app.collection.parser_1688 import CollectionParseError, OfferIdMismatchError
 from app.collection.types import ProductData, SkuData
-from app.models import CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
+from app.changes import detect_changes
+from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
 
 
 COLLECTION_LOCK = Lock()
@@ -205,6 +206,14 @@ def collect_competitor(db: Session, competitor_id: int) -> CollectionResult:
             raise CollectionError(error_type, error_message) from exc
 
         try:
+            previous = db.scalar(
+                select(ProductSnapshot)
+                .options(selectinload(ProductSnapshot.skus))
+                .where(ProductSnapshot.competitor_id == competitor_id_value)
+                .order_by(ProductSnapshot.captured_at.desc(), ProductSnapshot.id.desc())
+                .limit(1)
+            )
+            drafts = detect_changes(previous, product)
             snapshot = ProductSnapshot(
                 competitor_id=competitor_id_value,
                 captured_at=product.captured_at,
@@ -227,6 +236,22 @@ def collect_competitor(db: Session, competitor_id: int) -> CollectionResult:
             )
             db.add(snapshot)
             db.flush()
+
+            detected_at = datetime.now(timezone.utc)
+            db.add_all(
+                [
+                    ChangeEvent(
+                        competitor_id=competitor_id_value,
+                        snapshot_id=snapshot.id,
+                        change_type=draft.change_type,
+                        entity_key=draft.entity_key,
+                        old_value=draft.old_value,
+                        new_value=draft.new_value,
+                        detected_at=detected_at,
+                    )
+                    for draft in drafts
+                ]
+            )
 
             now = datetime.now(timezone.utc)
             competitor.title = product.title

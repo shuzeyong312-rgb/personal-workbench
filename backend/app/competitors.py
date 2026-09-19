@@ -16,7 +16,7 @@ from app.collection.service import (
     collect_competitor,
 )
 from app.database import get_db
-from app.models import Competitor, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, Competitor, ProductSnapshot, SkuSnapshot
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
@@ -45,6 +45,16 @@ class LatestSnapshotResponse(BaseModel):
     sku_count: int
 
 
+class ChangeEventSummary(BaseModel):
+    id: int
+    snapshot_id: int
+    change_type: str
+    entity_key: str | None
+    old_value: str | None
+    new_value: str | None
+    detected_at: datetime
+
+
 class CompetitorListResponse(BaseModel):
     id: int
     platform: str
@@ -58,6 +68,7 @@ class CompetitorListResponse(BaseModel):
     created_at: datetime
     last_collected_at: datetime | None
     latest_snapshot: "LatestSnapshotResponse | None"
+    latest_change: ChangeEventSummary | None
 
 
 class SnapshotResponse(BaseModel):
@@ -169,9 +180,60 @@ def _latest_snapshots(db: Session, competitor_ids: list[int]) -> dict[int, Lates
     }
 
 
+def _latest_changes(db: Session, competitor_ids: list[int]) -> dict[int, ChangeEventSummary]:
+    if not competitor_ids:
+        return {}
+
+    ranked = (
+        select(
+            ChangeEvent.id,
+            ChangeEvent.competitor_id,
+            ChangeEvent.snapshot_id,
+            ChangeEvent.change_type,
+            ChangeEvent.entity_key,
+            ChangeEvent.old_value,
+            ChangeEvent.new_value,
+            ChangeEvent.detected_at,
+            func.row_number()
+            .over(
+                partition_by=ChangeEvent.competitor_id,
+                order_by=(ChangeEvent.detected_at.desc(), ChangeEvent.id.desc()),
+            )
+            .label("change_rank"),
+        )
+        .where(ChangeEvent.competitor_id.in_(competitor_ids))
+        .subquery()
+    )
+    rows = db.execute(
+        select(
+            ranked.c.id,
+            ranked.c.competitor_id,
+            ranked.c.snapshot_id,
+            ranked.c.change_type,
+            ranked.c.entity_key,
+            ranked.c.old_value,
+            ranked.c.new_value,
+            ranked.c.detected_at,
+        ).where(ranked.c.change_rank == 1)
+    ).all()
+    return {
+        int(row.competitor_id): ChangeEventSummary(
+            id=int(row.id),
+            snapshot_id=int(row.snapshot_id),
+            change_type=row.change_type,
+            entity_key=row.entity_key,
+            old_value=row.old_value,
+            new_value=row.new_value,
+            detected_at=row.detected_at,
+        )
+        for row in rows
+    }
+
+
 def _competitor_payload(
     competitor: Competitor,
     latest_snapshot: LatestSnapshotResponse | None,
+    latest_change: ChangeEventSummary | None,
 ) -> dict[str, object]:
     return {
         "id": competitor.id,
@@ -186,6 +248,7 @@ def _competitor_payload(
         "created_at": competitor.created_at,
         "last_collected_at": competitor.last_collected_at,
         "latest_snapshot": latest_snapshot,
+        "latest_change": latest_change,
     }
 
 
@@ -230,8 +293,13 @@ def list_competitors(db: Session = Depends(get_db)) -> list[dict[str, object]]:
         ).all()
     )
     latest_by_competitor = _latest_snapshots(db, [competitor.id for competitor in competitors])
+    latest_change_by_competitor = _latest_changes(db, [competitor.id for competitor in competitors])
     return [
-        _competitor_payload(competitor, latest_by_competitor.get(competitor.id))
+        _competitor_payload(
+            competitor,
+            latest_by_competitor.get(competitor.id),
+            latest_change_by_competitor.get(competitor.id),
+        )
         for competitor in competitors
     ]
 
@@ -322,8 +390,9 @@ def collect_competitor_now(
         price_max=_price_text(result.snapshot.price_max),
         sku_count=result.sku_count,
     )
+    latest_change = _latest_changes(db, [result.competitor.id]).get(result.competitor.id)
     return {
-        "competitor": _competitor_payload(result.competitor, latest_snapshot),
+        "competitor": _competitor_payload(result.competitor, latest_snapshot, latest_change),
         "snapshot": _snapshot_payload(result),
         "collection_run": _collection_run_payload(result),
     }

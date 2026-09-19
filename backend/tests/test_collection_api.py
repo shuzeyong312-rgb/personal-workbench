@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch
@@ -20,7 +21,7 @@ from app.collection.service import COLLECTION_LOCK
 from app.collection.types import ProductData, SkuData
 from app.database import get_db
 from app.main import app
-from app.models import Base, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
 
 
 @pytest.fixture()
@@ -132,6 +133,7 @@ def test_success_persists_run_snapshot_skus_and_competitor(
     assert body["snapshot"]["price_max"] == "42.00"
     assert body["snapshot"]["sku_count"] == 3
     assert body["collection_run"]["status"] == "success"
+    assert body["competitor"]["latest_change"] is None
 
     with client[1]() as session:
         saved_competitor = session.get(Competitor, competitor_id)
@@ -166,11 +168,168 @@ def test_repeated_collection_adds_snapshot_and_latest_listing_projection(
         "price_max": "42.00",
         "sku_count": 3,
     }
-    assert "latest_change" not in body[0]
+    assert body[0]["latest_change"] is None
     assert "latest_collection_run" not in body[0]
     with client[1]() as session:
         assert session.query(ProductSnapshot).count() == 2
         assert session.query(SkuSnapshot).count() == 6
+        assert session.query(ChangeEvent).count() == 0
+
+
+def test_collect_without_new_changes_keeps_historical_latest_change(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1])
+    collected = product(captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc))
+    with client[1]() as session:
+        previous = ProductSnapshot(
+            competitor_id=competitor_id,
+            captured_at=datetime(2026, 9, 19, 1, tzinfo=timezone.utc),
+            title=collected.title,
+            shop_name=collected.shop_name,
+            main_image_url=collected.main_image_url,
+            price_min=collected.price_min,
+            price_max=collected.price_max,
+            product_status=collected.product_status,
+            collection_source=collected.collection_source,
+            skus=[
+                SkuSnapshot(
+                    sku_id=sku.sku_id,
+                    sku_name=sku.sku_name,
+                    stock=sku.stock,
+                    price=sku.price,
+                )
+                for sku in collected.skus
+            ],
+        )
+        session.add(previous)
+        session.flush()
+        historical_change = ChangeEvent(
+            competitor_id=competitor_id,
+            snapshot_id=previous.id,
+            change_type="price_increase",
+            old_value="35.00",
+            new_value="40.00",
+            detected_at=datetime(2026, 9, 19, 1, 30, tzinfo=timezone.utc),
+        )
+        session.add(historical_change)
+        session.commit()
+        previous_snapshot_id = previous.id
+        historical_change_id = historical_change.id
+
+    with patch("app.collection.service.collect_1688_product", return_value=collected):
+        response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["snapshot"]["sku_count"] == 3
+    assert body["collection_run"]["status"] == "success"
+    latest_change = body["competitor"]["latest_change"]
+    assert latest_change is not None
+    assert latest_change["id"] == historical_change_id
+    assert latest_change["change_type"] == "price_increase"
+    assert latest_change["old_value"] == "35.00"
+    assert latest_change["new_value"] == "40.00"
+    assert latest_change["snapshot_id"] == previous_snapshot_id
+    assert body["snapshot"]["id"] != latest_change["snapshot_id"]
+
+    with client[1]() as session:
+        assert session.query(ProductSnapshot).count() == 2
+        assert session.query(SkuSnapshot).count() == 6
+        assert session.query(ChangeEvent).count() == 1
+        saved_change = session.scalar(select(ChangeEvent))
+        assert saved_change is not None
+        assert saved_change.id == historical_change_id
+        assert saved_change.snapshot_id == previous_snapshot_id
+
+
+def test_collection_persists_all_changes_against_latest_tied_snapshot(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1])
+    captured_at = datetime(2026, 9, 19, 1, tzinfo=timezone.utc)
+    with client[1]() as session:
+        session.add_all(
+            [
+                ProductSnapshot(
+                    competitor_id=competitor_id,
+                    captured_at=captured_at,
+                    title="最早标题",
+                    shop_name="旧店铺",
+                    price_min=Decimal("10.00"),
+                    price_max=Decimal("12.00"),
+                    product_status="active",
+                    collection_source="html",
+                ),
+                ProductSnapshot(
+                    competitor_id=competitor_id,
+                    captured_at=captured_at,
+                    title="基线标题",
+                    shop_name="旧店铺",
+                    price_min=Decimal("40.00"),
+                    price_max=Decimal("42.00"),
+                    product_status="active",
+                    collection_source="html",
+                    skus=[
+                        SkuSnapshot(sku_id="sku-keep", sku_name="保留", stock=3, price=None),
+                        SkuSnapshot(sku_id="sku-remove", sku_name="删除", stock=1, price=None),
+                    ],
+                ),
+            ]
+        )
+        session.commit()
+        snapshots = session.scalars(
+            select(ProductSnapshot).where(ProductSnapshot.competitor_id == competitor_id)
+        ).all()
+        baseline = max(snapshots, key=lambda item: item.id)
+
+    current = replace(
+        product(captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc)),
+        title="新标题",
+        price_min=Decimal("45.00"),
+        price_max=Decimal("47.00"),
+        skus=[
+            SkuData("sku-keep", "保留", 8, None),
+            SkuData("sku-add", "新增", 2, None),
+        ],
+    )
+    with patch("app.collection.service.collect_1688_product", return_value=current):
+        response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["competitor"]["latest_change"]["change_type"] in {
+        "price_increase",
+        "title_changed",
+        "sku_added",
+        "sku_removed",
+        "stock_changed",
+    }
+    with client[1]() as session:
+        saved_snapshots = session.scalars(
+            select(ProductSnapshot)
+            .where(ProductSnapshot.competitor_id == competitor_id)
+            .order_by(ProductSnapshot.id)
+        ).all()
+        assert len(saved_snapshots) == 3
+        current_snapshot = saved_snapshots[-1]
+        assert current_snapshot.id > baseline.id
+        events = session.scalars(
+            select(ChangeEvent)
+            .where(ChangeEvent.competitor_id == competitor_id)
+            .order_by(ChangeEvent.id)
+        ).all()
+        assert [(event.change_type, event.old_value, event.new_value) for event in events] == [
+            ("price_increase", "40.00~42.00", "45.00~47.00"),
+            ("title_changed", "基线标题", "新标题"),
+            ("sku_added", None, "新增"),
+            ("sku_removed", "删除", None),
+            ("stock_changed", "3", "8"),
+        ]
+        assert {event.snapshot_id for event in events} == {current_snapshot.id}
+        assert {event.competitor_id for event in events} == {competitor_id}
+        assert len({event.detected_at for event in events}) == 1
+        assert session.scalar(select(CollectionRun).order_by(CollectionRun.id.desc())).status == "success"
 
 
 @pytest.mark.parametrize(
@@ -301,6 +460,47 @@ def test_save_failure_rolls_back_business_data_and_marks_run_failed(
         assert run is not None
         assert run.status == "failed"
         assert run.error_type == "collection_save_failed"
+
+
+def test_change_event_save_failure_rolls_back_current_collection(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1])
+    first = product(captured_at=datetime(2026, 9, 19, 1, tzinfo=timezone.utc))
+    second = replace(
+        first,
+        title="变化后的标题",
+        captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc),
+    )
+    with patch("app.collection.service.collect_1688_product", return_value=first):
+        assert client[0].post(f"/api/competitors/{competitor_id}/collect").status_code == 200
+
+    def fail_change_event_insert(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("change event database failure")
+
+    event.listen(ChangeEvent, "before_insert", fail_change_event_insert)
+    try:
+        with patch("app.collection.service.collect_1688_product", return_value=second):
+            response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+    finally:
+        event.remove(ChangeEvent, "before_insert", fail_change_event_insert)
+
+    assert response.status_code == 500
+    assert response.json() == {"code": "collection_save_failed", "message": "采集结果保存失败"}
+    with client[1]() as session:
+        assert session.query(ProductSnapshot).count() == 1
+        assert session.query(SkuSnapshot).count() == 3
+        assert session.query(ChangeEvent).count() == 0
+        saved_snapshot = session.scalar(select(ProductSnapshot))
+        assert saved_snapshot is not None
+        assert saved_snapshot.title == "新商品标题"
+        saved_competitor = session.get(Competitor, competitor_id)
+        assert saved_competitor is not None
+        assert saved_competitor.title == "新商品标题"
+        runs = session.scalars(select(CollectionRun).order_by(CollectionRun.id)).all()
+        assert len(runs) == 2
+        assert runs[-1].status == "failed"
+        assert runs[-1].error_type == "collection_save_failed"
 
 
 def test_listing_without_snapshot_returns_null_projection(
