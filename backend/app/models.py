@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -91,3 +91,28 @@ class CollectionRun(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+
+class ChangeEvent(Base):
+    __tablename__ = "change_events"
+    __table_args__ = (
+        CheckConstraint(
+            "change_type IN ('price_increase', 'price_decrease', 'sku_added', 'sku_removed', 'stock_changed', 'title_changed')",
+            name="ck_change_events_change_type",
+        ),
+        Index(
+            "ix_change_events_competitor_detected_at_id",
+            "competitor_id",
+            "detected_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    competitor_id: Mapped[int] = mapped_column(ForeignKey("competitors.id"), nullable=False)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("product_snapshots.id"), nullable=False)
+    change_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    old_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    new_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
