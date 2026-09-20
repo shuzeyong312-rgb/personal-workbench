@@ -145,9 +145,10 @@ def collect_1688_product_in_context(
     url: str,
     expected_offer_id: str,
     *,
-    keep_page_on_verification: bool = False,
+    close_page: bool = False,
+    keep_page_on_verification: bool = True,
 ) -> ProductData:
-    """Collect one product using an already-running persistent Context."""
+    """Collect one product without closing caller-owned Context resources."""
     pages = getattr(context, "pages", [])
     page = pages[0] if pages else context.new_page()
     keep_page = False
@@ -178,7 +179,7 @@ def collect_1688_product_in_context(
             raise
         return parse_1688_html(html, expected_offer_id)
     finally:
-        if not keep_page:
+        if close_page and not keep_page:
             _close_quietly(page)
 
 
@@ -194,6 +195,7 @@ def collect_1688_product(
             context,
             url,
             expected_offer_id,
+            close_page=False,
             keep_page_on_verification=True,
         )
 
@@ -204,6 +206,8 @@ def collect_1688_product(
                 owned_context,
                 url,
                 expected_offer_id,
+                close_page=True,
+                keep_page_on_verification=False,
             )
         finally:
             _close_quietly(owned_context)

@@ -12,6 +12,7 @@ from app.collection.collector_1688 import (
     PageUnavailableError,
     VerificationRequiredError,
     collect_1688_product,
+    collect_1688_product_in_context,
 )
 from app.collection.parser_1688 import (
     CollectionParseError,
@@ -96,6 +97,92 @@ def fake_runtime(page: FakePage):
     context = FakeContext(page)
     playwright = FakePlaywright(context)
     return playwright, context
+
+
+class LifecyclePage(FakePage):
+    def __init__(self, context: "LifecycleContext"):
+        super().__init__()
+        self.context = context
+        self.goto_urls: list[str] = []
+
+    def goto(self, url: str, **kwargs):
+        self.goto_urls.append(url)
+        self.url = url
+        return super().goto(url, **kwargs)
+
+    def close(self) -> None:
+        self.closed = True
+        if self in self.context.pages:
+            self.context.pages.remove(self)
+        if not self.context.pages:
+            self.context.closed = True
+
+
+class LifecycleContext:
+    def __init__(self):
+        self.closed = False
+        self.pages: list[LifecyclePage] = []
+        self.page = LifecyclePage(self)
+        self.pages.append(self.page)
+
+    def new_page(self):
+        if self.closed:
+            raise RuntimeError("Context closed after its last Page was closed")
+        page = LifecyclePage(self)
+        self.pages.append(page)
+        return page
+
+    def close(self) -> None:
+        self.closed = True
+        for page in list(self.pages):
+            page.closed = True
+        self.pages.clear()
+
+
+def test_shared_context_can_collect_two_products_without_closing_caller_page() -> None:
+    context = LifecycleContext()
+    with patch(
+        "app.collection.collector_1688.parse_1688_html",
+        side_effect=lambda _html, expected_offer_id: SimpleNamespace(
+            offer_id=expected_offer_id
+        ),
+    ):
+        first = collect_1688_product_in_context(
+            context,
+            "https://detail.1688.com/offer/1.html",
+            "1",
+        )
+        second = collect_1688_product_in_context(
+            context,
+            "https://detail.1688.com/offer/2.html",
+            "2",
+        )
+
+    assert first.offer_id == "1"
+    assert second.offer_id == "2"
+    assert context.page.goto_urls == [
+        "https://detail.1688.com/offer/1.html",
+        "https://detail.1688.com/offer/2.html",
+    ]
+    assert not context.page.closed
+    context.close()
+    assert context.page.closed
+
+
+def test_shared_context_keeps_verification_page_for_manual_recovery() -> None:
+    context = LifecycleContext()
+    context.page.title_text = "滑动验证"
+
+    with pytest.raises(VerificationRequiredError):
+        collect_1688_product_in_context(
+            context,
+            "https://detail.1688.com/offer/1.html",
+            "1",
+        )
+
+    assert context.pages == [context.page]
+    assert not context.page.closed
+    context.close()
 
 
 def test_collects_html_and_passes_expected_offer_id() -> None:
