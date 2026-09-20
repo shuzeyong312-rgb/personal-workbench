@@ -1,9 +1,9 @@
 import { createPortal } from "react-dom";
-import { FormEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { FormEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import "./App.css";
 
-type AddStatus = "initial" | "submitting" | "success" | "invalid" | "duplicate" | "server-error";
+type AddStatus = "initial" | "submitting" | "success" | "partial" | "failed" | "invalid" | "duplicate" | "server-error";
 type GroupCreateStatus = "initial" | "submitting" | "success" | "invalid" | "duplicate" | "server-error";
 type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
@@ -66,6 +66,45 @@ export type Competitor = {
     detected_at: string;
   } | null;
 };
+
+export type CompetitorFilters = {
+  search: string;
+  status: "all" | Competitor["status"];
+  collectionStatus: "all" | "collected" | "not_collected";
+  groupId: "all" | "unassigned" | number;
+};
+
+export const defaultCompetitorFilters: CompetitorFilters = {
+  search: "",
+  status: "all",
+  collectionStatus: "all",
+  groupId: "all",
+};
+
+export function filterCompetitors(competitors: readonly Competitor[], filters: CompetitorFilters): Competitor[] {
+  const query = filters.search.trim();
+  const lowerQuery = query.toLocaleLowerCase();
+  return competitors.filter((competitor) => {
+    const searchMatches = !query || [competitor.title, competitor.offer_id, competitor.shop_name]
+      .filter((value): value is string => value !== null)
+      .some((value) => value.toLocaleLowerCase().includes(lowerQuery));
+    const statusMatches = filters.status === "all" || competitor.status === filters.status;
+    const collectionMatches = filters.collectionStatus === "all"
+      || (filters.collectionStatus === "collected" ? competitor.last_collected_at !== null : competitor.last_collected_at === null);
+    const groupMatches = filters.groupId === "all"
+      || (filters.groupId === "unassigned" ? competitor.group_id === null : competitor.group_id === filters.groupId);
+    return searchMatches && statusMatches && collectionMatches && groupMatches;
+  });
+}
+
+export function countActiveCompetitors(competitors: readonly Competitor[]): number {
+  return competitors.filter((competitor) => competitor.is_active).length;
+}
+
+export function reconcileSelectedIds(selectedIds: ReadonlySet<number>, visibleActiveIds: readonly number[]): Set<number> {
+  const visible = new Set(visibleActiveIds);
+  return new Set([...selectedIds].filter((id) => visible.has(id)));
+}
 
 export type BatchState = {
   status: BatchStatus;
@@ -211,6 +250,43 @@ export function getResponseStatus(responseOk: boolean, code?: string): AddStatus
   if (code === "invalid_competitor_url") return "invalid";
   if (code === "competitor_already_exists") return "duplicate";
   return "server-error";
+}
+
+export function parseCompetitorUrls(value: string): string[] {
+  return [...new Set(value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))];
+}
+
+export type AddFailure = { url: string; code: "invalid_competitor_url" | "competitor_already_exists" | "competitor_group_not_found" | "server-error"; reason: string };
+export type AddSubmissionResult = { succeeded: string[]; failures: AddFailure[] };
+
+export function getAddFailureReason(code?: string): string {
+  if (code === "invalid_competitor_url") return "链接格式无效";
+  if (code === "competitor_already_exists") return "已存在";
+  if (code === "competitor_group_not_found") return "竞品组不存在";
+  return "服务暂时不可用，请稍后重试";
+}
+
+type CompetitorRequest = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export async function addCompetitorsSequentially(urls: readonly string[], groupId: number | null, request: CompetitorRequest = fetch, onProgress?: (completed: number, total: number) => void): Promise<AddSubmissionResult> {
+  const succeeded: string[] = [];
+  const failures: AddFailure[] = [];
+  for (const url of urls) {
+    try {
+      const response = await request("/api/competitors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, group_id: groupId }) });
+      if (response.ok) succeeded.push(url);
+      else {
+        let code: string | undefined;
+        try { code = (await response.json() as { code?: string }).code; } catch { /* use the stable fallback below */ }
+        const failureCode = code === "invalid_competitor_url" || code === "competitor_already_exists" || code === "competitor_group_not_found" ? code : "server-error";
+        failures.push({ url, code: failureCode, reason: getAddFailureReason(failureCode) });
+      }
+    } catch {
+      failures.push({ url, code: "server-error", reason: getAddFailureReason() });
+    }
+    onProgress?.(succeeded.length + failures.length, urls.length);
+  }
+  return { succeeded, failures };
 }
 
 export function getGroupCreateStatus(responseOk: boolean, code?: string): GroupCreateStatus {
@@ -406,50 +482,62 @@ type ListPageProps = {
   batchState?: BatchState;
   selectedIds?: Set<number>;
   onToggleSelected?: (competitorId: number) => void;
-  onToggleAll?: (checked: boolean) => void;
+  onToggleAll?: (checked: boolean, competitorIds: number[]) => void;
+  onReconcileSelection?: (visibleActiveIds: number[]) => void;
   onBatchAction?: (mode: "selected" | "all_active") => void;
   onOpenDetail?: (competitorId: number) => void;
   onLifecycleAction?: (action: LifecycleAction, competitor: Competitor) => void;
   onNavigate?: (page: Page) => void;
 };
 
-export function ListPage({ competitors, groups, status, error, onRetry, onAdd, batchState = idleBatchState, selectedIds = new Set<number>(), onToggleSelected = noop, onToggleAll = noop, onBatchAction = noop, onOpenDetail, onLifecycleAction, onNavigate }: ListPageProps) {
+export function ListPage({ competitors, groups, status, error, onRetry, onAdd, batchState = idleBatchState, selectedIds = new Set<number>(), onToggleSelected = noop, onToggleAll = noop, onReconcileSelection = noop, onBatchAction = noop, onOpenDetail, onLifecycleAction, onNavigate }: ListPageProps) {
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
   const [batchMenuOpen, setBatchMenuOpen] = useState(false);
+  const [filters, setFilters] = useState<CompetitorFilters>(defaultCompetitorFilters);
   const selectAllRef = useRef<HTMLInputElement>(null);
-  const collectedCount = competitors.filter((item) => item.last_collected_at !== null).length;
-  const activeCompetitors = competitors.filter((item) => item.is_active);
-  const selectedActiveCount = activeCompetitors.filter((item) => selectedIds.has(item.id)).length;
+  const filteredCompetitors = useMemo(() => filterCompetitors(competitors, filters), [competitors, filters]);
+  const collectedCount = filteredCompetitors.filter((item) => item.last_collected_at !== null).length;
+  const activeCompetitorCount = countActiveCompetitors(competitors);
+  const filteredActiveCompetitors = useMemo(() => filteredCompetitors.filter((item) => item.is_active), [filteredCompetitors]);
+  const selectedActiveCount = filteredActiveCompetitors.filter((item) => selectedIds.has(item.id)).length;
   const batchBusy = batchState.runner_active || batchState.browser_open || batchState.status === "running";
-  const allSelected = activeCompetitors.length > 0 && selectedActiveCount === activeCompetitors.length;
+  const allSelected = filteredActiveCompetitors.length > 0 && selectedActiveCount === filteredActiveCompetitors.length;
   const partiallySelected = selectedActiveCount > 0 && !allSelected;
+  function resetFilters() {
+    setFilters(defaultCompetitorFilters);
+  }
   useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = partiallySelected;
   }, [partiallySelected]);
+  useEffect(() => {
+    onReconcileSelection(filteredActiveCompetitors.map((item) => item.id));
+  }, [filteredActiveCompetitors, onReconcileSelection]);
   return (
     <AppShell page="competitors" onNavigate={onNavigate || (() => undefined)} breadcrumb="竞品列表">
-        <header className="page-header"><div><h1>竞品列表</h1><p className="page-description">查看当前已添加的 1688 竞品，并管理监控对象。</p></div><div className="page-actions"><div className="batch-menu"><button type="button" className="secondary-button batch-trigger" aria-haspopup="menu" aria-expanded={batchMenuOpen} onClick={() => setBatchMenuOpen((open) => !open)} disabled={batchBusy}>采集选中（{selectedActiveCount}） <span aria-hidden="true">▼</span></button>{batchMenuOpen && <div className="batch-menu-popover" role="menu"><button type="button" role="menuitem" disabled={selectedActiveCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("selected"); }}>采集选中（{selectedActiveCount}）</button><button type="button" role="menuitem" disabled={batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("all_active"); }}>采集全部监控中（{activeCompetitors.length}）</button></div>}</div><button className="primary-button" onClick={onAdd} disabled={batchBusy}>添加竞品</button></div></header>
+        <header className="page-header"><div><h1>竞品列表</h1><p className="page-description">查看当前已添加的 1688 竞品，并管理监控对象。</p></div><div className="page-actions"><div className="batch-menu"><button type="button" className="secondary-button batch-trigger" aria-haspopup="menu" aria-expanded={batchMenuOpen} onClick={() => setBatchMenuOpen((open) => !open)} disabled={batchBusy}>采集选中（{selectedActiveCount}） <span aria-hidden="true">▼</span></button>{batchMenuOpen && <div className="batch-menu-popover" role="menu"><button type="button" role="menuitem" disabled={selectedActiveCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("selected"); }}>采集选中（{selectedActiveCount}）</button><button type="button" role="menuitem" disabled={batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("all_active"); }}>采集全部监控中（{activeCompetitorCount}）</button></div>}</div><button className="primary-button" onClick={onAdd} disabled={batchBusy}>添加竞品</button></div></header>
         {batchState.status === "running" && <div className="batch-status-panel batch-status-running" role="status">采集中 {batchState.completed} / {batchState.total} · 成功 {batchState.succeeded} · 失败 {batchState.failed}</div>}
         {batchState.status === "completed" && <div className="batch-status-panel" role="status">采集完成：成功 {batchState.succeeded}，失败 {batchState.failed}</div>}
         {batchState.status === "verification_required" && <div className="batch-status-panel batch-status-verification" role="alert">1688 需要人工验证，本次采集已停止。请在弹出的浏览器中完成处理，关闭浏览器后可重新发起采集。<span>已完成 {batchState.completed} / {batchState.total}，剩余 {batchState.remaining}</span></div>}
         <section className="filter-card" aria-label="搜索和筛选">
-          <div className="filter-field filter-search"><label htmlFor="search">搜索商品名称 / offerId / 店铺</label><input id="search" disabled placeholder="搜索商品名称 / offerId / 店铺" /></div>
-          <div className="filter-field"><label htmlFor="product-status">商品状态</label><select id="product-status" disabled><option>全部状态</option></select></div>
-          <div className="filter-field"><label htmlFor="collection-status">采集状态</label><select id="collection-status" disabled><option>全部状态</option></select></div>
-          <button className="secondary-button" disabled>筛选</button><button className="text-button" disabled>重置</button><span className="filter-hint">搜索与筛选暂未开放</span>
+          <div className="filter-field filter-search"><input id="search" aria-label="搜索商品名称 / offerId / 店铺" value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="搜索商品名称 / offerId / 店铺" /></div>
+          <div className="filter-field"><label htmlFor="product-status">商品状态</label><select id="product-status" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as CompetitorFilters["status"] }))}><option value="all">全部状态</option><option value="active">在售</option><option value="offline">已下架</option><option value="unknown">状态未知</option></select></div>
+          <div className="filter-field"><label htmlFor="collection-status">采集状态</label><select id="collection-status" value={filters.collectionStatus} onChange={(event) => setFilters((current) => ({ ...current, collectionStatus: event.target.value as CompetitorFilters["collectionStatus"] }))}><option value="all">全部状态</option><option value="collected">已采集</option><option value="not_collected">未采集</option></select></div>
+          <div className="filter-field"><label htmlFor="competitor-group">竞品组</label><select id="competitor-group" value={filters.groupId === "all" ? "all" : String(filters.groupId)} onChange={(event) => setFilters((current) => ({ ...current, groupId: event.target.value === "all" || event.target.value === "unassigned" ? event.target.value : Number(event.target.value) }))}><option value="all">全部竞品组</option><option value="unassigned">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></div>
+          <button type="button" className="text-button" onClick={resetFilters}>重置</button>
         </section>
         <section className="stats-strip" aria-label="列表统计">
-          <div className="stat-total"><strong>共 {status === "ready" ? competitors.length : "—"} 个竞品</strong></div>
+          <div className="stat-total"><strong>共 {status === "ready" ? filteredCompetitors.length : "—"} 个竞品</strong></div>
           <div className="stat-item"><span>已采集数量</span><strong>{status === "ready" ? collectedCount : "—"}</strong></div>
-          <div className="stat-item"><span>未采集数量</span><strong>{status === "ready" ? competitors.length - collectedCount : "—"}</strong></div>
+          <div className="stat-item"><span>未采集数量</span><strong>{status === "ready" ? filteredCompetitors.length - collectedCount : "—"}</strong></div>
         </section>
         <section className="table-card">
-          <div className="table-heading"><div><h2>全部竞品</h2><span>按添加时间倒序展示</span></div><span className="table-count">{status === "ready" ? competitors.length + " 个商品" : status === "loading" ? "加载中" : "—"}</span></div>
+          <div className="table-heading"><div><h2>全部竞品</h2><span>按添加时间倒序展示</span></div><span className="table-count">{status === "ready" ? filteredCompetitors.length + " 个商品" : status === "loading" ? "加载中" : "—"}</span></div>
           {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载竞品列表…</strong></div>}
           {status === "error" && <div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品列表。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div>}
           {status === "ready" && competitors.length === 0 && <div className="state-panel"><div className="empty-icon">+</div><strong>还没有添加竞品</strong><span>添加一个 1688 商品链接，开始建立你的监控列表。</span><button className="primary-button" onClick={onAdd}>添加竞品</button></div>}
-          {status === "ready" && competitors.length > 0 && <div className="table-scroll"><table><thead><tr><th className="selection-column"><input ref={selectAllRef} type="checkbox" aria-label="全选当前页可采集竞品" checked={allSelected} disabled={activeCompetitors.length === 0 || batchBusy} onChange={(event) => onToggleAll(event.target.checked)} /></th><th>商品信息</th><th>店铺名称</th><th>竞品组</th><th>当前价格</th><th>SKU 数量</th><th>最近变化</th><th>最近采集时间</th><th>商品状态</th><th>监控状态</th><th>操作</th></tr></thead><tbody>
-            {competitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={competitor.is_active && selectedIds.has(competitor.id)} disabled={!competitor.is_active || batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td>{getCompetitorGroupLabel(competitor.group_id, groups)}</td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><div className="row-actions"><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button><MoreMenu competitor={competitor} disabled={batchBusy} open={openMenuId === competitor.id} onToggle={() => setOpenMenuId(openMenuId === competitor.id ? null : competitor.id)} onAction={(action) => { setOpenMenuId(null); onLifecycleAction?.(action, competitor); }} /></div></td></tr>) }
+          {status === "ready" && competitors.length > 0 && filteredCompetitors.length === 0 && <div className="state-panel"><strong>没有找到符合条件的竞品</strong><span>请调整搜索词或筛选条件</span><button type="button" className="secondary-button" onClick={resetFilters}>重置筛选</button></div>}
+          {status === "ready" && filteredCompetitors.length > 0 && <div className="table-scroll"><table><thead><tr><th className="selection-column"><input ref={selectAllRef} type="checkbox" aria-label="全选当前页可采集竞品" checked={allSelected} disabled={filteredActiveCompetitors.length === 0 || batchBusy} onChange={(event) => onToggleAll(event.target.checked, filteredActiveCompetitors.map((item) => item.id))} /></th><th>商品信息</th><th>店铺名称</th><th>竞品组</th><th>当前价格</th><th>SKU 数量</th><th>最近变化</th><th>最近采集时间</th><th>商品状态</th><th>监控状态</th><th>操作</th></tr></thead><tbody>
+            {filteredCompetitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={competitor.is_active && selectedIds.has(competitor.id)} disabled={!competitor.is_active || batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td>{getCompetitorGroupLabel(competitor.group_id, groups)}</td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><div className="row-actions"><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button><MoreMenu competitor={competitor} disabled={batchBusy} open={openMenuId === competitor.id} onToggle={() => setOpenMenuId(openMenuId === competitor.id ? null : competitor.id)} onAction={(action) => { setOpenMenuId(null); onLifecycleAction?.(action, competitor); }} /></div></td></tr>) }
           </tbody></table></div>}
         </section>
         <div className="pagination-bar"><span>显示全部竞品</span><button disabled>上一页</button><span className="page-number">1</span><button disabled>下一页</button><span>分页暂未开放</span></div>
@@ -556,14 +644,17 @@ export function DetailPage({ data, groups, status, error, days, onRetry, onRange
   </AppShell>;
 }
 
-type AddDialogProps = { url: string; status: AddStatus; onUrlChange: (url: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void; groups: CompetitorGroup[]; groupId: number | null; onGroupChange: (groupId: number | null) => void; newGroupName: string; onNewGroupNameChange: (name: string) => void; onCreateGroup: () => void; groupCreateStatus: GroupCreateStatus };
+type AddDialogProps = { url: string; status: AddStatus; onUrlChange: (url: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void; groups: CompetitorGroup[]; groupId: number | null; onGroupChange: (groupId: number | null) => void; newGroupName: string; onNewGroupNameChange: (name: string) => void; onCreateGroup: () => void; groupCreateStatus: GroupCreateStatus; failures?: AddFailure[]; succeededCount?: number; progress?: { completed: number; total: number } };
 
-export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups, groupId, onGroupChange, newGroupName, onNewGroupNameChange, onCreateGroup, groupCreateStatus }: AddDialogProps) {
+export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups, groupId, onGroupChange, newGroupName, onNewGroupNameChange, onCreateGroup, groupCreateStatus, failures = [], succeededCount = 0, progress = { completed: 0, total: 0 } }: AddDialogProps) {
+  const busy = status === "submitting";
+  const urlCount = parseCompetitorUrls(url).length;
   return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="dialog-title">添加竞品</h2></div><button className="close-button" onClick={onClose} aria-label="关闭">×</button></div>
-    <p className="dialog-description">添加一个 1688 商品链接，系统会保存监控对象。</p>
-    <form onSubmit={onSubmit}><label htmlFor="competitor-url">1688 商品链接</label><input id="competitor-url" type="url" value={url} onChange={(event) => onUrlChange(event.target.value)} placeholder="https://detail.1688.com/offer/123456789.html" required /><p className="hint">仅支持 detail.1688.com/offer/{"{offerId}"}.html</p><label htmlFor="competitor-group">竞品组</label><select id="competitor-group" value={groupId === null ? "" : String(groupId)} onChange={(event) => onGroupChange(event.target.value ? Number(event.target.value) : null)}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><label htmlFor="new-competitor-group">新建分组</label><div className="group-create-controls"><input id="new-competitor-group" type="text" value={newGroupName} onChange={(event) => onNewGroupNameChange(event.target.value)} placeholder="输入分组名称" maxLength={64} /><button type="button" className="secondary-button" onClick={onCreateGroup} disabled={groupCreateStatus === "submitting"}>{groupCreateStatus === "submitting" ? "创建中…" : "创建"}</button></div><div className={getGroupFeedbackClass(groupCreateStatus)} role="status" aria-live="polite">{groupCreateStatus === "success" && "分组已创建并已选中。"}{groupCreateStatus === "invalid" && "请输入有效的分组名称"}{groupCreateStatus === "duplicate" && "该分组已存在"}{groupCreateStatus === "server-error" && "分组创建失败，请稍后重试。"}</div><div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={status === "submitting"}>{status === "submitting" ? "正在添加…" : "添加竞品"}</button></div></form>
-    <div className={"feedback feedback-" + status} role="status" aria-live="polite">{status === "submitting" && "正在校验并保存…"}{status === "invalid" && "链接无效：请输入指定格式的 1688 商品链接。"}{status === "duplicate" && "该 1688 商品已经添加。"}{status === "server-error" && "服务暂时不可用，请稍后重试。"}</div>
+    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="dialog-title">添加竞品</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={busy}>×</button></div>
+    <p className="dialog-description">添加 1688 商品链接，系统会保存监控对象。</p>
+    <form onSubmit={onSubmit}><label htmlFor="competitor-url">1688 商品链接</label><textarea id="competitor-url" rows={5} value={url} onChange={(event) => onUrlChange(event.target.value)} placeholder={"https://detail.1688.com/offer/123456789.html\nhttps://detail.1688.com/offer/987654321.html"} autoComplete="off" spellCheck={false} autoCapitalize="none" autoCorrect="off" disabled={busy} /><p className="hint">每行一个链接，支持一次添加多个竞品；仅支持 detail.1688.com/offer/{"{offerId}"}.html</p><label htmlFor="competitor-group">竞品组</label><select id="competitor-group" value={groupId === null ? "" : String(groupId)} onChange={(event) => onGroupChange(event.target.value ? Number(event.target.value) : null)} disabled={busy}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><label htmlFor="new-competitor-group">新建分组</label><div className="group-create-controls"><input id="new-competitor-group" type="text" value={newGroupName} onChange={(event) => onNewGroupNameChange(event.target.value)} placeholder="输入分组名称" maxLength={64} disabled={busy} /><button type="button" className="secondary-button" onClick={onCreateGroup} disabled={busy || groupCreateStatus === "submitting"}>{groupCreateStatus === "submitting" ? "创建中…" : "创建"}</button></div><div className={getGroupFeedbackClass(groupCreateStatus)} role="status" aria-live="polite">{groupCreateStatus === "success" && "分组已创建并已选中。"}{groupCreateStatus === "invalid" && "请输入有效的分组名称"}{groupCreateStatus === "duplicate" && "该分组已存在"}{groupCreateStatus === "server-error" && "分组创建失败，请稍后重试。"}</div><div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>取消</button><button type="submit" className="primary-button" disabled={busy || urlCount === 0}>{busy ? (progress.total ? `正在添加 ${progress.completed} / ${progress.total}…` : "正在添加…") : urlCount > 1 ? `添加 ${urlCount} 个竞品` : "添加竞品"}</button></div></form>
+    <div className={"feedback feedback-" + status} role="status" aria-live="polite">{status === "partial" && `已添加 ${succeededCount} 个，${failures.length} 个未添加`}{status === "failed" && `未添加 ${failures.length} 个竞品`}{status === "invalid" && "链接无效：请输入指定格式的 1688 商品链接。"}{status === "duplicate" && "该 1688 商品已经添加。"}{status === "server-error" && "服务暂时不可用，请稍后重试。"}</div>
+    {failures.length > 0 && <div className="add-failures" role="status" aria-live="polite"><strong>未添加：</strong><ul>{failures.map((failure) => <li key={failure.url}>{failure.url} — {failure.reason}</li>)}</ul></div>}
   </section></div>;
 }
 
@@ -589,10 +680,19 @@ function App() {
   const [newGroupName, setNewGroupName] = useState("");
   const [groupCreateStatus, setGroupCreateStatus] = useState<GroupCreateStatus>("initial");
   const [addStatus, setAddStatus] = useState<AddStatus>("initial");
+  const [addFailures, setAddFailures] = useState<AddFailure[]>([]);
+  const [addSucceededCount, setAddSucceededCount] = useState(0);
+  const [addProgress, setAddProgress] = useState({ completed: 0, total: 0 });
   const [notice, setNotice] = useState<Notice | null>(null);
   const [batchState, setBatchState] = useState<BatchState>(idleBatchState);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const batchStateRef = useRef(batchState);
+  const reconcileSelection = useCallback((visibleActiveIds: number[]) => {
+    setSelectedIds((current) => {
+      const next = reconcileSelectedIds(current, visibleActiveIds);
+      return next.size === current.size ? current : next;
+    });
+  }, []);
   const [lifecycleDialog, setLifecycleDialog] = useState<{ action: "stop" | "delete"; competitor: Competitor } | null>(null);
   const [lifecycleSubmitting, setLifecycleSubmitting] = useState(false);
   const [lifecycleError, setLifecycleError] = useState<string | null>(null);
@@ -651,8 +751,8 @@ function App() {
   function navigate(nextPage: Page) { if (nextPage !== "detail") latestDetailRequestId.current += 1; setPage(nextPage); if (nextPage === "competitors" && !listLoaded) void loadCompetitors(); }
   function openDetail(competitorId: number) { setSelectedCompetitorId(competitorId); setDetailDays(7); setPage("detail"); void loadDetail(competitorId, 7); }
   function changeDetailRange(days: 7 | 30) { if (selectedCompetitorId === null) return; setDetailDays(days); void loadDetail(selectedCompetitorId, days); }
-  function openDialog() { setNotice(null); setAddStatus("initial"); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true); }
-  function closeDialog() { if (addStatus !== "submitting") { setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setGroupCreateStatus("initial"); } }
+  function openDialog() { setNotice(null); setUrl(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true); }
+  function closeDialog() { if (addStatus !== "submitting") { setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupCreateStatus("initial"); } }
   async function handleCreateGroup() {
     setGroupCreateStatus("submitting");
     try {
@@ -662,12 +762,16 @@ function App() {
     } catch { setGroupCreateStatus("server-error"); }
   }
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setAddStatus("submitting");
-    try {
-       const response = await fetch("/api/competitors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, group_id: groupId }) });
-      if (response.ok) { setDialogOpen(false); setUrl(""); setAddStatus("initial"); setNotice({ message: "竞品已添加，列表已更新。", type: "success" }); await loadCompetitors(); return; }
-      const body = await response.json() as { code?: string }; setAddStatus(getResponseStatus(false, body.code));
-    } catch { setAddStatus("server-error"); }
+    event.preventDefault();
+    const urls = parseCompetitorUrls(url);
+    if (addStatus === "submitting" || urls.length === 0) return;
+    setAddStatus("submitting"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: urls.length });
+    const result = await addCompetitorsSequentially(urls, groupId, fetch, (completed, total) => setAddProgress({ completed, total }));
+    if (result.failures.length === 0) {
+      setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setGroupCreateStatus("initial"); setAddProgress({ completed: 0, total: 0 }); setNotice({ message: `已添加 ${result.succeeded.length} 个竞品`, type: "success" }); await loadCompetitors(); return;
+    }
+    setAddFailures(result.failures); setAddSucceededCount(result.succeeded.length); setUrl(result.failures.map((failure) => failure.url).join("\n")); setAddStatus(result.succeeded.length ? "partial" : "failed");
+    if (result.succeeded.length > 0) await loadCompetitors();
   }
   async function handleBatchAction(mode: "selected" | "all_active") {
     const ids = [...selectedIds];
@@ -733,7 +837,7 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} onRetry={() => void loadDashboard()} onNavigate={navigate} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked) => setSelectedIds(checked ? new Set(competitors.filter((item) => item.is_active).map((item) => item.id)) : new Set())} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onLifecycleAction={handleLifecycleAction} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
+  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} onRetry={() => void loadDashboard()} onNavigate={navigate} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onLifecycleAction={handleLifecycleAction} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
 }
 
 export default App;

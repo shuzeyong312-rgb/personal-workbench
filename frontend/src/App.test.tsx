@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorGroup, ConfirmDialog, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, MoreMenu, Sidebar, StatusBadge, buildPriceChartPoints } from "./App";
+import { addCompetitorsSequentially, AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, MoreMenu, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -34,12 +34,200 @@ const latestChange = (overrides: Partial<NonNullable<Competitor["latest_change"]
   ...overrides,
 });
 
+const filterCompetitorFixtures: Competitor[] = [
+  { ...competitor, id: 10, offer_id: "1081895898799", title: "暖手宝 Pro", shop_name: "家居旗舰店", status: "active", last_collected_at: "2026-09-20T10:00:00Z" },
+  { ...competitor, id: 11, offer_id: "2087654321", title: "桌面风扇", shop_name: "电器店", status: "offline", is_active: false },
+  { ...competitor, id: 12, offer_id: "3087654321", title: null, shop_name: null, status: "unknown" },
+];
+const groupedFilterFixtures = [
+  { ...filterCompetitorFixtures[0], group_id: 1 },
+  { ...filterCompetitorFixtures[1], group_id: null },
+  { ...filterCompetitorFixtures[2], group_id: 2 },
+];
+const filterGroups: CompetitorGroup[] = [
+  { id: 1, name: "家居组", created_at: "2026-09-20T10:00:00Z" },
+  { id: 2, name: "电器组", created_at: "2026-09-20T10:00:00Z" },
+];
+
+const filter = (overrides: Partial<CompetitorFilters>): CompetitorFilters => ({ ...defaultCompetitorFilters, ...overrides });
+const filteredIds = (filters: CompetitorFilters) => filterCompetitors(filterCompetitorFixtures, filters).map((item) => item.id);
+
+test("filters by title", () => {
+  expect(filteredIds(filter({ search: "暖手宝" }))).toEqual([10]);
+});
+
+test("filters by partial offerId", () => {
+  expect(filteredIds(filter({ search: "8189" }))).toEqual([10]);
+});
+
+test("filters by shop name", () => {
+  expect(filteredIds(filter({ search: "旗舰店" }))).toEqual([10]);
+});
+
+test("trims search input and matches title case-insensitively", () => {
+  expect(filteredIds(filter({ search: "  暖手宝 pro  " }))).toEqual([10]);
+});
+
+test.each([
+  ["active", [10]],
+  ["offline", [11]],
+  ["unknown", [12]],
+] as const)("filters product status %s", (status, expected) => {
+  expect(filteredIds(filter({ status }))).toEqual(expected);
+});
+
+test.each([
+  ["collected", [10]],
+  ["not_collected", [11, 12]],
+] as const)("filters collection status %s using last_collected_at only", (collectionStatus, expected) => {
+  expect(filteredIds(filter({ collectionStatus }))).toEqual(expected);
+});
+
+test("combines search, product status and collection status with AND", () => {
+  expect(filteredIds(filter({ search: "暖手宝", status: "active", collectionStatus: "collected" }))).toEqual([10]);
+  expect(filteredIds(filter({ search: "暖手宝", status: "offline", collectionStatus: "collected" }))).toEqual([]);
+});
+
+test("filters by a specified competitor group", () => {
+  expect(filterCompetitors(groupedFilterFixtures, filter({ groupId: 2 })).map((item) => item.id)).toEqual([12]);
+});
+
+test("filters ungrouped competitors", () => {
+  expect(filterCompetitors(groupedFilterFixtures, filter({ groupId: "unassigned" })).map((item) => item.id)).toEqual([11]);
+});
+
+test("all competitor groups removes the group restriction", () => {
+  expect(filterCompetitors(groupedFilterFixtures, filter({ groupId: "all" })).map((item) => item.id)).toEqual([10, 11, 12]);
+});
+
+test("combines all four filter conditions with AND", () => {
+  expect(filterCompetitors(groupedFilterFixtures, filter({ search: "暖手宝", status: "active", collectionStatus: "collected", groupId: 1 })).map((item) => item.id)).toEqual([10]);
+  expect(filterCompetitors(groupedFilterFixtures, filter({ search: "暖手宝", status: "active", collectionStatus: "collected", groupId: 2 })).map((item) => item.id)).toEqual([]);
+});
+
+test("handles null searchable fields safely", () => {
+  expect(filteredIds(filter({ search: "308765" }))).toEqual([12]);
+  expect(filteredIds(filter({ search: "不存在" }))).toEqual([]);
+});
+
+test("keeps the source list unchanged before filters are applied", () => {
+  expect(filterCompetitors(filterCompetitorFixtures, defaultCompetitorFilters)).toHaveLength(3);
+  expect(filterCompetitorFixtures).toHaveLength(3);
+});
+
+test("applies the complete filter set after submission", () => {
+  const editing = filter({ search: "  家居  ", status: "active", collectionStatus: "collected" });
+  expect(filteredIds(editing)).toEqual([10]);
+});
+
+test("reset restores all competitors", () => {
+  expect(filteredIds(filter({ search: "暖手宝", status: "active" }))).toEqual([10]);
+  expect(filteredIds(defaultCompetitorFilters)).toEqual([10, 11, 12]);
+});
+
+test("filtered result counts provide the list statistics", () => {
+  const filtered = filterCompetitors(filterCompetitorFixtures, filter({ search: "暖手宝" }));
+  const collected = filtered.filter((item) => item.last_collected_at !== null).length;
+  expect({ total: filtered.length, collected, notCollected: filtered.length - collected }).toEqual({ total: 1, collected: 1, notCollected: 0 });
+});
+
+test("select-all candidates come only from filtered active rows", () => {
+  const filtered = filterCompetitors(filterCompetitorFixtures, filter({ search: "店" }));
+  expect(filtered.filter((item) => item.is_active).map((item) => item.id)).toEqual([10]);
+});
+
+test("reloaded data can reuse the same applied filters", () => {
+  const applied = filter({ search: "暖手宝", status: "active" });
+  const refreshed = [{ ...filterCompetitorFixtures[0], last_collected_at: null }, filterCompetitorFixtures[1]];
+  expect(filterCompetitors(refreshed, applied).map((item) => item.id)).toEqual([10]);
+});
+
+test("real-time filtering keeps visible active selections and removes hidden selections", () => {
+  expect(reconcileSelectedIds(new Set([10, 11, 12]), [10, 12])).toEqual(new Set([10, 12]));
+  expect(reconcileSelectedIds(new Set([10, 11]), [10])).toEqual(new Set([10]));
+});
+
+test("renders an accessible search input without a duplicate external label", () => {
+  const html = renderToStaticMarkup(<ListPage {...listProps} groups={filterGroups} competitors={filterCompetitorFixtures} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain('id="search"');
+  expect(html).toContain('aria-label="搜索商品名称 / offerId / 店铺"');
+  expect(html).toContain('placeholder="搜索商品名称 / offerId / 店铺"');
+  expect(html).not.toContain('<label for="search">');
+  expect(html).toContain('<button type="button" class="text-button">重置</button>');
+  expect(html).toContain('value="active"');
+  expect(html).toContain('value="offline"');
+  expect(html).toContain('value="unknown"');
+  expect(html).toContain('value="collected"');
+  expect(html).toContain('value="not_collected"');
+  expect(html).toContain("家居组");
+  expect(html).toContain("电器组");
+  expect(html).not.toContain('<button type="submit"');
+  expect(html).not.toContain(">筛选<");
+  expect(html).not.toContain("搜索与筛选暂未开放");
+});
+
+test("renders filtered-result empty state separately from system empty state", () => {
+  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={filterCompetitorFixtures} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain("筛选");
+  expect(renderToStaticMarkup(<ListPage {...listProps} competitors={[]} status="ready" error={null} onRetry={noop} onAdd={noop} />)).toContain("还没有添加竞品");
+});
+
+test("keeps all-active batch count independent from the filtered result", () => {
+  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={filterCompetitorFixtures} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(countActiveCompetitors(filterCompetitorFixtures)).toBe(2);
+  expect(html).toContain("采集选中（0）");
+});
+
 test.each([
   [true, undefined, "success"],
   [false, "invalid_competitor_url", "invalid"],
   [false, "competitor_already_exists", "duplicate"],
 ] as const)("maps API result to %s UI state", (ok, code, expected) => {
   expect(getResponseStatus(ok, code)).toBe(expected);
+});
+
+test.each([
+  ["https://detail.1688.com/offer/123.html", ["https://detail.1688.com/offer/123.html"]],
+  [" A \r\n\r\n B \n A ", ["A", "B"]],
+] as const)("parses one URL per line, trims blank lines, and de-duplicates in order", (value, expected) => {
+  expect(parseCompetitorUrls(value)).toEqual(expected);
+});
+
+test("submits each URL sequentially with the same group", async () => {
+  const calls: { url: string; groupId: number | null }[] = [];
+  const progress: number[] = [];
+  const result = await addCompetitorsSequentially(["A", "B", "C"], 19, async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { url: string; group_id: number | null };
+    calls.push({ url: body.url, groupId: body.group_id });
+    return { ok: true, json: async () => ({}) } as Response;
+  }, (completed) => progress.push(completed));
+  expect(result).toEqual({ succeeded: ["A", "B", "C"], failures: [] });
+  expect(calls).toEqual([{ url: "A", groupId: 19 }, { url: "B", groupId: 19 }, { url: "C", groupId: 19 }]);
+  expect(progress).toEqual([1, 2, 3]);
+});
+
+test("continues after one URL fails and retains failure reasons", async () => {
+  const result = await addCompetitorsSequentially(["A", "B", "C", "D"], null, async (_input, init) => {
+    const url = (JSON.parse(String(init?.body)) as { url: string }).url;
+    const code = url === "B" ? "competitor_already_exists" : url === "C" ? "invalid_competitor_url" : undefined;
+    return { ok: !code, json: async () => ({ code }) } as Response;
+  });
+  expect(result.succeeded).toEqual(["A", "D"]);
+  expect(result.failures).toEqual([
+    { url: "B", code: "competitor_already_exists", reason: "已存在" },
+    { url: "C", code: "invalid_competitor_url", reason: "链接格式无效" },
+  ]);
+  expect(getAddFailureReason("competitor_group_not_found")).toBe("竞品组不存在");
+});
+
+test("converts request errors and unknown responses to server-error without stopping", async () => {
+  const result = await addCompetitorsSequentially(["A", "B"], null, async (_input, init) => {
+    const url = (JSON.parse(String(init?.body)) as { url: string }).url;
+    if (url === "A") throw new Error("offline");
+    return { ok: false, json: async () => ({}) } as Response;
+  });
+  expect(result.succeeded).toEqual([]);
+  expect(result.failures.map(({ url, code }) => ({ url, code }))).toEqual([{ url: "A", code: "server-error" }, { url: "B", code: "server-error" }]);
 });
 
 test("renders loading, empty, error and normal list states", () => {
@@ -220,11 +408,33 @@ test("renders competitor group controls and new group entry", () => {
   const html = renderToStaticMarkup(<AddDialog url="" status="initial" onUrlChange={noop} onSubmit={noop} onClose={noop} groups={[group]} groupId={1} onGroupChange={noop} newGroupName="" onNewGroupNameChange={noop} onCreateGroup={noop} groupCreateStatus="initial" />);
   expect(html).toContain('role="dialog"');
   expect(html).toContain('id="competitor-url"');
+  expect(html).toContain("<textarea");
+  expect(html).toContain('autoComplete="off"');
+  expect(html).toContain('spellCheck="false"');
+  expect(html).not.toContain('type="url"');
+  expect(html).toContain("每行一个链接");
   expect(html).toContain("竞品组");
   expect(html).toContain("未分组");
   expect(html).toContain("暖手宝");
   expect(html).toContain("新建分组");
   expect(html).toContain("添加竞品");
+});
+
+test("renders progress, failed URLs, and disables all add controls while submitting", () => {
+  const html = renderToStaticMarkup(<AddDialog url="A\nB" status="submitting" onUrlChange={noop} onSubmit={noop} onClose={noop} groups={[group]} groupId={1} onGroupChange={noop} newGroupName="" onNewGroupNameChange={noop} onCreateGroup={noop} groupCreateStatus="initial" progress={{ completed: 1, total: 2 }} />);
+  expect(html).toContain("正在添加 1 / 2");
+  expect(html).toContain('disabled=""');
+  expect(html).toContain('id="competitor-group"');
+});
+
+test("renders partial and all-failed summaries with backend reasons", () => {
+  const failures = [{ url: "A", code: "competitor_already_exists", reason: "已存在" }] as const;
+  const partial = renderToStaticMarkup(<AddDialog url="A" status="partial" succeededCount={2} failures={[...failures]} onUrlChange={noop} onSubmit={noop} onClose={noop} groups={[]} groupId={null} onGroupChange={noop} newGroupName="" onNewGroupNameChange={noop} onCreateGroup={noop} groupCreateStatus="initial" />);
+  const failed = renderToStaticMarkup(<AddDialog url="A" status="failed" failures={[...failures]} onUrlChange={noop} onSubmit={noop} onClose={noop} groups={[]} groupId={null} onGroupChange={noop} newGroupName="" onNewGroupNameChange={noop} onCreateGroup={noop} groupCreateStatus="initial" />);
+  expect(partial).toContain("已添加 2 个，1 个未添加");
+  expect(partial).toContain("A — 已存在");
+  expect(failed).toContain("未添加 1 个竞品");
+  expect(failed).toContain("A — 已存在");
 });
 
 test.each([
