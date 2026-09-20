@@ -92,6 +92,15 @@ export function getCollectionRequestErrorMessage(_error: unknown): string {
   return "无法连接服务，请检查后端是否正常运行后重试";
 }
 
+type CollectionFailure =
+  | { kind: "http"; code?: string; message?: unknown }
+  | { kind: "request"; error: unknown };
+
+export function getCollectionFailureMessage(failure: CollectionFailure): string {
+  if (failure.kind === "http") return getCollectionErrorMessage(failure.code, failure.message);
+  return getCollectionRequestErrorMessage(failure.error);
+}
+
 function formatDate(value: string | null): string {
   if (!value) return "未采集";
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -210,12 +219,13 @@ function App() {
       if (!response.ok) {
         let body: CollectionErrorBody = {};
         try { body = await response.json() as CollectionErrorBody; } catch { /* use the stable fallback below */ }
-        throw new Error(getCollectionErrorMessage(body.code, body.message));
+        setNotice({ message: getCollectionFailureMessage({ kind: "http", code: body.code, message: body.message }), type: "error" });
+        return;
       }
       await loadCompetitors();
       setNotice({ message: "采集成功，商品数据已更新。", type: "success" });
     } catch (error) {
-      setNotice({ message: getCollectionRequestErrorMessage(error), type: "error" });
+      setNotice({ message: getCollectionFailureMessage({ kind: "request", error }), type: "error" });
     } finally {
       setCollectingCompetitorId(null);
     }

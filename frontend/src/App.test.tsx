@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, Competitor, formatLatestChange, getCollectionErrorMessage, getCollectionRequestErrorMessage, getResponseStatus, ListPage } from "./App";
+import { AddDialog, Competitor, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getResponseStatus, ListPage } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -118,6 +118,16 @@ test("uses a fixed friendly message for request exceptions", () => {
   const message = getCollectionRequestErrorMessage(new TypeError("Failed to fetch"));
   expect(message).toBe("无法连接服务，请检查后端是否正常运行后重试");
   expect(message).not.toContain("Failed to fetch");
+});
+
+test.each([
+  [{ kind: "http", code: "1688_login_required" }, "1688 登录状态已失效，请重新登录后再试"],
+  [{ kind: "http", code: "collection_timeout" }, "商品页面加载超时，请稍后重试"],
+  [{ kind: "http", code: "collection_failed", message: "后端返回的可读提示" }, "后端返回的可读提示"],
+  [{ kind: "http", code: "collection_failed", message: "<html>traceback</html>" }, "采集失败，请稍后重试"],
+  [{ kind: "request", error: new TypeError("Failed to fetch") }, "无法连接服务，请检查后端是否正常运行后重试"],
+] as const)("keeps collection HTTP failures separate from request exceptions", (failure, expected) => {
+  expect(getCollectionFailureMessage(failure)).toBe(expected);
 });
 
 test("renders add dialog without competitor group controls", () => {
