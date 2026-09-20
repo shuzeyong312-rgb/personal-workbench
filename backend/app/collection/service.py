@@ -1,7 +1,9 @@
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from threading import RLock
+from threading import Event, Lock, RLock
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -12,6 +14,11 @@ from app.collection.collector_1688 import (
     PageUnavailableError,
     VerificationRequiredError,
     collect_1688_product,
+    move_context_offscreen,
+    restore_context_window,
+    sync_playwright,
+    _close_quietly,
+    _launch_context,
 )
 from app.collection.parser_1688 import CollectionParseError, OfferIdMismatchError
 from app.collection.types import ProductData, SkuData
@@ -20,6 +27,150 @@ from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, 
 
 
 COLLECTION_LOCK = RLock()
+
+
+@dataclass(frozen=True)
+class BatchItemResult:
+    competitor_id: int
+    status: str
+    error_code: str | None = None
+    message: str | None = None
+
+
+class BatchRuntime:
+    """The one in-process batch state exposed by the polling endpoint."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self.status = "idle"
+        self.outcome_code: str | None = None
+        self.total = 0
+        self.completed = 0
+        self.succeeded = 0
+        self.failed = 0
+        self.verification_required = 0
+        self.current_competitor_id: int | None = None
+        self.browser_open = False
+        self.runner_active = False
+        self.items: list[BatchItemResult] = []
+        self.stop_event = Event()
+        self.task: asyncio.Task[Any] | None = None
+
+    def is_busy(self) -> bool:
+        with self._lock:
+            return self.runner_active or self.browser_open
+
+    def reserve(self, competitor_ids: list[int]) -> bool:
+        with self._lock:
+            if self.runner_active or self.browser_open:
+                return False
+            self.status = "running"
+            self.outcome_code = None
+            self.total = len(competitor_ids)
+            self.completed = 0
+            self.succeeded = 0
+            self.failed = 0
+            self.verification_required = 0
+            self.current_competitor_id = None
+            self.browser_open = False
+            self.runner_active = True
+            self.items = []
+            self.stop_event = Event()
+            self.task = None
+            return True
+
+    def attach_task(self, task: asyncio.Task[Any]) -> None:
+        with self._lock:
+            self.task = task
+
+    def get_task(self) -> asyncio.Task[Any] | None:
+        with self._lock:
+            return self.task
+
+    def set_browser_open(self, value: bool) -> None:
+        with self._lock:
+            self.browser_open = value
+
+    def set_current(self, competitor_id: int | None) -> None:
+        with self._lock:
+            self.current_competitor_id = competitor_id
+
+    def record(self, result: BatchItemResult) -> None:
+        with self._lock:
+            self.items.append(result)
+            self.completed += 1
+            if result.status == "success":
+                self.succeeded += 1
+            elif result.status == "verification_required":
+                self.verification_required += 1
+            else:
+                self.failed += 1
+
+    def finish(self, outcome_code: str, *, status: str = "completed") -> None:
+        with self._lock:
+            self.status = status
+            self.outcome_code = outcome_code
+            self.current_competitor_id = None
+            self.runner_active = False
+
+    def mark_verification(self) -> None:
+        with self._lock:
+            self.status = "verification_required"
+            self.outcome_code = "verification_required"
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return self.status == "running"
+
+    def has_failures(self) -> bool:
+        with self._lock:
+            return self.failed > 0
+
+    def mark_runner_stopped(self) -> None:
+        with self._lock:
+            self.runner_active = False
+            self.browser_open = False
+
+    def request_stop(self) -> None:
+        with self._lock:
+            self.stop_event.set()
+
+    def stop_requested(self) -> bool:
+        with self._lock:
+            return self.stop_event.is_set()
+
+    def wait_for_stop(self, timeout: float) -> bool:
+        with self._lock:
+            stop_event = self.stop_event
+        return stop_event.wait(timeout)
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "status": self.status,
+                "outcome_code": self.outcome_code,
+                "total": self.total,
+                "completed": self.completed,
+                "succeeded": self.succeeded,
+                "failed": self.failed,
+                "remaining": max(self.total - self.completed, 0),
+                "verification_required": self.verification_required,
+                "current_competitor_id": self.current_competitor_id,
+                "browser_open": self.browser_open,
+                "runner_active": self.runner_active,
+                "items": [
+                    {
+                        "competitor_id": item.competitor_id,
+                        "status": item.status,
+                        "error_code": item.error_code,
+                        "message": item.message,
+                    }
+                    for item in self.items
+                ],
+            }
+
+
+BATCH_RUNTIME = BatchRuntime()
 
 
 class CompetitorNotFoundError(LookupError):
@@ -169,7 +320,12 @@ def _mark_failed(
     db.commit()
 
 
-def collect_competitor(db: Session, competitor_id: int) -> CollectionResult:
+def collect_competitor(
+    db: Session,
+    competitor_id: int,
+    *,
+    browser_context: object | None = None,
+) -> CollectionResult:
     competitor = db.get(Competitor, competitor_id)
     if competitor is None:
         raise CompetitorNotFoundError
@@ -200,7 +356,14 @@ def collect_competitor(db: Session, competitor_id: int) -> CollectionResult:
             raise CollectionError("collection_save_failed", "采集结果保存失败") from exc
 
         try:
-            product = collect_1688_product(competitor_url, competitor_offer_id)
+            if browser_context is None:
+                product = collect_1688_product(competitor_url, competitor_offer_id)
+            else:
+                product = collect_1688_product(
+                    competitor_url,
+                    competitor_offer_id,
+                    context=browser_context,
+                )
             product = _normalize_product(product, competitor_offer_id)
         except Exception as exc:
             error_type, error_message = collection_failure_details(exc)
@@ -280,3 +443,152 @@ def collect_competitor(db: Session, competitor_id: int) -> CollectionResult:
         )
     finally:
         COLLECTION_LOCK.release()
+
+
+def _batch_error_item(competitor_id: int, code: str, message: str) -> BatchItemResult:
+    return BatchItemResult(
+        competitor_id=competitor_id,
+        status="failed",
+        error_code=code,
+        message=message,
+    )
+
+
+def _batch_validation_items(
+    session_factory: Callable[[], Session],
+    competitor_ids: list[int],
+) -> tuple[list[int], list[BatchItemResult]]:
+    with session_factory() as db:
+        competitors = {
+            competitor.id: competitor
+            for competitor in db.scalars(
+                select(Competitor).where(Competitor.id.in_(competitor_ids))
+            ).all()
+        }
+    runnable: list[int] = []
+    rejected: list[BatchItemResult] = []
+    for competitor_id in competitor_ids:
+        competitor = competitors.get(competitor_id)
+        if competitor is None:
+            rejected.append(_batch_error_item(competitor_id, "competitor_not_found", "竞品不存在"))
+        elif not competitor.is_active:
+            rejected.append(
+                _batch_error_item(
+                    competitor_id,
+                    "competitor_inactive",
+                    "该竞品已停止监控，无法采集",
+                )
+            )
+        else:
+            runnable.append(competitor_id)
+    return runnable, rejected
+
+
+def run_batch_collection(
+    session_factory: Callable[[], Session],
+    competitor_ids: list[int],
+    runtime: BatchRuntime = BATCH_RUNTIME,
+) -> None:
+    """Run one serial batch in one worker thread and one headed Context."""
+    lock_acquired = False
+    context = None
+    verification_page = None
+    try:
+        if not COLLECTION_LOCK.acquire(blocking=False):
+            runtime.finish("collection_in_progress")
+            return
+        lock_acquired = True
+
+        runnable_ids, validation_items = _batch_validation_items(session_factory, competitor_ids)
+        for item in validation_items:
+            runtime.record(item)
+        if not runnable_ids:
+            runtime.finish("partial_failure" if validation_items else "success")
+            return
+
+        with sync_playwright() as playwright:
+            context = _launch_context(playwright)
+            runtime.set_browser_open(True)
+            move_context_offscreen(context)
+
+            for competitor_id in runnable_ids:
+                if runtime.stop_requested():
+                    break
+                runtime.set_current(competitor_id)
+                try:
+                    with session_factory() as db:
+                        collect_competitor(
+                            db,
+                            competitor_id,
+                            browser_context=context,
+                        )
+                except CollectionError as exc:
+                    if exc.code == "1688_verification_required":
+                        runtime.record(
+                            BatchItemResult(
+                                competitor_id=competitor_id,
+                                status="verification_required",
+                                error_code=exc.code,
+                                message=exc.message,
+                            )
+                        )
+                        runtime.mark_verification()
+                        verification_page = (
+                            getattr(context, "pages", []) or [None]
+                        )[0]
+                        restore_context_window(context, verification_page)
+                        while not runtime.stop_requested():
+                            try:
+                                if not getattr(context, "pages", []):
+                                    break
+                            except Exception:
+                                break
+                            runtime.wait_for_stop(0.25)
+                        break
+                    runtime.record(
+                        _batch_error_item(competitor_id, exc.code, exc.message)
+                    )
+                except CompetitorNotFoundError:
+                    runtime.record(
+                        _batch_error_item(competitor_id, "competitor_not_found", "竞品不存在")
+                    )
+                except Exception:
+                    runtime.finish("collect_failed")
+                    break
+                else:
+                    runtime.record(BatchItemResult(competitor_id, "success"))
+                finally:
+                    runtime.set_current(None)
+
+    except Exception:
+        runtime.finish("collect_failed")
+    finally:
+        _close_quietly(context)
+        runtime.mark_runner_stopped()
+        if runtime.is_running():
+            runtime.finish(
+                "partial_failure" if runtime.has_failures() else "success"
+            )
+        if lock_acquired:
+            COLLECTION_LOCK.release()
+
+
+def start_batch_task(
+    session_factory: Callable[[], Session],
+    competitor_ids: list[int],
+    runtime: BatchRuntime = BATCH_RUNTIME,
+) -> asyncio.Task[Any]:
+    task = asyncio.create_task(
+        asyncio.to_thread(run_batch_collection, session_factory, competitor_ids, runtime)
+    )
+    runtime.attach_task(task)
+    return task
+
+
+async def shutdown_batch_runner(runtime: BatchRuntime = BATCH_RUNTIME) -> None:
+    if not runtime.is_busy():
+        return
+    runtime.request_stop()
+    task = runtime.get_task()
+    if task is not None:
+        await task

@@ -130,40 +130,121 @@ def _close_quietly(resource: object | None) -> None:
         pass
 
 
-def collect_1688_product(url: str, expected_offer_id: str) -> ProductData:
-    """Collect one canonical 1688 product through the local Chrome profile."""
-    page = None
-    context = None
-    with sync_playwright() as playwright:
+def _launch_context(playwright: object) -> object:
+    chromium = getattr(playwright, "chromium")
+    return chromium.launch_persistent_context(
+        user_data_dir=str(_project_root() / ".browser-profile"),
+        channel="chrome",
+        headless=False,
+        ignore_default_args=["--no-sandbox"],
+    )
+
+
+def collect_1688_product_in_context(
+    context: object,
+    url: str,
+    expected_offer_id: str,
+    *,
+    keep_page_on_verification: bool = False,
+) -> ProductData:
+    """Collect one product using an already-running persistent Context."""
+    pages = getattr(context, "pages", [])
+    page = pages[0] if pages else context.new_page()
+    keep_page = False
+    try:
         try:
-            context = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(_project_root() / ".browser-profile"),
-                channel="chrome",
-                headless=False,
-                ignore_default_args=["--no-sandbox"],
+            response = page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=_NAVIGATION_TIMEOUT_MS,
             )
-            page = context.pages[0] if context.pages else context.new_page()
-            try:
-                response = page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=_NAVIGATION_TIMEOUT_MS,
-                )
-            except (PlaywrightTimeoutError, TimeoutError) as error:
-                raise CollectionTimeoutError("1688 page navigation timed out") from error
-            except PlaywrightError as error:
-                raise PageUnavailableError("1688 page navigation failed") from error
+        except (PlaywrightTimeoutError, TimeoutError) as error:
+            raise CollectionTimeoutError("1688 page navigation timed out") from error
+        except PlaywrightError as error:
+            raise PageUnavailableError("1688 page navigation failed") from error
 
-            try:
-                html = page.content()
-            except (PlaywrightTimeoutError, TimeoutError) as error:
-                raise CollectionTimeoutError("1688 page content timed out") from error
-            except PlaywrightError as error:
-                raise PageUnavailableError("1688 page content was unavailable") from error
+        try:
+            html = page.content()
+        except (PlaywrightTimeoutError, TimeoutError) as error:
+            raise CollectionTimeoutError("1688 page content timed out") from error
+        except PlaywrightError as error:
+            raise PageUnavailableError("1688 page content was unavailable") from error
 
-            status = response.status if response is not None else None
+        status = response.status if response is not None else None
+        try:
             _check_page_access(page, status)
-            return parse_1688_html(html, expected_offer_id)
-        finally:
+        except VerificationRequiredError:
+            keep_page = keep_page_on_verification
+            raise
+        return parse_1688_html(html, expected_offer_id)
+    finally:
+        if not keep_page:
             _close_quietly(page)
-            _close_quietly(context)
+
+
+def collect_1688_product(
+    url: str,
+    expected_offer_id: str,
+    *,
+    context: object | None = None,
+) -> ProductData:
+    """Collect one product, optionally reusing a caller-owned Context."""
+    if context is not None:
+        return collect_1688_product_in_context(
+            context,
+            url,
+            expected_offer_id,
+            keep_page_on_verification=True,
+        )
+
+    with sync_playwright() as playwright:
+        owned_context = _launch_context(playwright)
+        try:
+            return collect_1688_product_in_context(
+                owned_context,
+                url,
+                expected_offer_id,
+            )
+        finally:
+            _close_quietly(owned_context)
+
+
+def move_context_offscreen(context: object) -> object:
+    """Move a headed Chromium window outside the visible desktop."""
+    pages = getattr(context, "pages", [])
+    page = pages[0] if pages else context.new_page()
+    cdp = context.new_cdp_session(page)
+    window = cdp.send("Browser.getWindowForTarget")
+    window_id = window["windowId"]
+    cdp.send(
+        "Browser.setWindowBounds",
+        {
+            "windowId": window_id,
+            "bounds": {"windowState": "normal", "left": -32000, "top": -32000},
+        },
+    )
+    return page
+
+
+def restore_context_window(context: object, page: object | None = None) -> None:
+    """Restore a headed Chromium window for manual verification."""
+    pages = getattr(context, "pages", [])
+    target_page = page or (pages[0] if pages else context.new_page())
+    cdp = context.new_cdp_session(target_page)
+    window = cdp.send("Browser.getWindowForTarget")
+    cdp.send(
+        "Browser.setWindowBounds",
+        {
+            "windowId": window["windowId"],
+            "bounds": {
+                "windowState": "normal",
+                "left": 40,
+                "top": 60,
+                "width": 1200,
+                "height": 800,
+            },
+        },
+    )
+    bring_to_front = getattr(target_page, "bring_to_front", None)
+    if callable(bring_to_front):
+        bring_to_front()

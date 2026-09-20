@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, timezone
+from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,8 +14,10 @@ from app.collection.service import (
     CollectionInProgressError,
     CompetitorNotFoundError,
     CollectionResult,
+    BATCH_RUNTIME,
     COLLECTION_LOCK,
     collect_competitor,
+    start_batch_task,
 )
 from app.database import get_db
 from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
@@ -105,6 +108,33 @@ class CollectCompetitorResponse(BaseModel):
     competitor: CompetitorListResponse
     snapshot: SnapshotResponse
     collection_run: CollectionRunResponse
+
+
+class CollectBatchRequest(BaseModel):
+    mode: str
+    competitor_ids: list[int] | None = None
+
+
+class BatchItemResponse(BaseModel):
+    competitor_id: int
+    status: Literal["success", "failed", "verification_required"]
+    error_code: str | None
+    message: str | None
+
+
+class BatchStatusResponse(BaseModel):
+    status: Literal["idle", "running", "completed", "verification_required"]
+    outcome_code: str | None
+    total: int
+    completed: int
+    succeeded: int
+    failed: int
+    remaining: int
+    verification_required: int
+    current_competitor_id: int | None
+    browser_open: bool
+    runner_active: bool
+    items: list[BatchItemResponse]
 
 
 def parse_1688_url(url: str) -> tuple[str, str]:
@@ -309,6 +339,132 @@ def list_competitors(db: Session = Depends(get_db)) -> list[dict[str, object]]:
         )
         for competitor in competitors
     ]
+
+
+def _unique_positive_ids(values: list[int] | None) -> list[int]:
+    if not values:
+        raise error(
+            "invalid_batch_request",
+            "selected 模式至少需要一个竞品 ID",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    unique: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise error(
+                "invalid_batch_request",
+                "竞品 ID 必须是正整数",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        if value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return unique
+
+
+@router.post(
+    "/collect-batch",
+    response_model=BatchStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def collect_batch(
+    payload: CollectBatchRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    if BATCH_RUNTIME.is_busy():
+        raise error(
+            "collection_in_progress",
+            "已有竞品正在采集，请稍后重试",
+            status.HTTP_409_CONFLICT,
+        )
+
+    if payload.mode not in {"selected", "all_active"}:
+        raise error(
+            "invalid_batch_request",
+            "mode 必须是 selected 或 all_active",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    if payload.mode == "selected":
+        competitor_ids = _unique_positive_ids(payload.competitor_ids)
+        competitors = {
+            competitor.id: competitor
+            for competitor in db.scalars(
+                select(Competitor).where(Competitor.id.in_(competitor_ids))
+            ).all()
+        }
+        missing_ids = [competitor_id for competitor_id in competitor_ids if competitor_id not in competitors]
+        if missing_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "competitor_not_found",
+                    "message": "部分竞品不存在",
+                    "competitor_ids": missing_ids,
+                },
+            )
+        inactive_ids = [
+            competitor_id
+            for competitor_id in competitor_ids
+            if not competitors[competitor_id].is_active
+        ]
+        if inactive_ids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "competitor_inactive",
+                    "message": "部分竞品已停止监控，无法采集",
+                    "competitor_ids": inactive_ids,
+                },
+            )
+    else:
+        if payload.competitor_ids is not None:
+            raise error(
+                "invalid_batch_request",
+                "all_active 模式不接受 competitor_ids",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        competitor_ids = list(
+            db.scalars(
+                select(Competitor.id)
+                .where(Competitor.is_active.is_(True))
+                .order_by(Competitor.id.asc())
+            ).all()
+        )
+
+    if not BATCH_RUNTIME.reserve(competitor_ids):
+        raise error(
+            "collection_in_progress",
+            "已有竞品正在采集，请稍后重试",
+            status.HTTP_409_CONFLICT,
+        )
+
+    if not COLLECTION_LOCK.acquire(blocking=False):
+        BATCH_RUNTIME.finish("collection_in_progress")
+        raise error(
+            "collection_in_progress",
+            "已有竞品正在采集，请稍后重试",
+            status.HTTP_409_CONFLICT,
+        )
+    COLLECTION_LOCK.release()
+
+    if not competitor_ids:
+        BATCH_RUNTIME.finish("success")
+        return BATCH_RUNTIME.snapshot()
+
+    bind = db.get_bind()
+
+    def session_factory() -> Session:
+        return Session(bind=bind)
+
+    start_batch_task(session_factory, competitor_ids)
+    return BATCH_RUNTIME.snapshot()
+
+
+@router.get("/collect-batch/status", response_model=BatchStatusResponse)
+def collect_batch_status() -> dict[str, object]:
+    return BATCH_RUNTIME.snapshot()
 
 
 @router.post("", response_model=CompetitorResponse, status_code=status.HTTP_201_CREATED)

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, Competitor, CompetitorDetail, CompetitorGroup, ConfirmDialog, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, isCurrentDetailRequest, ListPage, MoreMenu, Sidebar, buildPriceChartPoints } from "./App";
+import { AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorGroup, ConfirmDialog, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, MoreMenu, Sidebar, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -21,7 +21,7 @@ const competitor: Competitor = {
 };
 
 const noop = () => undefined;
-const listProps = { collectingCompetitorId: null, onCollect: noop, groups: [] as CompetitorGroup[] };
+const listProps = { groups: [] as CompetitorGroup[] };
 const group: CompetitorGroup = { id: 1, name: "暖手宝", created_at: "2026-09-20T10:00:00Z" };
 const latestChange = (overrides: Partial<NonNullable<Competitor["latest_change"]>> = {}): NonNullable<Competitor["latest_change"]> => ({
   id: 1,
@@ -51,7 +51,9 @@ test("renders loading, empty, error and normal list states", () => {
   expect(normal).toContain("123456789");
   expect(normal).toContain("查看 1688 商品");
   expect(normal).toContain("暂无变化记录");
-  expect(normal).toContain("立即采集");
+  expect(normal).toContain("采集选中（0）");
+  expect(normal).not.toContain("立即采集");
+  expect(normal).toContain("全选当前页可采集竞品");
   expect(normal).toContain("监控中");
 });
 
@@ -66,7 +68,25 @@ test("renders monitoring actions and disables collection for inactive competitor
   expect(inactiveMenu).not.toContain("停止监控");
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[inactive]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(list).toContain("已停止监控");
-  expect(list).toMatch(/collect-button[^>]*disabled=""/);
+  expect(list).toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
+});
+
+test("renders current-page selection counts and inactive checkbox semantics", () => {
+  const second = { ...competitor, id: 2, offer_id: "987654321" };
+  const inactive = { ...competitor, id: 3, is_active: false, title: "已停止商品" };
+  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor, second, inactive]} selectedIds={new Set([competitor.id])} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain("采集选中（1）");
+  expect(html).toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
+  expect(html).toContain("checked=\"\"");
+  expect(html).not.toContain("立即采集");
+});
+
+test("renders completed and verification batch states", () => {
+  const completed = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} batchState={{ ...idleBatchState, status: "completed", total: 1, completed: 1, succeeded: 1 }} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(completed).toContain("采集完成：成功 1，失败 0");
+  const verification = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} batchState={{ ...idleBatchState, status: "verification_required", total: 2, completed: 1, remaining: 1, verification_required: 1, browser_open: true, runner_active: true }} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(verification).toContain("1688 需要人工验证，本次采集已停止");
+  expect(verification).toContain("关闭浏览器后可重新发起采集");
 });
 
 test("positions the portal below when possible and above near the viewport bottom", () => {
@@ -140,11 +160,12 @@ test("renders the real latest change in the recent change column", () => {
   expect(html).toContain("价格上涨 40.00 → 45.00");
 });
 
-test("displays collecting state and disables every collect button", () => {
+test("displays real batch progress and disables selection while running", () => {
   const second = { ...competitor, id: 2, offer_id: "987654321" };
-  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor, second]} collectingCompetitorId={1} status="ready" error={null} onRetry={noop} onAdd={noop} />);
-  expect(html).toContain("采集中...");
-  expect((html.match(/class="collect-button[^\"]*" disabled=""/g) ?? [])).toHaveLength(2);
+  const running: BatchState = { ...idleBatchState, status: "running", total: 2, completed: 1, succeeded: 1, remaining: 1, runner_active: true };
+  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor, second]} batchState={running} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain("采集中 1 / 2");
+  expect((html.match(/type="checkbox"[^>]*disabled=""/g) ?? [])).toHaveLength(3);
 });
 
 test("maps collection errors without exposing technical response bodies", () => {

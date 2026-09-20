@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.collection.daily import run_daily_collection_cycle
+from app.collection.service import shutdown_batch_runner
 from app.competitors import router as competitors_router
 from app.competitor_detail import router as competitor_detail_router
 from app.competitor_groups import router as competitor_groups_router
@@ -59,6 +60,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         thread_stop_event.set()
         stop_event.set()
         await scheduler_task
+        await shutdown_batch_runner()
 
 
 app = FastAPI(lifespan=lifespan)
