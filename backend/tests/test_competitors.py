@@ -113,6 +113,7 @@ def test_lists_all_competitors_in_created_at_and_id_desc_order(
         "platform",
         "offer_id",
         "url",
+        "group_id",
         "title",
         "shop_name",
         "main_image_url",
@@ -260,16 +261,43 @@ def test_rejects_invalid_1688_url(
     assert response.json()["code"] == "invalid_competitor_url"
 
 
-def test_non_null_group_id_is_out_of_scope(
+def test_adds_competitor_to_existing_group(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    group_response = client[0].post("/api/competitor-groups", json={"name": "暖手宝"})
+    group_id = group_response.json()["id"]
+
+    response = client[0].post(
+        "/api/competitors",
+        json={"url": "https://detail.1688.com/offer/123456789.html", "group_id": group_id},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["group_id"] == group_id
+
+
+def test_nonexistent_group_id_returns_not_found(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     response = client[0].post(
         "/api/competitors",
-        json={"url": "https://detail.1688.com/offer/123456789.html", "group_id": 1},
+        json={"url": "https://detail.1688.com/offer/123456789.html", "group_id": 999},
     )
 
-    assert response.status_code == 400
-    assert response.json()["code"] == "group_not_supported"
+    assert response.status_code == 404
+    assert response.json()["code"] == "competitor_group_not_found"
+
+
+def test_list_returns_competitor_group_id(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    group_id = client[0].post("/api/competitor-groups", json={"name": "暖手宝"}).json()["id"]
+    client[0].post(
+        "/api/competitors",
+        json={"url": "https://detail.1688.com/offer/123456789.html", "group_id": group_id},
+    )
+
+    assert client[0].get("/api/competitors").json()[0]["group_id"] == group_id
 
 
 def test_duplicate_offer_id_returns_409_without_new_record(

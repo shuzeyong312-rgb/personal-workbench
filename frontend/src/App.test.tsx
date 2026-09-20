@@ -1,13 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, Competitor, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getResponseStatus, ListPage } from "./App";
+import { AddDialog, Competitor, CompetitorGroup, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getResponseStatus, ListPage } from "./App";
 
 const competitor: Competitor = {
   id: 1,
   platform: "1688",
   offer_id: "123456789",
   url: "https://detail.1688.com/offer/123456789.html",
+  group_id: null,
   title: null,
   shop_name: null,
   main_image_url: null,
@@ -20,7 +21,8 @@ const competitor: Competitor = {
 };
 
 const noop = () => undefined;
-const listProps = { collectingCompetitorId: null, onCollect: noop };
+const listProps = { collectingCompetitorId: null, onCollect: noop, groups: [] as CompetitorGroup[] };
+const group: CompetitorGroup = { id: 1, name: "暖手宝", created_at: "2026-09-20T10:00:00Z" };
 const latestChange = (overrides: Partial<NonNullable<Competitor["latest_change"]>> = {}): NonNullable<Competitor["latest_change"]> => ({
   id: 1,
   snapshot_id: 2,
@@ -130,10 +132,40 @@ test.each([
   expect(getCollectionFailureMessage(failure)).toBe(expected);
 });
 
-test("renders add dialog without competitor group controls", () => {
-  const html = renderToStaticMarkup(<AddDialog url="" status="initial" onUrlChange={noop} onSubmit={noop} onClose={noop} />);
+test("renders competitor group controls and new group entry", () => {
+  const html = renderToStaticMarkup(<AddDialog url="" status="initial" onUrlChange={noop} onSubmit={noop} onClose={noop} groups={[group]} groupId={1} onGroupChange={noop} newGroupName="" onNewGroupNameChange={noop} onCreateGroup={noop} groupCreateStatus="initial" />);
   expect(html).toContain('role="dialog"');
   expect(html).toContain('id="competitor-url"');
-  expect(html).not.toContain("竞品组");
+  expect(html).toContain("竞品组");
+  expect(html).toContain("未分组");
+  expect(html).toContain("暖手宝");
+  expect(html).toContain("新建分组");
   expect(html).toContain("添加竞品");
+});
+
+test.each([
+  ["success", "feedback"],
+  ["invalid", "feedback feedback-invalid"],
+  ["duplicate", "feedback feedback-duplicate"],
+  ["server-error", "feedback feedback-server-error"],
+] as const)("renders the existing group feedback class for %s", (status, className) => {
+  const html = renderToStaticMarkup(<AddDialog url="" status="initial" onUrlChange={noop} onSubmit={noop} onClose={noop} groups={[]} groupId={null} onGroupChange={noop} newGroupName="" onNewGroupNameChange={noop} onCreateGroup={noop} groupCreateStatus={status} />);
+  expect(html).toContain(`class="${className}"`);
+  expect(getGroupFeedbackClass(status)).toBe(className);
+});
+
+test.each([
+  [null, [], "未分组"],
+  [1, [group], "暖手宝"],
+  [2, [group], "—"],
+] as const)("formats competitor group label", (groupId, groups, expected) => {
+  expect(getCompetitorGroupLabel(groupId, groups)).toBe(expected);
+});
+
+test("renders competitor group labels in the list", () => {
+  const html = renderToStaticMarkup(<ListPage {...listProps} groups={[group]} competitors={[{ ...competitor, group_id: null }, { ...competitor, id: 2, offer_id: "987654321", group_id: 1 }, { ...competitor, id: 3, offer_id: "111111111", group_id: 2 }]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain("竞品组");
+  expect(html).toContain("未分组");
+  expect(html).toContain("暖手宝");
+  expect(html).toContain("—");
 });

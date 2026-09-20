@@ -16,7 +16,7 @@ from app.collection.service import (
     collect_competitor,
 )
 from app.database import get_db
-from app.models import ChangeEvent, Competitor, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
@@ -60,6 +60,7 @@ class CompetitorListResponse(BaseModel):
     platform: str
     offer_id: str
     url: str
+    group_id: int | None
     title: str | None
     shop_name: str | None
     main_image_url: str | None
@@ -240,6 +241,7 @@ def _competitor_payload(
         "platform": competitor.platform,
         "offer_id": competitor.offer_id,
         "url": competitor.url,
+        "group_id": competitor.group_id,
         "title": competitor.title,
         "shop_name": competitor.shop_name,
         "main_image_url": competitor.main_image_url,
@@ -315,8 +317,8 @@ def create_competitor(payload: CreateCompetitorRequest, db: Session = Depends(ge
             status.HTTP_400_BAD_REQUEST,
         ) from exc
 
-    if payload.group_id is not None:
-        raise error("group_not_supported", "当前暂不支持指定竞品组", status.HTTP_400_BAD_REQUEST)
+    if payload.group_id is not None and db.get(CompetitorGroup, payload.group_id) is None:
+        raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
 
     if db.scalar(select(Competitor).where(Competitor.platform == "1688", Competitor.offer_id == offer_id)):
         raise error("competitor_already_exists", "该 1688 商品已经添加", status.HTTP_409_CONFLICT)
@@ -326,7 +328,7 @@ def create_competitor(payload: CreateCompetitorRequest, db: Session = Depends(ge
         platform="1688",
         offer_id=offer_id,
         url=normalized_url,
-        group_id=None,
+        group_id=payload.group_id,
         status="unknown",
         is_active=True,
         created_at=now,

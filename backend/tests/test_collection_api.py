@@ -21,7 +21,7 @@ from app.collection.service import COLLECTION_LOCK
 from app.collection.types import ProductData, SkuData
 from app.database import get_db
 from app.main import app
-from app.models import Base, ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
 
 
 @pytest.fixture()
@@ -45,12 +45,15 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
     engine.dispose()
 
 
-def add_competitor(session_factory: sessionmaker[Session], offer_id: str = "1081895898799") -> int:
+def add_competitor(
+    session_factory: sessionmaker[Session], offer_id: str = "1081895898799", group_id: int | None = None
+) -> int:
     now = datetime(2026, 9, 19, tzinfo=timezone.utc)
     with session_factory() as session:
         competitor = Competitor(
             platform="1688",
             offer_id=offer_id,
+            group_id=group_id,
             url=f"https://detail.1688.com/offer/{offer_id}.html",
             title="旧标题",
             shop_name="旧店铺",
@@ -150,6 +153,26 @@ def test_success_persists_run_snapshot_skus_and_competitor(
         assert run.status == "success"
         assert run.error_type is None
         assert run.error_message is None
+
+
+def test_collection_response_and_persistence_keep_competitor_group(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    with client[1]() as session:
+        group = CompetitorGroup(name="暖手宝", created_at=datetime.now(timezone.utc))
+        session.add(group)
+        session.flush()
+        group_id = group.id
+        session.commit()
+    competitor_id = add_competitor(client[1], group_id=group_id)
+
+    with patch("app.collection.service.collect_1688_product", return_value=product()):
+        response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 200
+    assert response.json()["competitor"]["group_id"] == group_id
+    with client[1]() as session:
+        assert session.get(Competitor, competitor_id).group_id == group_id
 
 
 def test_repeated_collection_adds_snapshot_and_latest_listing_projection(

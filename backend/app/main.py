@@ -2,9 +2,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.competitors import router as competitors_router
+from app.competitor_groups import router as competitor_groups_router
 
 app = FastAPI()
 app.include_router(competitors_router)
+app.include_router(competitor_groups_router)
 
 
 @app.exception_handler(HTTPException)

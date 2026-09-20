@@ -7,22 +7,40 @@
 - **当前已实现**：当前 ORM、数据库表、迁移和采集流程已经支持的事实；
 - **未来 V1 计划**：产品目标中仍保留、但当前没有对应数据库模型或可靠业务能力的部分。
 
-当前数据库已经实现 5 个实体：
+当前数据库已经实现 6 个实体：
 
 ~~~text
-Competitor
- ├── ProductSnapshot
- │      └── SkuSnapshot
- ├── CollectionRun
- └── ChangeEvent
-        └── snapshot_id → ProductSnapshot
+CompetitorGroup
+ └── Competitor
+      ├── ProductSnapshot
+      │      └── SkuSnapshot
+      ├── CollectionRun
+      └── ChangeEvent
 ~~~
-
-CompetitorGroup 当前尚未实现，不属于当前数据库实体。
 
 ---
 
-## 2. 当前已实现：Competitor
+## 2. 当前已实现：CompetitorGroup
+
+表示竞品所属的分组。
+
+当前字段：
+
+~~~text
+id
+name
+created_at
+~~~
+
+说明：
+
+- name 为非空、唯一字符串，保存创建时 trim 后的名称；
+- name 长度限制为 64 个字符；
+- CompetitorGroup 与 Competitor 为 1 → N 关系。
+
+---
+
+## 3. 当前已实现：Competitor
 
 表示一个被监控的 1688 商品。
 
@@ -49,7 +67,7 @@ last_collected_at
 - platform 当前固定为 1688；
 - platform + offer_id 具有唯一约束；
 - url 保存标准化后的商品链接；
-- group_id 当前可为 NULL，但没有 competitor_groups 表、ORM、外键或分组 CRUD；
+- group_id 可为 NULL，或引用 competitor_groups.id；NULL 表示未分组；
 - title、shop_name、main_image_url 保存最近一次成功采集得到的当前信息；
 - main_image_url 当前允许为 NULL，尚未成为可靠的图片变化事实来源；
 - last_collected_at 只在成功采集后更新；
@@ -67,7 +85,7 @@ offline
 
 ---
 
-## 3. 当前已实现：ProductSnapshot
+## 4. 当前已实现：ProductSnapshot
 
 表示某个竞品某次成功采集时的商品级事实快照。
 
@@ -104,7 +122,7 @@ collection_source
 
 ---
 
-## 4. 当前已实现：SkuSnapshot
+## 5. 当前已实现：SkuSnapshot
 
 表示某个 ProductSnapshot 下的 SKU 事实。
 
@@ -139,7 +157,7 @@ skuPriceScale → price / 商品级价格
 
 ---
 
-## 5. 当前已实现：CollectionRun
+## 6. 当前已实现：CollectionRun
 
 表示一次竞品采集执行记录。
 
@@ -174,7 +192,7 @@ failed
 
 ---
 
-## 6. 当前已实现：ChangeEvent
+## 7. 当前已实现：ChangeEvent
 
 表示本次成功采集相对于同一竞品上一份快照检测出的真实变化。
 
@@ -201,7 +219,7 @@ detected_at
 
 old_value / new_value 不保存完整 Snapshot JSON、1688 原始数据、HTML、Cookie、Token 或请求头。
 
-### 6.1 当前已实现的 change_type
+### 7.1 当前已实现的 change_type
 
 当前数据库 CHECK 和业务检测逻辑只支持以下 6 种：
 
@@ -216,7 +234,7 @@ title_changed
 
 当前检测语义只覆盖价格、标题、SKU 新增、SKU 删除和库存变化。具体比较规则由 docs/specs/detect-competitor-changes.md 负责，本文只保留稳定的数据边界。
 
-### 6.2 当前检测基线
+### 7.2 当前检测基线
 
 - previous 是同一 competitor_id 最近一条 ProductSnapshot，排序为 captured_at DESC, id DESC；
 - current 是本次采集并标准化后的 ProductData；
@@ -225,7 +243,7 @@ title_changed
 - ChangeEvent、快照、SKU、Competitor 当前值和成功 CollectionRun 属于同一个业务成功事务；
 - 任一步保存失败时，本次业务数据 rollback，CollectionRun 最终为 failed。
 
-### 6.3 latest_change
+### 7.3 latest_change
 
 当前 GET /api/competitors 和 POST collect 的 competitor payload 提供 latest_change。它表示该竞品历史上最近一条真实 ChangeEvent，排序为：
 
@@ -240,9 +258,23 @@ id DESC
 
 ---
 
-## 7. 当前关系
+## 8. 当前关系
 
 ~~~text
+CompetitorGroup
+    │
+    └── N Competitor
+           │
+           ├── N ProductSnapshot
+           │      │
+           │      └── N SkuSnapshot
+           │
+           ├── N CollectionRun
+           │
+           └── N ChangeEvent
+                  │
+                  └── snapshot_id → ProductSnapshot
+
 Competitor
     │
     ├── N ProductSnapshot
@@ -256,11 +288,9 @@ Competitor
            └── snapshot_id → ProductSnapshot
 ~~~
 
-CompetitorGroup 不应画入当前关系图。Competitor.group_id 当前只是可空字段，尚未形成分组实体关系。
-
 ---
 
-## 8. 趋势数据原则
+## 9. 趋势数据原则
 
 当前可直接追溯的数据来源：
 
@@ -276,11 +306,11 @@ CompetitorGroup 不应画入当前关系图。Competitor.group_id 当前只是�
 
 ---
 
-## 9. 当前尚未实现：未来 V1 计划
+## 10. 当前尚未实现：未来 V1 计划
 
 以下内容仍是长期 V1 目标，但当前没有对应的完整实现，不能当作当前数据模型：
 
-- CompetitorGroup：未来增加分组表、ORM、外键和分组 CRUD；
+- 删除、重命名和筛选竞品组；
 - 每日自动调度；
 - sales snapshot / sales change；
 - 可靠的商品下架检测；
@@ -288,7 +318,7 @@ CompetitorGroup 不应画入当前关系图。Competitor.group_id 当前只是�
 - 7 天 / 30 天趋势展示；
 - Dashboard 今日变化展示。
 
-### 9.1 未来但尚未实现的 change_type
+### 10.1 未来但尚未实现的 change_type
 
 以下 3 种属于未来 V1 计划，当前不能生成，也不在当前 ChangeEvent CHECK 中：
 
@@ -304,7 +334,7 @@ SKU price change 当前也不支持，且不属于当前 change_type 集合。
 
 ---
 
-## 10. 数据保留与时间原则
+## 11. 数据保留与时间原则
 
 - 当前历史 Snapshot、SkuSnapshot 和 ChangeEvent 用于保持事实可追溯；
 - 竞品停止监控时优先使用 is_active = false，不要因为停止监控删除历史事实；
@@ -313,7 +343,7 @@ SKU price change 当前也不支持，且不属于当前 change_type 集合。
 
 ---
 
-## 11. 数据来源原则
+## 12. 数据来源原则
 
 内部数据库只保存标准化后的业务字段。以下外部字段不得扩散到业务层：
 
@@ -331,7 +361,7 @@ mtop.1688...
 
 ---
 
-## 12. 当前 V1 不做的通用能力
+## 13. 当前 V1 不做的通用能力
 
 当前数据模型不包含：
 
@@ -349,7 +379,7 @@ mtop.1688...
 
 ---
 
-## 13. Single Source of Truth
+## 14. Single Source of Truth
 
 ~~~text
 Competitor

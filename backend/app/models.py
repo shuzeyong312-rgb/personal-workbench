@@ -7,6 +7,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+class CompetitorGroup(Base):
+    __tablename__ = "competitor_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class Competitor(Base):
     __tablename__ = "competitors"
     __table_args__ = (
@@ -15,7 +23,9 @@ class Competitor(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("competitor_groups.id", name="fk_competitors_group_id_competitor_groups"), nullable=True
+    )
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
     offer_id: Mapped[str] = mapped_column(String(64), nullable=False)
     url: Mapped[str] = mapped_column(String(512), nullable=False)
