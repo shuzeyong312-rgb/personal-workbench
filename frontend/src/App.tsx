@@ -777,6 +777,19 @@ function App() {
   useEffect(() => { void loadDashboard(); }, []);
   useEffect(() => { void loadBatchStatus(); }, []);
   useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+  useEffect(() => {
+    if (batchState.status !== "completed") return;
+    const timer = window.setTimeout(() => {
+      batchStateRef.current = idleBatchState;
+      setBatchState(idleBatchState);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [batchState.status]);
+  useEffect(() => {
     if (batchState.status !== "running" && !(batchState.status === "verification_required" && batchState.browser_open)) return;
     const timer = window.setInterval(() => { void loadBatchStatus(); }, 1500);
     return () => window.clearInterval(timer);
