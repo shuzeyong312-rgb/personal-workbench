@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, Competitor, CompetitorGroup, DashboardData, DashboardPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getResponseStatus, ListPage, Sidebar } from "./App";
+import { AddDialog, Competitor, CompetitorDetail, CompetitorGroup, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getResponseStatus, isCurrentDetailRequest, ListPage, Sidebar, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -207,6 +207,13 @@ test("renders dashboard stats, mapped group and all changes", () => {
   expect(unknownGroup).toContain("竞品组：—");
 });
 
+test("renders detail entry actions on dashboard and competitor list", () => {
+  const dashboard = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} onOpenDetail={noop} />);
+  const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} status="ready" error={null} onRetry={noop} onAdd={noop} onOpenDetail={noop} />);
+  expect(dashboard).toContain("查看详情");
+  expect(list).toContain(">详情<");
+});
+
 test.each([
   [latestChange({ change_type: "price_increase", old_value: "1", new_value: "2" }), "价格上涨 1 → 2"],
   [latestChange({ change_type: "price_decrease", old_value: "2", new_value: "1" }), "价格下降 2 → 1"],
@@ -226,4 +233,132 @@ test("marks the active sidebar page", () => {
   expect(dashboard).toContain("竞品监控大屏");
   expect(competitors).toContain('class="nav-item nav-child nav-active" aria-current="page"');
   expect(competitors).toContain("竞品列表");
+});
+
+const detailData: CompetitorDetail = {
+  range_days: 7,
+  competitor: {
+    id: 1,
+    platform: "1688",
+    offer_id: "123456789",
+    url: "https://detail.1688.com/offer/123456789.html",
+    group_id: 1,
+    title: "暖手宝商品",
+    shop_name: "家居店",
+    main_image_url: null,
+    status: "offline",
+    is_active: false,
+    created_at: "2026-09-19T10:00:00Z",
+    last_collected_at: "2026-09-20T10:00:00Z",
+  },
+  latest_snapshot: {
+    id: 9,
+    captured_at: "2026-09-20T10:00:00Z",
+    price_min: "40.00",
+    price_max: "45.00",
+    product_status: "unknown",
+    sku_count: 2,
+  },
+  latest_skus: [
+    { sku_id: "sku-0", sku_name: "红色", stock: 0, price: null },
+    { sku_id: "sku-null", sku_name: "蓝色", stock: null, price: "41.00" },
+  ],
+  price_trend: [
+    { snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: "38.00", price_max: "42.00" },
+    { snapshot_id: 2, captured_at: "2026-09-20T10:00:00Z", price_min: "40.00", price_max: "45.00" },
+  ],
+  recent_changes: [latestChange({ id: 8, change_type: "price_increase", old_value: "38.00", new_value: "40.00" })],
+  recent_collection_runs: [
+    { id: 2, started_at: "2026-09-20T10:00:00Z", finished_at: "2026-09-20T10:00:02Z", status: "success", error_type: null, error_message: null },
+    { id: 1, started_at: "2026-09-19T10:00:00Z", finished_at: "2026-09-19T10:00:02Z", status: "failed", error_type: "collection_timeout", error_message: "请求超时" },
+    { id: 3, started_at: "2026-09-18T10:00:00Z", finished_at: null, status: "running", error_type: null, error_message: null },
+  ],
+};
+
+const detailProps = { groups: [group], days: 7 as const, onRetry: noop, onRangeChange: noop, onBack: noop, onNavigate: noop };
+
+test("renders detail loading, error and local empty states", () => {
+  expect(renderToStaticMarkup(<DetailPage {...detailProps} data={null} status="loading" error={null} />)).toContain("正在加载竞品详情");
+  expect(renderToStaticMarkup(<DetailPage {...detailProps} data={null} status="error" error="请求失败" />)).toContain("重试");
+  const empty = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, latest_snapshot: null, latest_skus: [], price_trend: [], recent_changes: [], recent_collection_runs: [] }} status="ready" error={null} />);
+  expect(empty).toContain("暂无采集数据");
+  expect(empty).toContain("该时间范围暂无可用价格数据");
+  expect(empty).toContain("暂无 SKU 数据");
+  expect(empty).toContain("暂无变化记录");
+  expect(empty).toContain("暂无采集记录");
+});
+
+test("renders detail overview, mapped group, inactive status and latest sku null semantics", () => {
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={detailData} status="ready" error={null} />);
+  expect(html).toContain("暖手宝商品");
+  expect(html).toContain("家居店");
+  expect(html).toContain("123456789");
+  expect(html).toContain("暖手宝");
+  expect(html).toContain("¥40.00 ~ ¥45.00");
+  expect(html).toContain("已停止监控");
+  expect(html).toContain("红色");
+  expect(html).toContain(">0<");
+  expect(html).toContain("蓝色");
+  expect(html).toContain("¥41.00");
+  expect(html).toContain("—");
+});
+
+test("renders price chart data, selector state, changes and collection statuses", () => {
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} days={30} data={{ ...detailData, range_days: 30 }} status="ready" error={null} />);
+  expect(html).toContain('aria-pressed="true"');
+  expect(html).toContain("近 30 天");
+  expect(html).toContain("价格趋势");
+  expect(html).toContain("价格上涨 38.00 → 40.00");
+  expect(html).toContain("成功");
+  expect(html).toContain("结束时间");
+  expect(html).toContain("请求超时");
+  expect(html).toContain("采集中");
+  expect(html).toContain("<svg");
+});
+
+test("price chart points filter null snapshots and keep a single real point", () => {
+  const points = buildPriceChartPoints([
+    { snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: null, price_max: null },
+    { snapshot_id: 2, captured_at: "2026-09-20T10:00:00Z", price_min: "40.00", price_max: null },
+  ]);
+  expect(points).toHaveLength(1);
+  expect(points[0].snapshot_id).toBe(2);
+  expect(points[0].min_y).not.toBeNull();
+  expect(points[0].max_y).toBeNull();
+});
+
+test("detail keeps competitor list active in the sidebar", () => {
+  const html = renderToStaticMarkup(<Sidebar page="detail" onNavigate={noop} />);
+  expect(html).toContain('class="nav-item nav-child nav-active" aria-current="page"');
+  expect(html).toContain("竞品列表");
+});
+
+test("only the newest competitor detail request remains current", () => {
+  let latestRequestId = 0;
+  const requestA = ++latestRequestId;
+  const requestB = ++latestRequestId;
+
+  expect(isCurrentDetailRequest(requestB, latestRequestId)).toBe(true);
+  expect(isCurrentDetailRequest(requestA, latestRequestId)).toBe(false);
+});
+
+test("a newer 7-day request invalidates an older 30-day response", () => {
+  let latestRequestId = 0;
+  const thirtyDayRequest = ++latestRequestId;
+  const sevenDayRequest = ++latestRequestId;
+
+  expect(isCurrentDetailRequest(sevenDayRequest, latestRequestId)).toBe(true);
+  expect(isCurrentDetailRequest(thirtyDayRequest, latestRequestId)).toBe(false);
+});
+
+test("an older detail error cannot replace the newer successful request", () => {
+  let latestRequestId = 0;
+  const oldRequest = ++latestRequestId;
+  const currentRequest = ++latestRequestId;
+  let state = "loading";
+
+  if (isCurrentDetailRequest(currentRequest, latestRequestId)) state = "ready";
+  if (isCurrentDetailRequest(oldRequest, latestRequestId)) state = "error";
+
+  expect(state).toBe("ready");
 });

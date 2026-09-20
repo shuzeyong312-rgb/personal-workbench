@@ -302,7 +302,7 @@ Competitor
 → SkuSnapshot.stock
 ~~~
 
-当前不支持销量趋势，因为 ProductSnapshot 没有销量字段。7 天 / 30 天趋势查询和展示尚未实现，也没有额外趋势聚合表。
+当前竞品详情已支持基于 ProductSnapshot.price_min / price_max 的 7 天 / 30 天价格趋势查询和展示，未增加额外趋势聚合表。当前不支持销量趋势，因为 ProductSnapshot 没有销量字段；商品级库存趋势也未定义、未实现。
 
 ---
 
@@ -314,7 +314,7 @@ Competitor
 - sales snapshot / sales change；
 - 可靠的商品下架检测；
 - 主图变化检测；
-- 7 天 / 30 天趋势展示；
+- 销量趋势和商品级库存趋势展示；
 
 ### 10.1 未来但尚未实现的 change_type
 
