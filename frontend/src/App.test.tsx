@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, MoreMenu, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildPriceChartPoints } from "./App";
+import { addCompetitorsSequentially, AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, MoreMenu, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -402,6 +402,25 @@ test.each([
   [{ kind: "request", error: new TypeError("Failed to fetch") }, "无法连接服务，请检查后端是否正常运行后重试"],
 ] as const)("keeps collection HTTP failures separate from request exceptions", (failure, expected) => {
   expect(getCollectionFailureMessage(failure)).toBe(expected);
+});
+
+test("appends clipboard links after current links and removes duplicates", () => {
+  expect(mergeCompetitorUrlText(
+    "https://detail.1688.com/offer/111.html",
+    "https://detail.1688.com/offer/222.html",
+  )).toBe("https://detail.1688.com/offer/111.html\nhttps://detail.1688.com/offer/222.html");
+
+  expect(mergeCompetitorUrlText(
+    "https://detail.1688.com/offer/111.html",
+    "https://detail.1688.com/offer/111.html\n\nhttps://detail.1688.com/offer/333.html",
+  )).toBe("https://detail.1688.com/offer/111.html\nhttps://detail.1688.com/offer/333.html");
+});
+
+test("renders a clipboard add action beside the competitor link field", () => {
+  const html = renderToStaticMarkup(<AddDialog url="" status="initial" onUrlChange={noop} onSubmit={noop} onClose={noop} groups={[]} groupId={null} onGroupChange={noop} newGroupName="" onNewGroupNameChange={noop} onCreateGroup={noop} groupCreateStatus="initial" />);
+  expect(html).toContain("从剪贴板添加");
+  expect(html).toContain('class="dialog-field-header"');
+  expect(html).toContain('autoComplete="off"');
 });
 
 test("renders competitor group controls and new group entry", () => {
