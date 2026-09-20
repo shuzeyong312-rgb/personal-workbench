@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from threading import Lock
+from threading import RLock
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -19,7 +19,7 @@ from app.changes import detect_changes
 from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
 
 
-COLLECTION_LOCK = Lock()
+COLLECTION_LOCK = RLock()
 
 
 class CompetitorNotFoundError(LookupError):

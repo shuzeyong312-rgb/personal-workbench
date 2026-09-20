@@ -1,10 +1,65 @@
+import asyncio
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+from threading import Event
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
+from app.collection.daily import run_daily_collection_cycle
 from app.competitors import router as competitors_router
 from app.competitor_groups import router as competitor_groups_router
+from app.database import engine
 
-app = FastAPI()
+
+DAILY_COLLECTION_INITIAL_DELAY_SECONDS = 30
+DAILY_COLLECTION_INTERVAL_SECONDS = 60 * 60
+
+
+def _session_factory() -> Session:
+    return Session(engine)
+
+
+async def _wait_for_stop(stop_event: asyncio.Event, timeout: float) -> bool:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout)
+    except asyncio.TimeoutError:
+        return False
+    return True
+
+
+async def _daily_collection_loop(
+    stop_event: asyncio.Event, thread_stop_event: Event
+) -> None:
+    if await _wait_for_stop(stop_event, DAILY_COLLECTION_INITIAL_DELAY_SECONDS):
+        return
+    while not thread_stop_event.is_set():
+        await asyncio.to_thread(
+            run_daily_collection_cycle,
+            _session_factory,
+            stop_event=thread_stop_event,
+        )
+        if thread_stop_event.is_set():
+            return
+        if await _wait_for_stop(stop_event, DAILY_COLLECTION_INTERVAL_SECONDS):
+            return
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    stop_event = asyncio.Event()
+    thread_stop_event = Event()
+    scheduler_task = asyncio.create_task(_daily_collection_loop(stop_event, thread_stop_event))
+    try:
+        yield
+    finally:
+        thread_stop_event.set()
+        stop_event.set()
+        await scheduler_task
+
+
+app = FastAPI(lifespan=lifespan)
 app.include_router(competitors_router)
 app.include_router(competitor_groups_router)
 

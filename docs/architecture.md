@@ -187,7 +187,11 @@ V1 使用 SQLite。
 
 ## 10. 调度原则
 
-V1 每天采集一次。
+当前实现使用 FastAPI lifespan 启动一个 asyncio 后台 task。Backend 启动约 30 秒后进行首次 due-check，之后每小时检查一次。
+
+due-check 只处理 active Competitor，使用最近一条 CollectionRun.started_at 统一按 UTC 判断 24 小时窗口，并按顺序调用现有 collect_competitor()。每个竞品使用独立 Session；同步采集批次放入线程，不阻塞 API event loop。
+
+自动采集依赖 Backend 正在运行，电脑关机时不会执行。单个采集失败继续后续竞品；如果全局 COLLECTION_LOCK 忙，则中断当前 cycle，下一次检查再尝试。Backend shutdown 时唤醒 scheduler，允许当前竞品完成后正常退出，不再启动下一个竞品。
 
 当前不引入：
 

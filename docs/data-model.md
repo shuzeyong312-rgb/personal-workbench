@@ -108,7 +108,7 @@ collection_source
 
 - 每次成功采集新增一条快照，不覆盖历史快照；
 - 当前手动“立即采集”也会生成快照；
-- 每日自动调度尚未实现，不能将“每天一次”描述成当前保存规则；
+- Backend 运行期间存在每日自动调度：每小时进行 due-check，最近一条 CollectionRun.started_at 距当前 UTC 时间达到 24 小时才自动尝试；failed 尝试同样计入该窗口；
 - price_min / price_max 使用 Numeric(18, 2)，用于保存商品级价格区间；
 - 缺失价格保存为 NULL，不转换为 0；
 - product_status 当前允许 unknown、active、offline；
@@ -311,7 +311,6 @@ Competitor
 以下内容仍是长期 V1 目标，但当前没有对应的完整实现，不能当作当前数据模型：
 
 - 删除、重命名和筛选竞品组；
-- 每日自动调度；
 - sales snapshot / sales change；
 - 可靠的商品下架检测；
 - 主图变化检测；
