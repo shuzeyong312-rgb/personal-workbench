@@ -2,13 +2,14 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.collection.service import (
+    COLLECTION_LOCK,
     CollectionError,
     CollectionInProgressError,
     CompetitorNotFoundError,
@@ -16,7 +17,7 @@ from app.collection.service import (
     collect_competitor,
 )
 from app.database import get_db
-from app.models import ChangeEvent, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
@@ -350,6 +351,46 @@ def create_competitor(payload: CreateCompetitorRequest, db: Session = Depends(ge
         raise
     db.refresh(competitor)
     return competitor
+
+
+@router.delete("/{competitor_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_competitor(
+    competitor_id: int,
+    db: Session = Depends(get_db),
+) -> Response:
+    competitor = db.get(Competitor, competitor_id)
+    if competitor is None:
+        raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
+
+    if not COLLECTION_LOCK.acquire(blocking=False):
+        raise error(
+            "collection_in_progress",
+            "已有竞品正在采集，请稍后再删除",
+            status.HTTP_409_CONFLICT,
+        )
+
+    try:
+        snapshot_ids = list(
+            db.scalars(
+                select(ProductSnapshot.id).where(ProductSnapshot.competitor_id == competitor_id)
+            ).all()
+        )
+        db.execute(delete(ChangeEvent).where(ChangeEvent.competitor_id == competitor_id))
+        if snapshot_ids:
+            db.execute(
+                delete(SkuSnapshot).where(SkuSnapshot.product_snapshot_id.in_(snapshot_ids))
+            )
+        db.execute(delete(ProductSnapshot).where(ProductSnapshot.competitor_id == competitor_id))
+        db.execute(delete(CollectionRun).where(CollectionRun.competitor_id == competitor_id))
+        db.delete(competitor)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        COLLECTION_LOCK.release()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 _COLLECTION_STATUS_CODES = {
