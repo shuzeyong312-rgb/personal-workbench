@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, Competitor, CompetitorDetail, CompetitorGroup, DashboardData, DashboardPage, DeleteDialog, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getResponseStatus, isCurrentDetailRequest, ListPage, Sidebar, buildPriceChartPoints } from "./App";
+import { AddDialog, Competitor, CompetitorDetail, CompetitorGroup, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getResponseStatus, isCurrentDetailRequest, ListPage, Sidebar, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -21,7 +21,7 @@ const competitor: Competitor = {
 };
 
 const noop = () => undefined;
-const listProps = { collectingCompetitorId: null, deletingCompetitorId: null, onCollect: noop, onDelete: noop, groups: [] as CompetitorGroup[] };
+const listProps = { collectingCompetitorId: null, onCollect: noop, groups: [] as CompetitorGroup[] };
 const group: CompetitorGroup = { id: 1, name: "暖手宝", created_at: "2026-09-20T10:00:00Z" };
 const latestChange = (overrides: Partial<NonNullable<Competitor["latest_change"]>> = {}): NonNullable<Competitor["latest_change"]> => ({
   id: 1,
@@ -52,7 +52,6 @@ test("renders loading, empty, error and normal list states", () => {
   expect(normal).toContain("查看 1688 商品");
   expect(normal).toContain("暂无变化记录");
   expect(normal).toContain("立即采集");
-  expect(normal).toContain(">删除<");
 });
 
 test("renders real snapshot price and SKU values", () => {
@@ -131,14 +130,6 @@ test.each([
   [{ kind: "request", error: new TypeError("Failed to fetch") }, "无法连接服务，请检查后端是否正常运行后重试"],
 ] as const)("keeps collection HTTP failures separate from request exceptions", (failure, expected) => {
   expect(getCollectionFailureMessage(failure)).toBe(expected);
-});
-
-test("renders destructive delete confirmation with history warning", () => {
-  const html = renderToStaticMarkup(<DeleteDialog competitor={{ ...competitor, title: "暖手宝商品" }} status="initial" error={null} onConfirm={noop} onClose={noop} />);
-  expect(html).toContain("删除竞品");
-  expect(html).toContain("暖手宝商品");
-  expect(html).toContain("历史快照、变化记录和采集记录");
-  expect(html).toContain("确认删除");
 });
 
 test("renders competitor group controls and new group entry", () => {
