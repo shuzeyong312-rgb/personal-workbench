@@ -11,6 +11,7 @@ from app.collection.daily import run_daily_collection_cycle
 from app.competitors import router as competitors_router
 from app.competitor_groups import router as competitor_groups_router
 from app.database import engine
+from app.dashboard import router as dashboard_router
 
 
 DAILY_COLLECTION_INITIAL_DELAY_SECONDS = 30
@@ -62,6 +63,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(lifespan=lifespan)
 app.include_router(competitors_router)
 app.include_router(competitor_groups_router)
+app.include_router(dashboard_router)
 
 
 @app.exception_handler(HTTPException)

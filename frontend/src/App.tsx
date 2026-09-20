@@ -1,10 +1,12 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, type ReactNode, useEffect, useState } from "react";
 
 import "./App.css";
 
 type AddStatus = "initial" | "submitting" | "success" | "invalid" | "duplicate" | "server-error";
 type GroupCreateStatus = "initial" | "submitting" | "success" | "invalid" | "duplicate" | "server-error";
 type ListStatus = "loading" | "error" | "ready";
+type DashboardStatus = "loading" | "error" | "ready";
+export type Page = "dashboard" | "competitors";
 type Notice = { message: string; type: "success" | "error" };
 
 type CollectionErrorBody = { code?: string; message?: string };
@@ -58,6 +60,36 @@ export type CompetitorGroup = {
   created_at: string;
 };
 
+export type Change = {
+  id: number;
+  snapshot_id?: number;
+  change_type: string;
+  entity_key: string | null;
+  old_value: string | null;
+  new_value: string | null;
+  detected_at: string;
+};
+
+export type DashboardItem = {
+  competitor_id: number;
+  title: string | null;
+  shop_name: string | null;
+  main_image_url: string | null;
+  group_id: number | null;
+  last_collected_at: string | null;
+  changes: Change[];
+};
+
+export type DashboardData = {
+  date: string;
+  stats: {
+    monitored_competitors: number;
+    changed_competitors: number;
+    change_events: number;
+  };
+  items: DashboardItem[];
+};
+
 export function getResponseStatus(responseOk: boolean, code?: string): AddStatus {
   if (responseOk) return "success";
   if (code === "invalid_competitor_url") return "invalid";
@@ -93,8 +125,7 @@ export function formatPriceDisplay(snapshot: Competitor["latest_snapshot"]): str
   return `¥${min || max}`;
 }
 
-export function formatLatestChange(change: Competitor["latest_change"]): string {
-  if (change === null) return "暂无变化记录";
+export function formatChange(change: Change): string {
   const oldValue = change.old_value ?? "";
   const newValue = change.new_value ?? "";
   const displayValue = (value: string | null) => value?.trim() || change.entity_key?.trim() || "";
@@ -107,6 +138,10 @@ export function formatLatestChange(change: Competitor["latest_change"]): string 
     case "title_changed": return "标题已变更";
     default: return "发生变化";
   }
+}
+
+export function formatLatestChange(change: Competitor["latest_change"]): string {
+  return change === null ? "暂无变化记录" : formatChange(change);
 }
 
 export function getCollectionErrorMessage(code?: string, message?: unknown): string {
@@ -144,35 +179,38 @@ function StatusBadge({ status }: { status: Competitor["status"] }) {
   return <span className={"status-badge status-" + status}>{labels[status]}</span>;
 }
 
+type ShellProps = { page: Page; onNavigate: (page: Page) => void; breadcrumb: string; children: ReactNode };
+
+export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: Page) => void }) {
+  return <aside className="sidebar">
+    <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>工作提效工具集</span></div></div>
+    <nav aria-label="主导航">
+      <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⌂</span>首页</button>
+      <div className="nav-group"><div className="nav-group-title"><span className="nav-icon" aria-hidden="true">⌁</span>竞品监控<span className="nav-chevron" aria-hidden="true">⌃</span></div>
+        <button className={"nav-item nav-child" + (page === "dashboard" ? " nav-active" : "")} onClick={() => onNavigate("dashboard")} aria-current={page === "dashboard" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
+        <button className={"nav-item nav-child" + (page === "competitors" ? " nav-active" : "")} onClick={() => onNavigate("competitors")} aria-current={page === "competitors" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品列表</button>
+        <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />竞品分组</button>
+        <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />采集记录</button>
+      </div>
+      <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">▣</span>自动上架</button><button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⚙</span>系统设置</button>
+    </nav>
+    <div className="sidebar-note"><strong>让工作更高效</strong><span>v1.0.0</span></div>
+  </aside>;
+}
+
+function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
+  return <div className="app-shell"><Sidebar page={page} onNavigate={onNavigate} /><main className="main-content">
+    <div className="workspace-header"><div className="breadcrumb">个人工作台 <span>/</span> 竞品监控 <span>/</span> <strong>{breadcrumb}</strong></div><div className="workspace-tools" aria-label="工作台工具区"><div className="workspace-search" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.5" /><path d="m16 16 4 4" /></svg><span>搜索商品名称、链接或关键词</span></div><span className="workspace-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></span><span className="workspace-user" aria-hidden="true"><span className="workspace-avatar">W</span><span>工作台</span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></span></div></div>
+    {children}
+  </main></div>;
+}
+
 type ListPageProps = { competitors: Competitor[]; groups: CompetitorGroup[]; status: ListStatus; error: string | null; onRetry: () => void; onAdd: () => void; collectingCompetitorId: number | null; onCollect: (competitorId: number) => void };
 
 export function ListPage({ competitors, groups, status, error, onRetry, onAdd, collectingCompetitorId, onCollect }: ListPageProps) {
   const collectedCount = competitors.filter((item) => item.last_collected_at !== null).length;
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>工作提效工具集</span></div></div>
-        <nav aria-label="主导航">
-          <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⌂</span>首页</button>
-          <div className="nav-group"><div className="nav-group-title"><span className="nav-icon" aria-hidden="true">⌁</span>竞品监控<span className="nav-chevron" aria-hidden="true">⌃</span></div>
-            <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
-            <button className="nav-item nav-child nav-active" aria-current="page"><span className="nav-dot" aria-hidden="true" />竞品列表</button>
-            <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />竞品分组</button>
-            <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />采集记录</button>
-          </div>
-          <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">▣</span>自动上架</button><button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⚙</span>系统设置</button>
-        </nav>
-        <div className="sidebar-note"><strong>让工作更高效</strong><span>v1.0.0</span></div>
-      </aside>
-      <main className="main-content">
-        <div className="workspace-header">
-          <div className="breadcrumb">个人工作台 <span>/</span> 竞品监控 <span>/</span> <strong>竞品列表</strong></div>
-          <div className="workspace-tools" aria-label="工作台工具区">
-            <div className="workspace-search" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.5" /><path d="m16 16 4 4" /></svg><span>搜索商品名称、链接或关键词</span></div>
-            <span className="workspace-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></span>
-            <span className="workspace-user" aria-hidden="true"><span className="workspace-avatar">W</span><span>工作台</span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></span>
-          </div>
-        </div>
+    <AppShell page="competitors" onNavigate={() => undefined} breadcrumb="竞品列表">
         <header className="page-header"><div><h1>竞品列表</h1><p className="page-description">查看当前已添加的 1688 竞品，并管理监控对象。</p></div><button className="primary-button" onClick={onAdd}>添加竞品</button></header>
         <section className="filter-card" aria-label="搜索和筛选">
           <div className="filter-field filter-search"><label htmlFor="search">搜索商品名称 / offerId / 店铺</label><input id="search" disabled placeholder="搜索商品名称 / offerId / 店铺" /></div>
@@ -195,9 +233,32 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, c
           </tbody></table></div>}
         </section>
         <div className="pagination-bar"><span>显示全部竞品</span><button disabled>上一页</button><span className="page-number">1</span><button disabled>下一页</button><span>分页暂未开放</span></div>
-      </main>
-    </div>
+    </AppShell>
   );
+}
+
+type DashboardPageProps = { data: DashboardData | null; groups: CompetitorGroup[]; status: DashboardStatus; error: string | null; onRetry: () => void; onNavigate: (page: Page) => void };
+
+export function DashboardPage({ data, groups, status, error, onRetry, onNavigate }: DashboardPageProps) {
+  return <AppShell page="dashboard" onNavigate={onNavigate} breadcrumb="竞品监控大屏">
+    <header className="page-header"><div><h1>竞品监控大屏</h1><p className="page-description">查看今日真正发生的竞品变化，及时掌握监控动态。</p></div></header>
+    <section className="dashboard-stats" aria-label="今日变化统计">
+      <div className="dashboard-stat-card"><span className="dashboard-stat-icon dashboard-stat-blue">◌</span><div><span>监控竞品</span><strong>{status === "ready" && data ? data.stats.monitored_competitors : "—"}</strong></div></div>
+      <div className="dashboard-stat-card"><span className="dashboard-stat-icon dashboard-stat-purple">↗</span><div><span>今日变化竞品</span><strong>{status === "ready" && data ? data.stats.changed_competitors : "—"}</strong></div></div>
+      <div className="dashboard-stat-card"><span className="dashboard-stat-icon dashboard-stat-orange">✦</span><div><span>今日变化事件</span><strong>{status === "ready" && data ? data.stats.change_events : "—"}</strong></div></div>
+    </section>
+    <section className="table-card dashboard-change-section">
+      <div className="table-heading"><div><h2>今日变化</h2><span>{status === "ready" && data ? data.date : "本地业务日"}</span></div><span className="table-count">{status === "ready" && data ? `${data.stats.changed_competitors} 个竞品` : "—"}</span></div>
+      {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载今日变化…</strong></div>}
+      {status === "error" && <div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取今日变化。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div>}
+      {status === "ready" && data && data.items.length === 0 && <div className="state-panel"><div className="empty-icon">✓</div><strong>今天暂无竞品变化</strong><span>系统会继续按照每日采集规则监控竞品变化。</span></div>}
+      {status === "ready" && data && data.items.length > 0 && <div className="dashboard-change-grid">{data.items.map((item) => <article className="dashboard-change-card" key={item.competitor_id}>
+        <div className="dashboard-item-header"><div className="dashboard-product"><span className="product-image product-image-placeholder">{item.main_image_url ? <img className="product-image" src={item.main_image_url} alt="" /> : "暂无主图"}</span><div><strong>{item.title || "未采集"}</strong><span>{item.shop_name || "未采集"}</span></div></div><span className="dashboard-change-count">{item.changes.length} 条变化</span></div>
+        <div className="dashboard-meta"><span>竞品组：{getCompetitorGroupLabel(item.group_id, groups)}</span><span>最近采集：{formatDate(item.last_collected_at)}</span></div>
+        <ul className="dashboard-change-list">{item.changes.map((change) => <li key={change.id}><span>{formatChange(change)}</span><time>{formatDate(change.detected_at)}</time></li>)}</ul>
+      </article>)}</div>}
+    </section>
+  </AppShell>;
 }
 
 type AddDialogProps = { url: string; status: AddStatus; onUrlChange: (url: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void; groups: CompetitorGroup[]; groupId: number | null; onGroupChange: (groupId: number | null) => void; newGroupName: string; onNewGroupNameChange: (name: string) => void; onCreateGroup: () => void; groupCreateStatus: GroupCreateStatus };
@@ -212,10 +273,15 @@ export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups,
 }
 
 function App() {
+  const [page, setPage] = useState<Page>("dashboard");
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [groups, setGroups] = useState<CompetitorGroup[]>([]);
-  const [listStatus, setListStatus] = useState<ListStatus>("loading");
+  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [dashboardStatus, setDashboardStatus] = useState<DashboardStatus>("loading");
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [listStatus, setListStatus] = useState<ListStatus>("ready");
   const [listError, setListError] = useState<string | null>(null);
+  const [listLoaded, setListLoaded] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [groupId, setGroupId] = useState<number | null>(null);
@@ -227,10 +293,16 @@ function App() {
 
   async function loadCompetitors() {
     setListStatus("loading"); setListError(null);
-    try { const [competitorsResponse, groupsResponse] = await Promise.all([fetch("/api/competitors"), fetch("/api/competitor-groups")]); if (!competitorsResponse.ok || !groupsResponse.ok) throw new Error("request failed"); const [competitorData, groupData] = await Promise.all([competitorsResponse.json(), groupsResponse.json()]); setCompetitors(competitorData as Competitor[]); setGroups(groupData as CompetitorGroup[]); setListStatus("ready"); }
+    try { const [competitorsResponse, groupsResponse] = await Promise.all([fetch("/api/competitors"), fetch("/api/competitor-groups")]); if (!competitorsResponse.ok || !groupsResponse.ok) throw new Error("request failed"); const [competitorData, groupData] = await Promise.all([competitorsResponse.json(), groupsResponse.json()]); setCompetitors(competitorData as Competitor[]); setGroups(groupData as CompetitorGroup[]); setListStatus("ready"); setListLoaded(true); }
     catch { setListError("暂时无法获取竞品列表，请检查服务是否正常运行。"); setListStatus("error"); }
   }
-  useEffect(() => { void loadCompetitors(); }, []);
+  async function loadDashboard() {
+    setDashboardStatus("loading"); setDashboardError(null);
+    try { const [dashboardResponse, groupsResponse] = await Promise.all([fetch("/api/dashboard/today"), fetch("/api/competitor-groups")]); if (!dashboardResponse.ok || !groupsResponse.ok) throw new Error("request failed"); const [dashboardData, groupData] = await Promise.all([dashboardResponse.json(), groupsResponse.json()]); setDashboard(dashboardData as DashboardData); setGroups(groupData as CompetitorGroup[]); setDashboardStatus("ready"); }
+    catch { setDashboardError("暂时无法获取今日变化，请检查服务是否正常运行。"); setDashboardStatus("error"); }
+  }
+  useEffect(() => { void loadDashboard(); }, []);
+  function navigate(nextPage: Page) { setPage(nextPage); if (nextPage === "competitors" && !listLoaded) void loadCompetitors(); }
   function openDialog() { setNotice(null); setAddStatus("initial"); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true); }
   function closeDialog() { if (addStatus !== "submitting") { setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setGroupCreateStatus("initial"); } }
   async function handleCreateGroup() {
@@ -269,7 +341,7 @@ function App() {
       setCollectingCompetitorId(null);
     }
   }
-  return <><ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} collectingCompetitorId={collectingCompetitorId} onCollect={(competitorId) => void handleCollect(competitorId)} />{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} />}</>;
+  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} onRetry={() => void loadDashboard()} onNavigate={navigate} /> : <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} collectingCompetitorId={collectingCompetitorId} onCollect={(competitorId) => void handleCollect(competitorId)} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} />}</>;
 }
 
 export default App;

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, Competitor, CompetitorGroup, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getResponseStatus, ListPage } from "./App";
+import { AddDialog, Competitor, CompetitorGroup, DashboardData, DashboardPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getResponseStatus, ListPage, Sidebar } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -168,4 +168,62 @@ test("renders competitor group labels in the list", () => {
   expect(html).toContain("未分组");
   expect(html).toContain("暖手宝");
   expect(html).toContain("—");
+});
+
+const dashboardData: DashboardData = {
+  date: "2026-09-20",
+  stats: { monitored_competitors: 5, changed_competitors: 1, change_events: 2 },
+  items: [{
+    competitor_id: 1,
+    title: "暖手宝",
+    shop_name: "家居店",
+    main_image_url: null,
+    group_id: 1,
+    last_collected_at: "2026-09-20T10:00:00Z",
+    changes: [
+      { id: 2, change_type: "price_increase", entity_key: null, old_value: "40.00", new_value: "45.00", detected_at: "2026-09-20T10:00:00Z" },
+      { id: 1, change_type: "title_changed", entity_key: null, old_value: null, new_value: null, detected_at: "2026-09-20T09:00:00Z" },
+    ],
+  }],
+};
+
+test("renders dashboard loading, error and empty states", () => {
+  expect(renderToStaticMarkup(<DashboardPage data={null} groups={[]} status="loading" error={null} onRetry={noop} onNavigate={noop} />)).toContain("正在加载今日变化");
+  expect(renderToStaticMarkup(<DashboardPage data={null} groups={[]} status="error" error="请求失败" onRetry={noop} onNavigate={noop} />)).toContain("重试");
+  expect(renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [], stats: { ...dashboardData.stats, changed_competitors: 0, change_events: 0 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />)).toContain("今天暂无竞品变化");
+});
+
+test("renders dashboard stats, mapped group and all changes", () => {
+  const html = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  expect(html).toContain("监控竞品");
+  expect(html).toContain(">5<");
+  expect(html).toContain("今日变化事件");
+  expect(html).toContain("家居店");
+  expect(html).toContain("暖手宝");
+  expect(html).toContain("价格上涨 40.00 → 45.00");
+  expect(html).toContain("标题已变更");
+  expect(html).toContain("2 条变化");
+  const unknownGroup = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [{ ...dashboardData.items[0], group_id: 99 }] }} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  expect(unknownGroup).toContain("竞品组：—");
+});
+
+test.each([
+  [latestChange({ change_type: "price_increase", old_value: "1", new_value: "2" }), "价格上涨 1 → 2"],
+  [latestChange({ change_type: "price_decrease", old_value: "2", new_value: "1" }), "价格下降 2 → 1"],
+  [latestChange({ change_type: "sku_added", new_value: "红色" }), "新增 SKU：红色"],
+  [latestChange({ change_type: "sku_removed", old_value: "蓝色" }), "移除 SKU：蓝色"],
+  [latestChange({ change_type: "stock_changed", old_value: "1", new_value: "0" }), "库存变化 1 → 0"],
+  [latestChange({ change_type: "title_changed" }), "标题已变更"],
+  [latestChange({ change_type: "unknown" }), "发生变化"],
+] as const)("formats dashboard changes through the shared formatter", (change, expected) => {
+  expect(formatChange(change)).toBe(expected);
+});
+
+test("marks the active sidebar page", () => {
+  const dashboard = renderToStaticMarkup(<Sidebar page="dashboard" onNavigate={noop} />);
+  const competitors = renderToStaticMarkup(<Sidebar page="competitors" onNavigate={noop} />);
+  expect(dashboard).toContain('class="nav-item nav-child nav-active" aria-current="page"');
+  expect(dashboard).toContain("竞品监控大屏");
+  expect(competitors).toContain('class="nav-item nav-child nav-active" aria-current="page"');
+  expect(competitors).toContain("竞品列表");
 });
