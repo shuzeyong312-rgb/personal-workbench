@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Base, ChangeEvent, Competitor, ProductSnapshot
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
 
 
 @pytest.fixture()
@@ -316,6 +316,84 @@ def test_duplicate_offer_id_returns_409_without_new_record(
     assert response.json()["code"] == "competitor_already_exists"
     with session_factory() as session:
         assert len(session.scalars(select(Competitor)).all()) == 1
+
+
+
+def test_deletes_competitor_and_all_related_history(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    now = datetime(2026, 9, 20, 10, tzinfo=timezone.utc)
+    with session_factory() as session:
+        competitor = Competitor(
+            platform="1688",
+            offer_id="123456789",
+            url="https://detail.1688.com/offer/123456789.html",
+            title="待删除商品",
+            status="active",
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+            last_collected_at=now,
+        )
+        session.add(competitor)
+        session.flush()
+        snapshot = ProductSnapshot(
+            competitor_id=competitor.id,
+            captured_at=now,
+            title="待删除商品",
+            shop_name="测试店铺",
+            product_status="active",
+            collection_source="html",
+        )
+        session.add(snapshot)
+        session.flush()
+        session.add_all(
+            [
+                SkuSnapshot(
+                    product_snapshot_id=snapshot.id,
+                    sku_id="sku-1",
+                    sku_name="默认款",
+                    stock=10,
+                ),
+                ChangeEvent(
+                    competitor_id=competitor.id,
+                    snapshot_id=snapshot.id,
+                    change_type="title_changed",
+                    old_value="旧标题",
+                    new_value="待删除商品",
+                    detected_at=now,
+                ),
+                CollectionRun(
+                    competitor_id=competitor.id,
+                    started_at=now,
+                    finished_at=now,
+                    status="success",
+                ),
+            ]
+        )
+        session.commit()
+        competitor_id = competitor.id
+
+    response = test_client.delete(f"/api/competitors/{competitor_id}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    with session_factory() as session:
+        assert session.get(Competitor, competitor_id) is None
+        assert session.query(ProductSnapshot).count() == 0
+        assert session.query(SkuSnapshot).count() == 0
+        assert session.query(ChangeEvent).count() == 0
+        assert session.query(CollectionRun).count() == 0
+
+
+def test_delete_missing_competitor_returns_404(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    response = client[0].delete("/api/competitors/999")
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "competitor_not_found", "message": "竞品不存在"}
 
 
 def test_status_constraint_rejects_unknown_value(
