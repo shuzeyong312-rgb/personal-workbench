@@ -1,4 +1,5 @@
-import { FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { FormEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import "./App.css";
 
@@ -8,11 +9,13 @@ type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 export type Page = "dashboard" | "competitors" | "detail";
 type Notice = { message: string; type: "success" | "error" };
+export type LifecycleAction = "stop" | "resume" | "delete";
 
 type CollectionErrorBody = { code?: string; message?: string };
 
 const collectionErrorMessages: Record<string, string> = {
   competitor_not_found: "竞品不存在",
+  competitor_inactive: "该竞品已停止监控，无法立即采集",
   collection_in_progress: "已有竞品正在采集，请稍后重试",
   "1688_login_required": "1688 登录状态已失效，请重新登录后再试",
   "1688_verification_required": "1688 当前需要完成安全验证",
@@ -23,6 +26,13 @@ const collectionErrorMessages: Record<string, string> = {
   offer_id_mismatch: "采集到的商品与当前竞品不匹配",
   collection_failed: "采集失败，请稍后重试",
   collection_save_failed: "商品数据保存失败，请稍后重试",
+};
+
+const lifecycleErrorMessages: Record<string, string> = {
+  competitor_not_found: "竞品不存在",
+  competitor_inactive: "该竞品已停止监控，无法立即采集",
+  collection_in_progress: "已有竞品正在采集，请稍后重试",
+  competitor_delete_failed: "竞品删除失败，请稍后重试",
 };
 
 export type Competitor = {
@@ -236,6 +246,12 @@ export function getCollectionFailureMessage(failure: CollectionFailure): string 
   return getCollectionRequestErrorMessage(failure.error);
 }
 
+export function getLifecycleErrorMessage(code?: string, message?: unknown): string {
+  const backendMessage = typeof message === "string" ? message.trim() : "";
+  if (backendMessage && !/[<>]/.test(backendMessage) && !/traceback|stack trace|File "/i.test(backendMessage)) return backendMessage;
+  return (code && lifecycleErrorMessages[code]) || "操作失败，请稍后重试";
+}
+
 function formatDate(value: string | null): string {
   if (!value) return "未采集";
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -278,9 +294,79 @@ function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
   </main></div>;
 }
 
-type ListPageProps = { competitors: Competitor[]; groups: CompetitorGroup[]; status: ListStatus; error: string | null; onRetry: () => void; onAdd: () => void; collectingCompetitorId: number | null; onCollect: (competitorId: number) => void; onOpenDetail?: (competitorId: number) => void; onNavigate?: (page: Page) => void };
+type MoreMenuRect = Pick<DOMRect, "top" | "bottom" | "right">;
+type MoreMenuSize = Pick<DOMRect, "width" | "height">;
 
-export function ListPage({ competitors, groups, status, error, onRetry, onAdd, collectingCompetitorId, onCollect, onOpenDetail, onNavigate }: ListPageProps) {
+export function getMoreMenuPosition(
+  buttonRect: MoreMenuRect,
+  menuSize: MoreMenuSize,
+  viewportWidth: number,
+  viewportHeight: number,
+): { top: number; left: number } {
+  const margin = 8;
+  const gap = 6;
+  const width = menuSize.width || 132;
+  const height = menuSize.height || 96;
+  const left = Math.min(Math.max(margin, buttonRect.right - width), Math.max(margin, viewportWidth - width - margin));
+  const opensBelow = buttonRect.bottom + gap + height <= viewportHeight - margin;
+  return {
+    top: opensBelow ? buttonRect.bottom + gap : Math.max(margin, buttonRect.top - gap - height),
+    left,
+  };
+}
+
+export function MoreMenu({ competitor, open, onToggle, onAction }: { competitor: Competitor; open: boolean; onToggle: () => void; onAction: (action: LifecycleAction) => void }) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open || typeof window === "undefined") return;
+    const button = buttonRef.current;
+    if (!button) return;
+    setPosition(getMoreMenuPosition(button.getBoundingClientRect(), menuRef.current?.getBoundingClientRect() || { width: 0, height: 0 }, window.innerWidth, window.innerHeight));
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || typeof document === "undefined") return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!buttonRef.current?.contains(target) && !menuRef.current?.contains(target)) onToggle();
+    };
+    const closeOnViewportChange = () => onToggle();
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    window.addEventListener("scroll", closeOnViewportChange, true);
+    window.addEventListener("resize", closeOnViewportChange);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      window.removeEventListener("scroll", closeOnViewportChange, true);
+      window.removeEventListener("resize", closeOnViewportChange);
+    };
+  }, [open, onToggle]);
+
+  const menu = open && <div ref={menuRef} className="more-menu-popover" role="menu" data-more-menu-portal="body" style={{ top: position?.top ?? 0, left: position?.left ?? 0, visibility: position ? "visible" : "hidden" }}>
+    {competitor.is_active ? <button type="button" role="menuitem" onClick={() => onAction("stop")}>停止监控</button> : <button type="button" role="menuitem" onClick={() => onAction("resume")}>恢复监控</button>}
+    <button type="button" role="menuitem" className="more-menu-danger" onClick={() => onAction("delete")}>删除竞品</button>
+  </div>;
+
+  return <><div className="more-menu"><button ref={buttonRef} type="button" className="detail-button" aria-haspopup="menu" aria-expanded={open} onClick={onToggle}>更多</button></div>{open && (typeof document === "undefined" ? menu : createPortal(menu, document.body))}</>;
+}
+
+export function ConfirmDialog({ action, competitor, submitting, error, onClose, onConfirm }: { action: "stop" | "delete"; competitor: Competitor; submitting: boolean; error: string | null; onClose: () => void; onConfirm: () => void }) {
+  const isDelete = action === "delete";
+  const productLabel = competitor.title?.trim() || competitor.offer_id;
+  return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="lifecycle-dialog-title">
+    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="lifecycle-dialog-title">{isDelete ? "永久删除竞品" : "停止监控"}</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
+    {isDelete ? <p className="dialog-description">删除后，该竞品的历史快照、SKU、变化记录和采集记录都会永久删除，无法恢复。<br />当前商品：{productLabel}</p> : <p className="dialog-description">停止后将不再自动采集该竞品，但历史数据会保留，之后可以恢复监控。</p>}
+    {error && <div className="feedback feedback-server-error" role="alert">{error}</div>}
+    <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="button" className={isDelete ? "danger-button" : "primary-button"} onClick={onConfirm} disabled={submitting}>{isDelete ? "确认删除" : "停止监控"}</button></div>
+  </section></div>;
+}
+
+type ListPageProps = { competitors: Competitor[]; groups: CompetitorGroup[]; status: ListStatus; error: string | null; onRetry: () => void; onAdd: () => void; collectingCompetitorId: number | null; onCollect: (competitorId: number) => void; onOpenDetail?: (competitorId: number) => void; onLifecycleAction?: (action: LifecycleAction, competitor: Competitor) => void; onNavigate?: (page: Page) => void };
+
+export function ListPage({ competitors, groups, status, error, onRetry, onAdd, collectingCompetitorId, onCollect, onOpenDetail, onLifecycleAction, onNavigate }: ListPageProps) {
+  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
   const collectedCount = competitors.filter((item) => item.last_collected_at !== null).length;
   return (
     <AppShell page="competitors" onNavigate={onNavigate || (() => undefined)} breadcrumb="竞品列表">
@@ -302,7 +388,7 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, c
           {status === "error" && <div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品列表。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div>}
           {status === "ready" && competitors.length === 0 && <div className="state-panel"><div className="empty-icon">+</div><strong>还没有添加竞品</strong><span>添加一个 1688 商品链接，开始建立你的监控列表。</span><button className="primary-button" onClick={onAdd}>添加竞品</button></div>}
           {status === "ready" && competitors.length > 0 && <div className="table-scroll"><table><thead><tr><th>商品信息</th><th>店铺名称</th><th>竞品组</th><th>当前价格</th><th>SKU 数量</th><th>最近变化</th><th>最近采集时间</th><th>商品状态</th><th>操作</th></tr></thead><tbody>
-            {competitors.map((competitor) => { const isCollecting = collectingCompetitorId === competitor.id; return <tr key={competitor.id}><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td>{getCompetitorGroupLabel(competitor.group_id, groups)}</td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><div className="row-actions"><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button><button type="button" className={"collect-button" + (isCollecting ? " collect-button-loading" : "")} onClick={() => onCollect(competitor.id)} disabled={collectingCompetitorId !== null}>{isCollecting ? "采集中..." : "立即采集"}</button></div></td></tr>; })}
+            {competitors.map((competitor) => { const isCollecting = collectingCompetitorId === competitor.id; return <tr key={competitor.id}><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td>{getCompetitorGroupLabel(competitor.group_id, groups)}</td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止监控"}</span></td><td><div className="row-actions"><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button><button type="button" className={"collect-button" + (isCollecting ? " collect-button-loading" : "")} onClick={() => onCollect(competitor.id)} disabled={collectingCompetitorId !== null || !competitor.is_active}>{isCollecting ? "采集中..." : "立即采集"}</button><MoreMenu competitor={competitor} open={openMenuId === competitor.id} onToggle={() => setOpenMenuId(openMenuId === competitor.id ? null : competitor.id)} onAction={(action) => { setOpenMenuId(null); onLifecycleAction?.(action, competitor); }} /></div></td></tr>; })}
           </tbody></table></div>}
         </section>
         <div className="pagination-bar"><span>显示全部竞品</span><button disabled>上一页</button><span className="page-number">1</span><button disabled>下一页</button><span>分页暂未开放</span></div>
@@ -444,6 +530,9 @@ function App() {
   const [addStatus, setAddStatus] = useState<AddStatus>("initial");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [collectingCompetitorId, setCollectingCompetitorId] = useState<number | null>(null);
+  const [lifecycleDialog, setLifecycleDialog] = useState<{ action: "stop" | "delete"; competitor: Competitor } | null>(null);
+  const [lifecycleSubmitting, setLifecycleSubmitting] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
 
   async function loadCompetitors() {
     setListStatus("loading"); setListError(null);
@@ -515,7 +604,52 @@ function App() {
       setCollectingCompetitorId(null);
     }
   }
-  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} onRetry={() => void loadDashboard()} onNavigate={navigate} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} collectingCompetitorId={collectingCompetitorId} onCollect={(competitorId) => void handleCollect(competitorId)} onOpenDetail={openDetail} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} />}</>;
+  function openLifecycleDialog(action: "stop" | "delete", competitor: Competitor) {
+    setNotice(null); setLifecycleError(null); setLifecycleDialog({ action, competitor });
+  }
+  function closeLifecycleDialog() {
+    if (!lifecycleSubmitting) { setLifecycleDialog(null); setLifecycleError(null); }
+  }
+  async function readLifecycleError(response: Response): Promise<string> {
+    let body: CollectionErrorBody = {};
+    try { body = await response.json() as CollectionErrorBody; } catch { /* use the stable fallback below */ }
+    return getLifecycleErrorMessage(body.code, body.message);
+  }
+  async function refreshAfterLifecycle(message: string) {
+    setLifecycleDialog(null); setLifecycleError(null); setNotice({ message, type: "success" });
+    await Promise.all([loadCompetitors(), loadDashboard()]);
+  }
+  async function updateMonitoring(competitor: Competitor, isActive: boolean, dialogAction: "stop" | null) {
+    setLifecycleSubmitting(true); setLifecycleError(null);
+    try {
+      const response = await fetch(`/api/competitors/${competitor.id}/monitoring`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ is_active: isActive }) });
+      if (!response.ok) throw new Error(await readLifecycleError(response));
+      await refreshAfterLifecycle(isActive ? "已恢复监控，列表和 Dashboard 已更新。" : "已停止监控，历史数据已保留。" );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "操作失败，请稍后重试";
+      if (dialogAction) setLifecycleError(message); else setNotice({ message, type: "error" });
+    } finally { setLifecycleSubmitting(false); }
+  }
+  async function deleteCompetitor(competitor: Competitor) {
+    setLifecycleSubmitting(true); setLifecycleError(null);
+    try {
+      const response = await fetch(`/api/competitors/${competitor.id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await readLifecycleError(response));
+      await refreshAfterLifecycle("竞品已永久删除，列表和 Dashboard 已更新。" );
+    } catch (error) {
+      setLifecycleError(error instanceof Error ? error.message : "操作失败，请稍后重试");
+    } finally { setLifecycleSubmitting(false); }
+  }
+  function handleLifecycleAction(action: LifecycleAction, competitor: Competitor) {
+    if (action === "stop" || action === "delete") { openLifecycleDialog(action, competitor); return; }
+    void updateMonitoring(competitor, true, null);
+  }
+  function confirmLifecycleAction() {
+    if (!lifecycleDialog) return;
+    if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
+    else void deleteCompetitor(lifecycleDialog.competitor);
+  }
+  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} onRetry={() => void loadDashboard()} onNavigate={navigate} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} collectingCompetitorId={collectingCompetitorId} onCollect={(competitorId) => void handleCollect(competitorId)} onOpenDetail={openDetail} onLifecycleAction={handleLifecycleAction} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
 }
 
 export default App;

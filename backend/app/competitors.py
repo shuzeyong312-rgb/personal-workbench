@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,10 +13,11 @@ from app.collection.service import (
     CollectionInProgressError,
     CompetitorNotFoundError,
     CollectionResult,
+    COLLECTION_LOCK,
     collect_competitor,
 )
 from app.database import get_db
-from app.models import ChangeEvent, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
@@ -26,6 +27,10 @@ OFFER_PATH = re.compile(r"^/offer/(\d+)\.html$")
 class CreateCompetitorRequest(BaseModel):
     url: str
     group_id: int | None = None
+
+
+class MonitoringRequest(BaseModel):
+    is_active: bool
 
 
 class CompetitorResponse(BaseModel):
@@ -352,7 +357,61 @@ def create_competitor(payload: CreateCompetitorRequest, db: Session = Depends(ge
     return competitor
 
 
+@router.patch("/{competitor_id}/monitoring", response_model=CompetitorResponse)
+def update_monitoring(
+    competitor_id: int,
+    payload: MonitoringRequest,
+    db: Session = Depends(get_db),
+) -> Competitor:
+    competitor = db.get(Competitor, competitor_id)
+    if competitor is None:
+        raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
+
+    competitor.is_active = payload.is_active
+    competitor.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(competitor)
+    return competitor
+
+
+@router.delete("/{competitor_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_competitor(competitor_id: int, db: Session = Depends(get_db)) -> None:
+    if db.get(Competitor, competitor_id) is None:
+        raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
+    if not COLLECTION_LOCK.acquire(blocking=False):
+        raise error(
+            "collection_in_progress",
+            "已有竞品正在采集，请稍后重试",
+            status.HTTP_409_CONFLICT,
+        )
+
+    try:
+        competitor = db.get(Competitor, competitor_id)
+        if competitor is None:
+            raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
+        snapshot_ids = select(ProductSnapshot.id).where(ProductSnapshot.competitor_id == competitor_id)
+        db.execute(delete(ChangeEvent).where(ChangeEvent.competitor_id == competitor_id))
+        db.execute(delete(CollectionRun).where(CollectionRun.competitor_id == competitor_id))
+        db.execute(delete(SkuSnapshot).where(SkuSnapshot.product_snapshot_id.in_(snapshot_ids)))
+        db.execute(delete(ProductSnapshot).where(ProductSnapshot.competitor_id == competitor_id))
+        db.delete(competitor)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise error(
+            "competitor_delete_failed",
+            "竞品删除失败，请稍后重试",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
+    finally:
+        COLLECTION_LOCK.release()
+
+
 _COLLECTION_STATUS_CODES = {
+    "competitor_inactive": status.HTTP_409_CONFLICT,
     "1688_login_required": status.HTTP_401_UNAUTHORIZED,
     "1688_verification_required": status.HTTP_403_FORBIDDEN,
     "1688_page_unavailable": status.HTTP_502_BAD_GATEWAY,

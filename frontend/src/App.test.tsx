@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, Competitor, CompetitorDetail, CompetitorGroup, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getResponseStatus, isCurrentDetailRequest, ListPage, Sidebar, buildPriceChartPoints } from "./App";
+import { AddDialog, Competitor, CompetitorDetail, CompetitorGroup, ConfirmDialog, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, isCurrentDetailRequest, ListPage, MoreMenu, Sidebar, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -52,6 +52,44 @@ test("renders loading, empty, error and normal list states", () => {
   expect(normal).toContain("查看 1688 商品");
   expect(normal).toContain("暂无变化记录");
   expect(normal).toContain("立即采集");
+  expect(normal).toContain("监控中");
+});
+
+test("renders monitoring actions and disables collection for inactive competitors", () => {
+  const activeMenu = renderToStaticMarkup(<MoreMenu competitor={competitor} open onToggle={noop} onAction={noop} />);
+  expect(activeMenu).toContain('data-more-menu-portal="body"');
+  expect(activeMenu).toContain("停止监控");
+  expect(activeMenu).toContain("删除竞品");
+  const inactive = { ...competitor, is_active: false, title: "已停止商品" };
+  const inactiveMenu = renderToStaticMarkup(<MoreMenu competitor={inactive} open onToggle={noop} onAction={noop} />);
+  expect(inactiveMenu).toContain("恢复监控");
+  expect(inactiveMenu).not.toContain("停止监控");
+  const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[inactive]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(list).toContain("已停止监控");
+  expect(list).toMatch(/collect-button[^>]*disabled=""/);
+});
+
+test("positions the portal below when possible and above near the viewport bottom", () => {
+  expect(getMoreMenuPosition({ top: 100, bottom: 132, right: 700 }, { width: 132, height: 96 }, 800, 900)).toEqual({ top: 138, left: 568 });
+  expect(getMoreMenuPosition({ top: 820, bottom: 852, right: 700 }, { width: 132, height: 96 }, 800, 900)).toEqual({ top: 718, left: 568 });
+  expect(getMoreMenuPosition({ top: 820, bottom: 852, right: 20 }, { width: 132, height: 96 }, 320, 900).left).toBe(8);
+});
+
+test("uses confirmation dialogs for stop and permanent delete", () => {
+  const stop = renderToStaticMarkup(<ConfirmDialog action="stop" competitor={competitor} submitting={false} error={null} onClose={noop} onConfirm={noop} />);
+  expect(stop).toContain("停止监控");
+  expect(stop).toContain("历史数据会保留");
+  const deleted = renderToStaticMarkup(<ConfirmDialog action="delete" competitor={{ ...competitor, title: "测试商品" }} submitting={false} error={null} onClose={noop} onConfirm={noop} />);
+  expect(deleted).toContain("永久删除竞品");
+  expect(deleted).toContain("历史快照、SKU、变化记录和采集记录都会永久删除");
+  expect(deleted).toContain("测试商品");
+  expect(deleted).toContain("确认删除");
+});
+
+test("shows readable lifecycle request failures", () => {
+  expect(getLifecycleErrorMessage("competitor_delete_failed")).toBe("竞品删除失败，请稍后重试");
+  expect(getLifecycleErrorMessage("competitor_delete_failed", "删除失败，请稍后再试")).toBe("删除失败，请稍后再试");
+  expect(getLifecycleErrorMessage("competitor_delete_failed", "<html>traceback</html>")).toBe("竞品删除失败，请稍后重试");
 });
 
 test("renders real snapshot price and SKU values", () => {
@@ -111,6 +149,7 @@ test("displays collecting state and disables every collect button", () => {
 
 test("maps collection errors without exposing technical response bodies", () => {
   expect(getCollectionErrorMessage("1688_login_required")).toBe("1688 登录状态已失效，请重新登录后再试");
+  expect(getCollectionErrorMessage("competitor_inactive")).toBe("该竞品已停止监控，无法立即采集");
   expect(getCollectionErrorMessage("collection_timeout")).toBe("商品页面加载超时，请稍后重试");
   expect(getCollectionErrorMessage("collection_failed", "后端返回的可读提示")).toBe("后端返回的可读提示");
   expect(getCollectionErrorMessage("collection_failed", "<html>traceback</html>")).toBe("采集失败，请稍后重试");

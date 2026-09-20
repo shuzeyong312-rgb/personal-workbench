@@ -1,5 +1,7 @@
 from collections.abc import Generator
 from datetime import datetime, timezone
+from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,7 +12,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Base, ChangeEvent, Competitor, ProductSnapshot
+from app.collection.service import COLLECTION_LOCK
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
 
 
 @pytest.fixture()
@@ -336,3 +339,227 @@ def test_status_constraint_rejects_unknown_value(
         )
         with pytest.raises(IntegrityError):
             session.commit()
+
+
+def test_monitoring_lifecycle_preserves_history_and_supports_resume(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/123456789.html"}
+    ).json()["id"]
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with session_factory() as session:
+        snapshot = ProductSnapshot(
+            competitor_id=competitor_id,
+            captured_at=now,
+            title="历史商品",
+            shop_name="历史店铺",
+            price_min=Decimal("10.00"),
+            price_max=Decimal("12.00"),
+            product_status="active",
+            collection_source="html",
+            skus=[SkuSnapshot(sku_id="sku-1", sku_name="红色", stock=2, price=None)],
+        )
+        session.add(snapshot)
+        session.flush()
+        session.add(
+            ChangeEvent(
+                competitor_id=competitor_id,
+                snapshot_id=snapshot.id,
+                change_type="title_changed",
+                old_value="旧标题",
+                new_value="历史商品",
+                detected_at=now,
+            )
+        )
+        session.add(
+            CollectionRun(
+                competitor_id=competitor_id,
+                started_at=now,
+                finished_at=now,
+                status="success",
+            )
+        )
+        session.commit()
+
+    stopped = test_client.patch(
+        f"/api/competitors/{competitor_id}/monitoring", json={"is_active": False}
+    )
+    assert stopped.status_code == 200
+    assert stopped.json()["is_active"] is False
+    with session_factory() as session:
+        assert session.scalar(select(ProductSnapshot)) is not None
+        assert session.scalar(select(SkuSnapshot)) is not None
+        assert session.scalar(select(ChangeEvent)) is not None
+        assert session.scalar(select(CollectionRun)) is not None
+
+    resumed = test_client.patch(
+        f"/api/competitors/{competitor_id}/monitoring", json={"is_active": True}
+    )
+    assert resumed.status_code == 200
+    assert resumed.json()["is_active"] is True
+
+
+def test_inactive_competitor_cannot_be_collected(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/123456789.html"}
+    ).json()["id"]
+    with session_factory() as session:
+        competitor = session.get(Competitor, competitor_id)
+        assert competitor is not None
+        competitor.is_active = False
+        session.commit()
+
+    with patch("app.collection.service.collect_1688_product") as collector:
+        response = test_client.post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "competitor_inactive",
+        "message": "该竞品已停止监控，无法立即采集",
+    }
+    collector.assert_not_called()
+    with session_factory() as session:
+        assert session.scalar(select(CollectionRun)) is None
+
+
+def test_delete_uncollected_competitor_and_allow_readding_same_offer(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    url = "https://detail.1688.com/offer/123456789.html"
+    competitor_id = test_client.post("/api/competitors", json={"url": url}).json()["id"]
+
+    response = test_client.delete(f"/api/competitors/{competitor_id}")
+
+    assert response.status_code == 204
+    with session_factory() as session:
+        assert session.scalar(select(Competitor)) is None
+    assert test_client.post("/api/competitors", json={"url": url}).status_code == 201
+
+
+def test_delete_removes_all_competitor_history_but_not_group(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    group_id = test_client.post("/api/competitor-groups", json={"name": "保留分组"}).json()["id"]
+    competitor_id = test_client.post(
+        "/api/competitors",
+        json={"url": "https://detail.1688.com/offer/123456789.html", "group_id": group_id},
+    ).json()["id"]
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with session_factory() as session:
+        snapshot = ProductSnapshot(
+            competitor_id=competitor_id,
+            captured_at=now,
+            title="历史商品",
+            shop_name="历史店铺",
+            product_status="unknown",
+            collection_source="html",
+            skus=[SkuSnapshot(sku_id="sku-1", sku_name="红色", stock=0, price=None)],
+        )
+        session.add(snapshot)
+        session.flush()
+        session.add_all(
+            [
+                ChangeEvent(
+                    competitor_id=competitor_id,
+                    snapshot_id=snapshot.id,
+                    change_type="title_changed",
+                    detected_at=now,
+                ),
+                CollectionRun(
+                    competitor_id=competitor_id,
+                    started_at=now,
+                    finished_at=now,
+                    status="success",
+                ),
+            ]
+        )
+        session.commit()
+
+    response = test_client.delete(f"/api/competitors/{competitor_id}")
+
+    assert response.status_code == 204
+    with session_factory() as session:
+        assert session.scalar(select(Competitor)) is None
+        assert session.scalar(select(ProductSnapshot)) is None
+        assert session.scalar(select(SkuSnapshot)) is None
+        assert session.scalar(select(ChangeEvent)) is None
+        assert session.scalar(select(CollectionRun)) is None
+        assert session.get(CompetitorGroup, group_id) is not None
+
+
+def test_delete_missing_competitor_returns_stable_404(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    response = client[0].delete("/api/competitors/999")
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "competitor_not_found", "message": "竞品不存在"}
+
+
+def test_delete_during_collection_returns_conflict(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/123456789.html"}
+    ).json()["id"]
+    COLLECTION_LOCK.acquire()
+    try:
+        response = test_client.delete(f"/api/competitors/{competitor_id}")
+    finally:
+        COLLECTION_LOCK.release()
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "collection_in_progress"
+    with session_factory() as session:
+        assert session.get(Competitor, competitor_id) is not None
+
+
+def test_delete_rolls_back_when_history_delete_fails(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/123456789.html"}
+    ).json()["id"]
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with session_factory() as session:
+        snapshot = ProductSnapshot(
+            competitor_id=competitor_id,
+            captured_at=now,
+            title="历史商品",
+            shop_name="历史店铺",
+            product_status="unknown",
+            collection_source="html",
+        )
+        session.add(snapshot)
+        session.flush()
+        session.add(
+            ChangeEvent(
+                competitor_id=competitor_id,
+                snapshot_id=snapshot.id,
+                change_type="title_changed",
+                detected_at=now,
+            )
+        )
+        session.commit()
+
+    with patch.object(Session, "commit", side_effect=RuntimeError("commit failed")):
+        response = test_client.delete(f"/api/competitors/{competitor_id}")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "competitor_delete_failed",
+        "message": "竞品删除失败，请稍后重试",
+    }
+    with session_factory() as session:
+        assert session.get(Competitor, competitor_id) is not None
+        assert session.scalar(select(ProductSnapshot)) is not None
+        assert session.scalar(select(ChangeEvent)) is not None

@@ -173,6 +173,8 @@ def collect_competitor(db: Session, competitor_id: int) -> CollectionResult:
     competitor = db.get(Competitor, competitor_id)
     if competitor is None:
         raise CompetitorNotFoundError
+    if not competitor.is_active:
+        raise CollectionError("competitor_inactive", "该竞品已停止监控，无法立即采集")
     if not COLLECTION_LOCK.acquire(blocking=False):
         raise CollectionInProgressError
 

@@ -336,6 +336,7 @@ SKU price change 当前也不支持，且不属于当前 change_type 集合。
 
 - 当前历史 Snapshot、SkuSnapshot 和 ChangeEvent 用于保持事实可追溯；
 - 竞品停止监控时优先使用 is_active = false，不要因为停止监控删除历史事实；
+- 永久删除竞品时按 ChangeEvent、CollectionRun、SkuSnapshot、ProductSnapshot、Competitor 顺序删除；CompetitorGroup 保留。删除使用现有 COLLECTION_LOCK 和单事务，失败 rollback；
 - 所有时间字段保存明确的时间值，展示时再转换成本地时间；
 - 不使用字符串保存时间。
 
