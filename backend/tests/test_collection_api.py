@@ -134,6 +134,7 @@ def test_success_persists_run_snapshot_skus_and_competitor(
     body = response.json()
     assert body["snapshot"]["price_min"] == "40.00"
     assert body["snapshot"]["price_max"] == "42.00"
+    assert body["snapshot"]["product_status"] == "active"
     assert body["snapshot"]["sku_count"] == 3
     assert body["collection_run"]["status"] == "success"
     assert body["competitor"]["latest_change"] is None
@@ -143,10 +144,11 @@ def test_success_persists_run_snapshot_skus_and_competitor(
         assert saved_competitor is not None
         assert saved_competitor.title == "新商品标题"
         assert saved_competitor.shop_name == "新店铺"
-        assert saved_competitor.status == "unknown"
+        assert saved_competitor.status == "active"
         assert saved_competitor.last_collected_at == collected.captured_at.replace(tzinfo=None)
         snapshot = session.scalar(select(ProductSnapshot))
         assert snapshot is not None
+        assert snapshot.product_status == "active"
         assert len(session.scalars(select(SkuSnapshot)).all()) == 3
         run = session.scalar(select(CollectionRun))
         assert run is not None
@@ -382,6 +384,7 @@ def test_collection_failures_keep_previous_data_and_map_stable_errors(
         saved_competitor = session.get(Competitor, competitor_id)
         assert saved_competitor is not None
         assert saved_competitor.title == "旧标题"
+        assert saved_competitor.status == "active"
         assert saved_competitor.last_collected_at == datetime(2026, 9, 19)
         assert session.scalar(select(ProductSnapshot)) is None
         run = session.scalar(select(CollectionRun))

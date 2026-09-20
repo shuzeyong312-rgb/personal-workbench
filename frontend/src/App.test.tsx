@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorGroup, ConfirmDialog, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, MoreMenu, Sidebar, buildPriceChartPoints } from "./App";
+import { AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorGroup, ConfirmDialog, DashboardData, DashboardPage, DetailPage, formatChange, formatLatestChange, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, MoreMenu, Sidebar, StatusBadge, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -57,6 +57,16 @@ test("renders loading, empty, error and normal list states", () => {
   expect(normal).toContain("监控中");
 });
 
+test.each([
+  ["unknown", "状态未知"],
+  ["active", "在售"],
+  ["offline", "已下架"],
+] as const)("maps product status %s to %s", (status, label) => {
+  const html = renderToStaticMarkup(<StatusBadge status={status} />);
+  expect(html).toContain(label);
+  expect(html).not.toContain("未采集");
+});
+
 test("renders monitoring actions and disables collection for inactive competitors", () => {
   const activeMenu = renderToStaticMarkup(<MoreMenu competitor={competitor} open onToggle={noop} onAction={noop} />);
   expect(activeMenu).toContain('data-more-menu-portal="body"');
@@ -67,7 +77,7 @@ test("renders monitoring actions and disables collection for inactive competitor
   expect(inactiveMenu).toContain("恢复监控");
   expect(inactiveMenu).not.toContain("停止监控");
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[inactive]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
-  expect(list).toContain("已停止监控");
+  expect(list).toContain("已停止");
   expect(list).toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
 });
 
@@ -79,6 +89,20 @@ test("renders current-page selection counts and inactive checkbox semantics", ()
   expect(html).toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
   expect(html).toContain("checked=\"\"");
   expect(html).not.toContain("立即采集");
+});
+
+test("keeps product and monitoring status in separate list columns", () => {
+  const active = { ...competitor, id: 2, status: "active" as const, title: "在售商品" };
+  const offline = { ...competitor, id: 3, status: "offline" as const, is_active: false, title: "下架商品" };
+  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[active, offline]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain("商品状态");
+  expect(html).toContain("监控状态");
+  expect(html).toContain("在售");
+  expect(html).toContain("已下架");
+  expect(html).toContain("监控中");
+  expect(html).toContain("已停止");
+  expect((html.match(/<th(?:\s|>)/g) ?? [])).toHaveLength(11);
+  expect((html.match(/<td(?:\s|>)/g) ?? [])).toHaveLength(22);
 });
 
 test("renders completed and verification batch states", () => {

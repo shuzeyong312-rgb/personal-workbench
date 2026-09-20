@@ -296,7 +296,9 @@ def _normalize_product(product: ProductData, expected_offer_id: str) -> ProductD
         ),
         price_min=price_min,
         price_max=price_max,
-        product_status=product.product_status,
+        product_status=(
+            "active" if product.product_status == "unknown" else product.product_status
+        ),
         collection_source=product.collection_source,
         captured_at=product.captured_at,
         skus=skus,

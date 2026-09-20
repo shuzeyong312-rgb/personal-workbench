@@ -1,11 +1,12 @@
 from collections.abc import Generator
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -19,7 +20,8 @@ from app.collection.service import (
 )
 from app.database import get_db
 from app.main import app
-from app.models import Base, Competitor
+from app.collection.types import ProductData
+from app.models import Base, Competitor, ProductSnapshot
 
 
 @pytest.fixture()
@@ -191,6 +193,58 @@ def test_runner_reuses_one_browser_and_continues_after_ordinary_failure(
     acquired = COLLECTION_LOCK.acquire(blocking=False)
     assert acquired
     COLLECTION_LOCK.release()
+
+
+def test_batch_success_marks_each_saved_product_active(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    runtime = BatchRuntime()
+    runtime.reserve([1, 2])
+    playwright = FakePlaywright(FakeContext())
+    collected = [
+        ProductData(
+            offer_id="1000000000001",
+            title="商品一",
+            shop_name="店铺一",
+            main_image_url=None,
+            price_min=Decimal("10.00"),
+            price_max=Decimal("10.00"),
+            product_status="unknown",
+            collection_source="html",
+            captured_at=datetime(2026, 9, 19, 1, tzinfo=timezone.utc),
+            skus=[],
+        ),
+        ProductData(
+            offer_id="1000000000002",
+            title="商品二",
+            shop_name="店铺二",
+            main_image_url=None,
+            price_min=Decimal("20.00"),
+            price_max=Decimal("20.00"),
+            product_status="unknown",
+            collection_source="html",
+            captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc),
+            skus=[],
+        ),
+    ]
+
+    with patch("app.collection.service.sync_playwright", return_value=playwright), patch(
+        "app.collection.service.move_context_offscreen"
+    ), patch("app.collection.service.collect_1688_product", side_effect=collected):
+        run_batch_collection(client[1], [1, 2], runtime)
+
+    with client[1]() as session:
+        assert [session.get(Competitor, competitor_id).status for competitor_id in (1, 2)] == [
+            "active",
+            "active",
+        ]
+        assert session.scalars(select(ProductSnapshot)).all()
+        assert {
+            snapshot.product_status
+            for snapshot in session.scalars(select(ProductSnapshot)).all()
+        } == {"active"}
 
 
 def test_verification_stops_remaining_items_and_keeps_lock_until_context_cleanup(
