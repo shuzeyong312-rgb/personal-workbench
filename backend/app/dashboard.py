@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timedelta, timezone
+from html import unescape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends
@@ -149,8 +150,11 @@ def _sku_names(
     historical: dict[tuple[int, str], str] = {}
     exact: dict[tuple[int, str], str] = {}
     for competitor_id, snapshot_id, sku_id, sku_name, _captured_at, _sku_snapshot_id in rows:
-        historical.setdefault((competitor_id, sku_id), sku_name)
-        exact.setdefault((snapshot_id, sku_id), sku_name)
+        display_name = unescape(sku_name).strip() if sku_name else ""
+        if not display_name:
+            continue
+        historical.setdefault((competitor_id, sku_id), display_name)
+        exact.setdefault((snapshot_id, sku_id), display_name)
     return exact, historical
 
 
