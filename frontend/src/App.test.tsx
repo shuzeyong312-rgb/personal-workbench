@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, MoreMenu, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildPriceChartPoints } from "./App";
+import { addCompetitorsSequentially, AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDuration, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, MoreMenu, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildDashboardTrendChartPoints, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -485,7 +485,7 @@ test("renders competitor group labels in the list", () => {
 
 const dashboardData: DashboardData = {
   date: "2026-09-20",
-  stats: { monitored_competitors: 5, changed_competitors: 1, change_events: 2 },
+  stats: { monitored_competitors: 5, changed_competitors: 1, change_events: 2, price_changed_competitors: 1, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 },
   items: [{
     competitor_id: 1,
     title: "暖手宝",
@@ -498,26 +498,83 @@ const dashboardData: DashboardData = {
       { id: 1, change_type: "title_changed", entity_key: null, old_value: null, new_value: null, detected_at: "2026-09-20T09:00:00Z" },
     ],
   }],
+  collection_summary: { last_collection_at: "2026-09-20T10:00:00Z", success_runs: 3, failed_runs: 0, average_duration_seconds: 28 },
+  trend_7d: ["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-19", "2026-09-20"].map((date, index) => ({ date, price_changes: index === 6 ? 2 : 0, stock_changes: index === 5 ? 1 : 0, sku_changes: 0, failed_collections: 0 })),
 };
 
 test("renders dashboard loading, error and empty states", () => {
   expect(renderToStaticMarkup(<DashboardPage data={null} groups={[]} status="loading" error={null} onRetry={noop} onNavigate={noop} />)).toContain("正在加载今日变化");
   expect(renderToStaticMarkup(<DashboardPage data={null} groups={[]} status="error" error="请求失败" onRetry={noop} onNavigate={noop} />)).toContain("重试");
-  expect(renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [], stats: { ...dashboardData.stats, changed_competitors: 0, change_events: 0 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />)).toContain("今天暂无竞品变化");
+  expect(renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [], stats: { ...dashboardData.stats, changed_competitors: 0, change_events: 0 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />)).toContain("今日暂无竞品变化");
 });
 
 test("renders dashboard stats, mapped group and all changes", () => {
   const html = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
-  expect(html).toContain("监控竞品");
-  expect(html).toContain(">5<");
-  expect(html).toContain("今日变化事件");
+  expect(html).toContain("监控中 5 个竞品");
+  expect(html).toContain("今日变价竞品");
+  expect(html).toContain("今日库存变化竞品");
+  expect(html).toContain("今日 SKU 变化竞品");
+  expect(html).toContain("异常采集");
   expect(html).toContain("家居店");
   expect(html).toContain("暖手宝");
-  expect(html).toContain("价格上涨 40.00 → 45.00");
-  expect(html).toContain("标题已变更");
-  expect(html).toContain("2 条变化");
+  expect(html).toContain("¥40.00");
+  expect(html).toContain("¥45.00");
+  expect(html).toContain("变价");
+  expect(html).toContain("标题变化");
+  expect(html).toContain("今日共 2 条变化");
+  expect(html).not.toContain("最近变化列表");
   const unknownGroup = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [{ ...dashboardData.items[0], group_id: 99 }] }} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
-  expect(unknownGroup).toContain("竞品组：—");
+  expect(unknownGroup).toContain(">—</td>");
+});
+
+test("limits dashboard change rows to five", () => {
+  const changes = Array.from({ length: 6 }, (_, index) => ({
+    id: index + 1,
+    change_type: "price_increase",
+    entity_key: null,
+    old_value: "40",
+    new_value: "45",
+    detected_at: "2026-09-20T10:00:00Z",
+  }));
+  const html = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [{ ...dashboardData.items[0], changes }], stats: { ...dashboardData.stats, change_events: 6 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  expect((html.match(/class="change-type-badge/g) || []).length).toBe(5);
+  expect(html).toContain("今日共 6 条变化");
+});
+
+test("formats dashboard change rows, badges, magnitudes, and collection durations", () => {
+  const price = { id: 1, change_type: "price_decrease", entity_key: null, old_value: "40", new_value: "38", detected_at: "2026-09-20T10:00:00Z" };
+  const sku = { id: 2, change_type: "sku_added", entity_key: "sku-red", old_value: null, new_value: "红色", detected_at: "2026-09-20T10:00:00Z" };
+  expect(formatChangeValue(price, "old")).toBe("¥40");
+  expect(formatChangeValue(price, "new")).toBe("¥38");
+  expect(formatChangeMagnitude(price)).toBe("↓ 5.0%");
+  expect(formatChangeValue(sku, "old")).toBe("—");
+  expect(formatChangeValue(sku, "new")).toBe("红色");
+  expect(formatChangeMagnitude(sku)).toBe("—");
+  expect(getChangeTypeLabel("stock_changed")).toBe("库存变化");
+  expect(formatDuration(72)).toBe("1 分 12 秒");
+  expect(formatDuration(null)).toBe("—");
+});
+
+test("renders the seven trend labels and keeps zero-valued chart points valid", () => {
+  const points = buildDashboardTrendChartPoints(dashboardData.trend_7d);
+  expect(points).toHaveLength(7);
+  expect(points.every((point) => Number.isFinite(point.y.price_changes))).toBe(true);
+  const html = renderToStaticMarkup(<DashboardTrendChart trend={dashboardData.trend_7d} />);
+  expect((html.match(/class="chart-label"/g) || []).length).toBeGreaterThanOrEqual(9);
+  expect(html).toContain("09/14");
+  expect(html).toContain("09/20");
+});
+
+test("renders batch state and quick action semantics", () => {
+  const onAdd = () => undefined;
+  const onCollect = () => undefined;
+  const running = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[]} status="ready" error={null} batchState={{ ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true }} onRetry={noop} onNavigate={noop} onAdd={onAdd} onCollect={onCollect} />);
+  expect(running).toContain("采集中 3 / 9");
+  expect(running).toContain('style="width:33.33333333333333%"');
+  const verification = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[]} status="ready" error={null} batchState={{ ...idleBatchState, status: "verification_required", total: 9, completed: 3 }} onRetry={noop} onNavigate={noop} />);
+  expect(verification).toContain("需要人工验证");
+  const empty = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, stats: { ...dashboardData.stats, monitored_competitors: 0 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  expect(empty).toContain('disabled=""');
 });
 
 test("renders detail entry actions on dashboard and competitor list", () => {

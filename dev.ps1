@@ -22,11 +22,11 @@ if (-not (Test-Path -LiteralPath $Vite -PathType Leaf)) {
     exit 1
 }
 
-$backendCommand = "Set-Location -LiteralPath '$BackendDir'; & '$Python' -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+$backendCommand = "Set-Location -LiteralPath '$BackendDir'; & '$Python' -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8100"
 $frontendCommand = "Set-Location -LiteralPath '$FrontendDir'; & '$Vite' --host 127.0.0.1 --port $FrontendPort --strictPort --open"
 
 Start-Process powershell.exe -ArgumentList @('-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $backendCommand)
 Start-Process powershell.exe -ArgumentList @('-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $frontendCommand)
 
-Write-Host 'Backend started in a new PowerShell window: http://127.0.0.1:8000'
+Write-Host 'Backend started in a new PowerShell window: http://127.0.0.1:8100'
 Write-Host "Frontend started in a new PowerShell window: http://127.0.0.1:$FrontendPort"

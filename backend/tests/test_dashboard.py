@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 import app.dashboard as dashboard
 from app.database import get_db
 from app.main import app
-from app.models import Base, ChangeEvent, Competitor, CompetitorGroup, ProductSnapshot
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot
 
 
 @pytest.fixture()
@@ -129,6 +129,24 @@ def add_event(session: Session, competitor: Competitor, detected_at: datetime, c
     return event
 
 
+def add_run(
+    session: Session,
+    competitor: Competitor,
+    started_at: datetime,
+    status: str,
+    finished_at: datetime | None = None,
+) -> CollectionRun:
+    run = CollectionRun(
+        competitor_id=competitor.id,
+        started_at=started_at,
+        finished_at=finished_at,
+        status=status,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
 def test_today_without_events_returns_empty_stats(
     client: tuple[TestClient, sessionmaker[Session]], business_day: None
 ) -> None:
@@ -138,11 +156,25 @@ def test_today_without_events_returns_empty_stats(
 
     body = client[0].get("/api/dashboard/today").json()
 
-    assert body == {
-        "date": "2026-09-20",
-        "stats": {"monitored_competitors": 1, "changed_competitors": 0, "change_events": 0},
-        "items": [],
+    assert body["date"] == "2026-09-20"
+    assert body["stats"] == {
+        "monitored_competitors": 1,
+        "changed_competitors": 0,
+        "change_events": 0,
+        "price_changed_competitors": 0,
+        "stock_changed_competitors": 0,
+        "sku_changed_competitors": 0,
+        "failed_collections": 0,
     }
+    assert body["items"] == []
+    assert body["collection_summary"] == {
+        "last_collection_at": None,
+        "success_runs": 0,
+        "failed_runs": 0,
+        "average_duration_seconds": None,
+    }
+    assert len(body["trend_7d"]) == 7
+    assert all(point["price_changes"] == 0 for point in body["trend_7d"])
 
 
 def test_groups_two_events_for_one_active_competitor(
@@ -158,7 +190,15 @@ def test_groups_two_events_for_one_active_competitor(
 
     body = client[0].get("/api/dashboard/today").json()
 
-    assert body["stats"] == {"monitored_competitors": 1, "changed_competitors": 1, "change_events": 2}
+    assert body["stats"] == {
+        "monitored_competitors": 1,
+        "changed_competitors": 1,
+        "change_events": 2,
+        "price_changed_competitors": 1,
+        "stock_changed_competitors": 0,
+        "sku_changed_competitors": 0,
+        "failed_collections": 0,
+    }
     assert len(body["items"]) == 1
     assert body["items"][0]["competitor_id"] == 1
     assert [change["id"] for change in body["items"][0]["changes"]] == [second.id, first.id]
@@ -232,6 +272,89 @@ def test_excludes_inactive_competitor_even_with_today_event(
     assert body["stats"]["monitored_competitors"] == 1
     assert body["stats"]["change_events"] == 1
     assert [item["competitor_id"] for item in body["items"]] == [2]
+
+
+def test_today_stats_count_distinct_active_competitors_by_change_type_and_failed_runs(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        first = add_competitor(session, 1)
+        second = add_competitor(session, 2)
+        inactive = add_competitor(session, 3, active=False)
+        add_event(session, first, datetime(2026, 9, 20, 1), "price_increase")
+        add_event(session, first, datetime(2026, 9, 20, 2), "price_decrease")
+        add_event(session, first, datetime(2026, 9, 20, 3), "stock_changed")
+        add_event(session, second, datetime(2026, 9, 20, 4), "sku_added")
+        add_event(session, second, datetime(2026, 9, 20, 5), "sku_removed")
+        add_event(session, inactive, datetime(2026, 9, 20, 6), "price_increase")
+        add_run(session, first, datetime(2026, 9, 20, 7), "failed", datetime(2026, 9, 20, 7, 0, 3))
+        add_run(session, second, datetime(2026, 9, 20, 8), "failed", datetime(2026, 9, 20, 8, 0, 4))
+        session.commit()
+
+    stats = client[0].get("/api/dashboard/today").json()["stats"]
+
+    assert stats["price_changed_competitors"] == 1
+    assert stats["stock_changed_competitors"] == 1
+    assert stats["sku_changed_competitors"] == 1
+    assert stats["failed_collections"] == 2
+    assert stats["changed_competitors"] == 2
+
+
+def test_collection_summary_uses_today_runs_and_ignores_unfinished_for_average(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        yesterday = add_run(session, competitor, START_UTC - timedelta(seconds=1), "success", START_UTC)
+        today_success = add_run(session, competitor, datetime(2026, 9, 20, 1), "success", datetime(2026, 9, 20, 1, 0, 10))
+        add_run(session, competitor, datetime(2026, 9, 20, 2), "failed", datetime(2026, 9, 20, 2, 0, 20))
+        add_run(session, competitor, datetime(2026, 9, 20, 3), "running")
+        session.commit()
+
+    body = client[0].get("/api/dashboard/today").json()
+
+    assert body["stats"]["failed_collections"] == 1
+    assert body["collection_summary"] == {
+        "last_collection_at": "2026-09-20T02:00:20",
+        "success_runs": 1,
+        "failed_runs": 1,
+        "average_duration_seconds": 15.0,
+    }
+    assert yesterday.id != today_success.id
+
+
+def test_trend_returns_contiguous_business_dates_with_event_categories_and_failed_runs(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(session, competitor, datetime(2026, 9, 19, 15, 59, 59), "price_increase")
+        add_event(session, competitor, datetime(2026, 9, 19, 16), "price_decrease")
+        add_event(session, competitor, datetime(2026, 9, 20, 15, 59, 59), "stock_changed")
+        add_event(session, competitor, datetime(2026, 9, 20, 16), "sku_added")
+        add_run(session, competitor, datetime(2026, 9, 20, 15, 59, 59), "failed")
+        add_run(session, competitor, datetime(2026, 9, 20, 16), "failed")
+        session.commit()
+
+    trend = client[0].get("/api/dashboard/today").json()["trend_7d"]
+
+    assert [point["date"] for point in trend] == [
+        "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-19", "2026-09-20",
+    ]
+    assert trend[-2] == {
+        "date": "2026-09-19",
+        "price_changes": 1,
+        "stock_changes": 0,
+        "sku_changes": 0,
+        "failed_collections": 0,
+    }
+    assert trend[-1] == {
+        "date": "2026-09-20",
+        "price_changes": 1,
+        "stock_changes": 1,
+        "sku_changes": 0,
+        "failed_collections": 1,
+    }
 
 
 def test_returns_contract_fields_without_group_name(
