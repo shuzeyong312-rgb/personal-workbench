@@ -548,12 +548,12 @@ export function formatDashboardSummary(item: DashboardItem): string {
     return `${formatChangeValue(change, "old")} → ${formatChangeValue(change, "new")}`;
   }
   if (change.change_type === "stock_changed") {
-    if (item.stock_changed_sku_count === null) return "库存变化 · SKU 数量未知";
+    if (item.stock_changed_sku_count === null) return "SKU 数量未知";
     if (item.stock_changed_sku_count === 1) {
       const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "SKU");
       return `${sku} ${formatChangeValue(change, "old")} → ${formatChangeValue(change, "new")}`;
     }
-    return `库存变化 · ${item.stock_changed_sku_count} 个 SKU 发生变化`;
+    return `${item.stock_changed_sku_count} 个 SKU 发生变化`;
   }
   if (change.change_type === "sku_added" || change.change_type === "sku_removed") {
     const parts = [];
