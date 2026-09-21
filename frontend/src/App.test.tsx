@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildDashboardTrendChartPoints, buildPriceChartPoints } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildPriceChartPoints, buildStockChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -680,14 +680,17 @@ const detailData: CompetitorDetail = {
     price_max: "45.00",
     product_status: "unknown",
     sku_count: 2,
+    total_stock: null,
   },
   latest_skus: [
     { sku_id: "sku-0", sku_name: "红色", stock: 0, price: null },
     { sku_id: "sku-null", sku_name: "蓝色", stock: null, price: "41.00" },
   ],
-  price_trend: [
-    { snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: "38.00", price_max: "42.00" },
-    { snapshot_id: 2, captured_at: "2026-09-20T10:00:00Z", price_min: "40.00", price_max: "45.00" },
+  latest_price_change: latestChange({ id: 7, change_type: "price_increase", old_value: "38.00", new_value: "40.00" }),
+  daily_trend: [
+    { date: "2026-09-18", snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: "38.00", price_max: "42.00", total_stock: 12 },
+    { date: "2026-09-19", snapshot_id: null, captured_at: null, price_min: null, price_max: null, total_stock: null },
+    { date: "2026-09-20", snapshot_id: 2, captured_at: "2026-09-20T10:00:00Z", price_min: "40.00", price_max: "45.00", total_stock: null },
   ],
   recent_changes: [latestChange({ id: 8, change_type: "price_increase", old_value: "38.00", new_value: "40.00" })],
   recent_collection_runs: [
@@ -702,7 +705,7 @@ const detailProps = { groups: [group], days: 7 as const, onRetry: noop, onRangeC
 test("renders detail loading, error and local empty states", () => {
   expect(renderToStaticMarkup(<DetailPage {...detailProps} data={null} status="loading" error={null} />)).toContain("正在加载竞品详情");
   expect(renderToStaticMarkup(<DetailPage {...detailProps} data={null} status="error" error="请求失败" />)).toContain("重试");
-  const empty = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, latest_snapshot: null, latest_skus: [], price_trend: [], recent_changes: [], recent_collection_runs: [] }} status="ready" error={null} />);
+  const empty = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, latest_snapshot: null, latest_skus: [], latest_price_change: null, daily_trend: [], recent_changes: [], recent_collection_runs: [] }} status="ready" error={null} />);
   expect(empty).toContain("暂无采集数据");
   expect(empty).toContain("该时间范围暂无可用价格数据");
   expect(empty).toContain("暂无 SKU 数据");
@@ -723,6 +726,57 @@ test("renders detail overview, mapped group, inactive status and latest sku null
   expect(html).toContain("蓝色");
   expect(html).toContain("¥41.00");
   expect(html).toContain("—");
+});
+
+test("detail keeps status in the summary and exposes group assignment", () => {
+  const active = { ...detailData, competitor: { ...detailData.competitor, status: "active" as const, is_active: true } };
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={active} status="ready" error={null} onChangeGroup={noop} />);
+  expect(html).toContain("所属竞品组");
+  expect(html).toContain(">修改</button>");
+  expect((html.match(/status-badge status-active/g) || []).length).toBe(1);
+  expect(html).toContain("商品状态");
+  expect(html).toContain("监控状态");
+  expect(html).toContain("当前库存");
+  expect(html).toContain("SKU 数量");
+  expect(html).toContain("最近采集时间");
+});
+
+test("group assignment dialog keeps the current group selected and supports unassigned", () => {
+  const html = renderToStaticMarkup(<GroupAssignmentDialog groupId={1} groups={[group, { ...group, id: 2, name: "X6" }]} submitting={false} error={null} onChange={noop} onClose={noop} onSubmit={noop} />);
+  expect(html).toContain("修改竞品组");
+  expect(html).toContain("调整当前竞品所属的竞品组。");
+  expect(html).toContain('value=""');
+  expect(html).toContain("未分组");
+  expect(html).toContain("暖手宝");
+  expect(html).toContain("X6");
+  expect(html).toContain('value="1"');
+});
+
+test("group assignment dialog preserves errors and disables controls while saving", () => {
+  const html = renderToStaticMarkup(<GroupAssignmentDialog groupId={null} groups={[]} submitting={true} error="竞品组不存在" onChange={noop} onClose={noop} onSubmit={noop} />);
+  expect(html).toContain("竞品组不存在");
+  expect(html).toContain('disabled=""');
+  expect(getGroupAssignmentErrorMessage("competitor_group_not_found")).toBe("竞品组不存在");
+});
+
+test("group assignment flow sends the target group and supports unassigned", async () => {
+  const calls: { url: string; body: { group_id: number | null } }[] = [];
+  const request = async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), body: JSON.parse(String(init?.body)) as { group_id: number | null } });
+    return { ok: true } as Response;
+  };
+
+  await expect(updateCompetitorGroup(7, 2, request)).resolves.toEqual({ ok: true });
+  await expect(updateCompetitorGroup(7, null, request)).resolves.toEqual({ ok: true });
+  expect(calls).toEqual([
+    { url: "/api/competitors/7/group", body: { group_id: 2 } },
+    { url: "/api/competitors/7/group", body: { group_id: null } },
+  ]);
+});
+
+test("group assignment flow keeps the error result for a failed PATCH", async () => {
+  const result = await updateCompetitorGroup(7, 2, async () => ({ ok: false, json: async () => ({ code: "competitor_group_not_found" }) } as Response));
+  expect(result).toEqual({ ok: false, message: "竞品组不存在" });
 });
 
 test("renders detail lifecycle actions for active and inactive competitors", () => {
@@ -761,22 +815,24 @@ test("renders price chart data, selector state, changes and collection statuses"
   expect(html).toContain("<svg");
 });
 
-test("price chart points filter null snapshots and keep a single real point", () => {
+test("price chart points preserve empty dates and keep real values", () => {
   const points = buildPriceChartPoints([
-    { snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: null, price_max: null },
-    { snapshot_id: 2, captured_at: "2026-09-20T10:00:00Z", price_min: "40.00", price_max: null },
+    { date: "2026-09-18", snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: null, price_max: null, total_stock: null },
+    { date: "2026-09-20", snapshot_id: 2, captured_at: "2026-09-20T10:00:00Z", price_min: "40.00", price_max: null, total_stock: null },
   ]);
-  expect(points).toHaveLength(1);
-  expect(points[0].snapshot_id).toBe(2);
-  expect(points[0].min_y).not.toBeNull();
-  expect(points[0].max_y).toBeNull();
+  expect(points).toHaveLength(2);
+  expect(points[0].date).toBe("2026-09-18");
+  expect(points[0].min_y).toBeNull();
+  expect(points[1].snapshot_id).toBe(2);
+  expect(points[1].min_y).not.toBeNull();
+  expect(points[1].max_y).toBeNull();
 });
 
 test("price chart centers constant prices and uses the compact viewBox", () => {
   const points = buildPriceChartPoints([
-    { snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: "38.80", price_max: "38.80" },
-    { snapshot_id: 2, captured_at: "2026-09-19T10:00:00Z", price_min: "38.80", price_max: "38.80" },
-    { snapshot_id: 3, captured_at: "2026-09-20T10:00:00Z", price_min: "38.80", price_max: "38.80" },
+    { date: "2026-09-18", snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: "38.80", price_max: "38.80", total_stock: null },
+    { date: "2026-09-19", snapshot_id: 2, captured_at: "2026-09-19T10:00:00Z", price_min: "38.80", price_max: "38.80", total_stock: null },
+    { date: "2026-09-20", snapshot_id: 3, captured_at: "2026-09-20T10:00:00Z", price_min: "38.80", price_max: "38.80", total_stock: null },
   ]);
   expect(points).toHaveLength(3);
   expect(points.every((point) => Number.isFinite(point.min_y) && Number.isFinite(point.max_y))).toBe(true);
@@ -785,6 +841,53 @@ test("price chart centers constant prices and uses the compact viewBox", () => {
   const html = renderToStaticMarkup(<DetailPage {...detailProps} data={detailData} status="ready" error={null} />);
   expect(html).toContain('viewBox="0 0 640 170"');
   expect(html).not.toContain('viewBox="0 0 640 220"');
+});
+
+test("detail formatters keep stock, price-change, range and tooltip semantics", () => {
+  expect(formatDetailPriceDisplay(detailData.latest_snapshot)).toBe("¥40.00 ~ ¥45.00");
+  expect(formatStockDisplay(9998)).toBe("9,998");
+  expect(formatPriceChangeTransition(latestChange({ old_value: "40.00", new_value: "38.00", change_type: "price_decrease" }))).toBe("¥40.00 → ¥38.00");
+  expect(formatPriceChangeMagnitude(latestChange({ old_value: "40.00", new_value: "38.00", change_type: "price_decrease" }))).toBe("↓ 5.0%");
+  expect(formatPriceChangeMagnitude(latestChange({ old_value: "40.00~50.00", new_value: "38.00~48.00", change_type: "price_decrease" }))).toBe("—");
+  expect(formatPriceChangeMagnitude(null)).toBe("—");
+  expect(formatTrendTooltip({ date: "2026-09-20", snapshot_id: 1, captured_at: "2026-09-20T10:00:00Z", price_min: "38.80", price_max: "38.80", total_stock: null }, "price")).toEqual(["09/20", "价格 ¥38.80"]);
+  expect(formatTrendTooltip({ date: "2026-09-20", snapshot_id: 1, captured_at: "2026-09-20T10:00:00Z", price_min: null, price_max: null, total_stock: null }, "price")).toEqual([]);
+  expect(formatTrendTooltip({ date: "2026-09-20", snapshot_id: 1, captured_at: "2026-09-20T10:00:00Z", price_min: null, price_max: null, total_stock: 9998 }, "stock")).toEqual(["09/20", "库存 9,998"]);
+});
+
+test("detail renders the overview, three trend cards, shared selector, placeholder and bottom facts", () => {
+  const withImage = { ...detailData, competitor: { ...detailData.competitor, main_image_url: "https://img.example.com/item.jpg", group_id: 1 }, latest_snapshot: { ...detailData.latest_snapshot!, total_stock: 9998 } };
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={withImage} status="ready" error={null} />);
+  expect(html).toContain("https://img.example.com/item.jpg");
+  expect(html).toContain("detail-group-badge");
+  expect(html).toContain("当前库存");
+  expect(html).toContain(">9998<");
+  expect(html).toContain("最近变价");
+  expect(html).toContain("价格趋势");
+  expect(html).toContain("库存趋势");
+  expect(html).toContain("销量趋势");
+  expect(html).toContain("销量数据待接入");
+  expect(html).toContain("当前数据源尚未达到正式采集标准");
+  expect(html).toContain("近 7 天");
+  expect(html).toContain("SKU 信息");
+  expect(html).toContain("最近变化");
+  expect(html).toContain("最近采集记录");
+  expect(html).not.toContain("saleQuantityList");
+});
+
+test("detail uses placeholders for missing image and stock", () => {
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, latest_snapshot: { ...detailData.latest_snapshot!, total_stock: null } }} status="ready" error={null} />);
+  expect(html).toContain("暂无主图");
+  expect(html).toContain("当前库存");
+  expect(html).toContain(">—<");
+});
+
+test("detail keeps 30 daily points and does not render null stock as zero", () => {
+  const dailyTrend = Array.from({ length: 30 }, (_, index) => ({ date: `2026-08-${String(index + 1).padStart(2, "0")}`, snapshot_id: null, captured_at: null, price_min: null, price_max: null, total_stock: null }));
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} days={30} data={{ ...detailData, range_days: 30, daily_trend: dailyTrend }} status="ready" error={null} />);
+  expect(html).toContain("近 30 天");
+  expect(buildStockChartPoints(dailyTrend)).toEqual([]);
+  expect(html).not.toContain("库存 0");
 });
 
 test("detail keeps competitor list active in the sidebar", () => {

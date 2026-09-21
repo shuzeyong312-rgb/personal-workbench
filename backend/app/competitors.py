@@ -36,6 +36,10 @@ class MonitoringRequest(BaseModel):
     is_active: bool
 
 
+class GroupAssignmentRequest(BaseModel):
+    group_id: int | None = None
+
+
 class CompetitorResponse(BaseModel):
     id: int
     platform: str
@@ -524,6 +528,25 @@ def update_monitoring(
         raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
 
     competitor.is_active = payload.is_active
+    competitor.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(competitor)
+    return competitor
+
+
+@router.patch("/{competitor_id}/group", response_model=CompetitorResponse)
+def update_competitor_group_assignment(
+    competitor_id: int,
+    payload: GroupAssignmentRequest,
+    db: Session = Depends(get_db),
+) -> Competitor:
+    competitor = db.get(Competitor, competitor_id)
+    if competitor is None:
+        raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
+    if payload.group_id is not None and db.get(CompetitorGroup, payload.group_id) is None:
+        raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
+
+    competitor.group_id = payload.group_id
     competitor.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(competitor)

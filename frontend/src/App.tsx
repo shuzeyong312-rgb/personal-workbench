@@ -38,6 +38,11 @@ const lifecycleErrorMessages: Record<string, string> = {
   competitor_delete_failed: "竞品删除失败，请稍后重试",
 };
 
+const groupAssignmentErrorMessages: Record<string, string> = {
+  competitor_not_found: "竞品不存在",
+  competitor_group_not_found: "竞品组不存在",
+};
+
 export type Competitor = {
   id: number;
   platform: string;
@@ -216,11 +221,13 @@ export type DashboardTrendPoint = {
   failed_collections: number;
 };
 
-export type PriceTrend = {
-  snapshot_id: number;
-  captured_at: string;
+export type DailyTrendPoint = {
+  date: string;
+  snapshot_id: number | null;
+  captured_at: string | null;
   price_min: string | null;
   price_max: string | null;
+  total_stock: number | null;
 };
 
 export type CompetitorDetail = {
@@ -233,9 +240,11 @@ export type CompetitorDetail = {
     price_max: string | null;
     product_status: "unknown" | "active" | "offline";
     sku_count: number;
+    total_stock: number | null;
   } | null;
   latest_skus: { sku_id: string; sku_name: string; stock: number | null; price: string | null }[];
-  price_trend: PriceTrend[];
+  latest_price_change: Change | null;
+  daily_trend: DailyTrendPoint[];
   recent_changes: Change[];
   recent_collection_runs: {
     id: number;
@@ -248,8 +257,9 @@ export type CompetitorDetail = {
 };
 
 export type PriceChartPoint = {
-  snapshot_id: number;
-  captured_at: string;
+  date: string;
+  snapshot_id: number | null;
+  captured_at: string | null;
   x: number;
   min_y: number | null;
   max_y: number | null;
@@ -257,31 +267,64 @@ export type PriceChartPoint = {
   price_max: string | null;
 };
 
-export function buildPriceChartPoints(trend: readonly PriceTrend[], width = 640, height = 170): PriceChartPoint[] {
-  const usable = trend.filter((item) => item.price_min !== null || item.price_max !== null);
-  const values = usable.flatMap((item) => [item.price_min, item.price_max]).flatMap((value) => {
+export type StockChartPoint = {
+  date: string;
+  snapshot_id: number | null;
+  captured_at: string | null;
+  x: number;
+  y: number | null;
+  total_stock: number | null;
+};
+
+function chartY(value: number, minValue: number, maxValue: number, top: number, plotHeight: number): number {
+  return maxValue === minValue ? top + plotHeight / 2 : top + ((maxValue - value) / (maxValue - minValue)) * plotHeight;
+}
+
+export function buildPriceChartPoints(trend: readonly DailyTrendPoint[], width = 640, height = 170): PriceChartPoint[] {
+  const values = trend.flatMap((item) => [item.price_min, item.price_max]).flatMap((value) => {
     const number = value === null ? NaN : Number(value);
     return Number.isFinite(number) ? [number] : [];
   });
-  if (usable.length === 0 || values.length === 0) return [];
+  if (trend.length === 0 || values.length === 0) return [];
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
-  const valueRange = maxValue === minValue ? 1 : maxValue - minValue;
   const left = 44;
   const right = 16;
   const top = 16;
   const bottom = 30;
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
-  const y = (value: string | null) => value === null ? null : maxValue === minValue ? top + plotHeight / 2 : top + ((maxValue - Number(value)) / valueRange) * plotHeight;
-  return usable.map((item, index) => ({
+  const y = (value: string | null) => value === null ? null : chartY(Number(value), minValue, maxValue, top, plotHeight);
+  return trend.map((item, index) => ({
+    date: item.date,
     snapshot_id: item.snapshot_id,
     captured_at: item.captured_at,
-    x: usable.length === 1 ? left + plotWidth / 2 : left + (index / (usable.length - 1)) * plotWidth,
+    x: trend.length === 1 ? left + plotWidth / 2 : left + (index / (trend.length - 1)) * plotWidth,
     min_y: y(item.price_min),
     max_y: y(item.price_max),
     price_min: item.price_min,
     price_max: item.price_max,
+  }));
+}
+
+export function buildStockChartPoints(trend: readonly DailyTrendPoint[], width = 640, height = 170): StockChartPoint[] {
+  const values = trend.map((item) => item.total_stock).filter((value): value is number => value !== null && Number.isFinite(value));
+  if (trend.length === 0 || values.length === 0) return [];
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const left = 44;
+  const right = 16;
+  const top = 16;
+  const bottom = 30;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  return trend.map((item, index) => ({
+    date: item.date,
+    snapshot_id: item.snapshot_id,
+    captured_at: item.captured_at,
+    x: trend.length === 1 ? left + plotWidth / 2 : left + (index / (trend.length - 1)) * plotWidth,
+    y: item.total_stock === null ? null : chartY(item.total_stock, minValue, maxValue, top, plotHeight),
+    total_stock: item.total_stock,
   }));
 }
 
@@ -394,6 +437,45 @@ export function formatPriceDisplay(snapshot: Competitor["latest_snapshot"]): str
   return `¥${min || max}`;
 }
 
+export function formatDetailPriceDisplay(snapshot: CompetitorDetail["latest_snapshot"]): string {
+  const min = snapshot?.price_min?.trim() || "";
+  const max = snapshot?.price_max?.trim() || "";
+  if (!min && !max) return "—";
+  if (min && max && min === max) return `¥${min}`;
+  if (min && max) return `¥${min} ~ ¥${max}`;
+  return `¥${min || max}`;
+}
+
+function parseSinglePrice(value: string | null): number | null {
+  const raw = value?.trim() || "";
+  if (!raw || /[-~至到]/.test(raw)) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function formatPriceEventValue(value: string | null): string {
+  const raw = value?.trim() || "";
+  if (!raw) return "—";
+  const range = raw.split("~").map((part) => part.trim()).filter(Boolean);
+  if (range.length === 2) return `¥${range[0]} ~ ¥${range[1]}`;
+  return `¥${raw}`;
+}
+
+export function formatPriceChangeTransition(change: Change | null): string {
+  if (change === null) return "暂无价格变化";
+  return `${formatPriceEventValue(change.old_value)} → ${formatPriceEventValue(change.new_value)}`;
+}
+
+export function formatPriceChangeMagnitude(change: Change | null): string {
+  if (change === null || !["price_increase", "price_decrease"].includes(change.change_type)) return "—";
+  const oldValue = parseSinglePrice(change.old_value);
+  const newValue = parseSinglePrice(change.new_value);
+  if (oldValue === null || newValue === null || oldValue === 0) return "—";
+  const percentage = ((newValue - oldValue) / oldValue) * 100;
+  if (percentage === 0) return "—";
+  return `${percentage < 0 ? "↓" : "↑"} ${Math.abs(percentage).toFixed(1)}%`;
+}
+
 export function formatChange(change: Change): string {
   const oldValue = change.old_value ?? "";
   const newValue = change.new_value ?? "";
@@ -496,6 +578,26 @@ export function getLifecycleErrorMessage(code?: string, message?: unknown): stri
   const backendMessage = typeof message === "string" ? message.trim() : "";
   if (backendMessage && !/[<>]/.test(backendMessage) && !/traceback|stack trace|File "/i.test(backendMessage)) return backendMessage;
   return (code && lifecycleErrorMessages[code]) || "操作失败，请稍后重试";
+}
+
+export function getGroupAssignmentErrorMessage(code?: string, message?: unknown): string {
+  const backendMessage = typeof message === "string" ? message.trim() : "";
+  if (backendMessage && !/[<>]/.test(backendMessage) && !/traceback|stack trace|File "/i.test(backendMessage)) return backendMessage;
+  return (code && groupAssignmentErrorMessages[code]) || "竞品组更新失败，请稍后重试";
+}
+
+export type GroupAssignmentResult = { ok: true } | { ok: false; message: string };
+
+export async function updateCompetitorGroup(competitorId: number, groupId: number | null, request: CompetitorRequest = fetch): Promise<GroupAssignmentResult> {
+  try {
+    const response = await request(`/api/competitors/${competitorId}/group`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ group_id: groupId }) });
+    if (response.ok) return { ok: true };
+    let body: CollectionErrorBody = {};
+    try { body = await response.json() as CollectionErrorBody; } catch { /* use the stable fallback below */ }
+    return { ok: false, message: getGroupAssignmentErrorMessage(body.code, body.message) };
+  } catch {
+    return { ok: false, message: "竞品组更新失败，请稍后重试" };
+  }
 }
 
 function formatDate(value: string | null): string {
@@ -621,6 +723,14 @@ export function GroupNameDialog({ mode, name, submitting, error, onChange, onClo
     <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="group-name-dialog-title">{isRename ? "重命名竞品组" : "新增竞品组"}</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
     <p className="dialog-description">{isRename ? "修改竞品组名称，不影响竞品及历史监控数据。" : "竞品组使用我方商品型号命名，用于归集该商品对应的竞品。"}</p>
     <form onSubmit={onSubmit}><label htmlFor="group-name">竞品组名称</label><input id="group-name" value={name} onChange={(event) => onChange(event.target.value)} placeholder="使用商品型号命名，例如 A19、X6" maxLength={64} autoComplete="off" disabled={submitting} />{error && <div className="feedback feedback-server-error" role="alert">{error}</div>}<div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="submit" className="primary-button" disabled={submitting || !name.trim()}>{submitting ? "保存中…" : isRename ? "保存" : "新增竞品组"}</button></div></form>
+  </section></div>;
+}
+
+export function GroupAssignmentDialog({ groupId, groups, submitting, error, onChange, onClose, onSubmit }: { groupId: number | null; groups: CompetitorGroup[]; submitting: boolean; error: string | null; onChange: (groupId: number | null) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
+  return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="group-assignment-dialog-title">
+    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="group-assignment-dialog-title">修改竞品组</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
+    <p className="dialog-description">调整当前竞品所属的竞品组。</p>
+    <form onSubmit={onSubmit}><label htmlFor="detail-competitor-group">竞品组</label><select id="detail-competitor-group" value={groupId === null ? "" : String(groupId)} onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)} disabled={submitting}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select>{error && <div className="feedback feedback-server-error" role="alert">{error}</div>}<div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="submit" className="primary-button" disabled={submitting}>{submitting ? "保存中…" : "保存"}</button></div></form>
   </section></div>;
 }
 
@@ -798,67 +908,125 @@ type DetailPageProps = {
   onRetry: () => void;
   onRangeChange: (days: 7 | 30) => void;
   onBack: () => void;
+  onChangeGroup?: () => void;
   onLifecycleAction?: (action: LifecycleAction, competitor: LifecycleCompetitor) => void;
   lifecycleSubmitting?: boolean;
   onNavigate: (page: Page) => void;
 };
 
 function formatChartDate(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date(value));
+  const date = value.includes("T") ? new Date(value) : new Date(`${value}T00:00:00+08:00`);
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", timeZone: "Asia/Shanghai" }).format(date);
 }
 
-function PriceChart({ trend }: { trend: PriceTrend[] }) {
+function shouldShowChartLabel(index: number, length: number): boolean {
+  if (length <= 8) return true;
+  const step = Math.ceil((length - 1) / 6);
+  return index === 0 || index === length - 1 || index % step === 0;
+}
+
+function lineSegments<T extends { x: number }>(points: readonly T[], key: keyof T): string[][] {
+  const segments: string[][] = [];
+  let segment: string[] = [];
+  for (const point of points) {
+    const value = point[key];
+    if (typeof value !== "number") {
+      if (segment.length > 0) segments.push(segment);
+      segment = [];
+      continue;
+    }
+    segment.push(`${point.x},${value}`);
+  }
+  if (segment.length > 0) segments.push(segment);
+  return segments;
+}
+
+export function formatStockDisplay(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+export function formatTrendTooltip(point: DailyTrendPoint, kind: "price" | "stock"): string[] {
+  const date = formatChartDate(point.date);
+  if (kind === "stock") return point.total_stock === null ? [] : [date, `库存 ${formatStockDisplay(point.total_stock)}`];
+  if (point.price_min === null && point.price_max === null) return [];
+  if (point.price_min !== null && point.price_max !== null && point.price_min === point.price_max) return [date, `价格 ¥${point.price_min}`];
+  return [date, ...(point.price_min === null ? [] : [`最低价 ¥${point.price_min}`]), ...(point.price_max === null ? [] : [`最高价 ¥${point.price_max}`])];
+}
+
+function DetailTrendChart({ kind, trend }: { kind: "price" | "stock"; trend: DailyTrendPoint[] }) {
   const width = 640;
   const height = 170;
   const top = 16;
   const bottom = 30;
   const plotHeight = height - top - bottom;
-  const points = buildPriceChartPoints(trend, width, height);
-  if (points.length === 0) return <div className="detail-empty">该时间范围暂无可用价格数据</div>;
-  const line = (key: "min_y" | "max_y") => points.filter((point) => point[key] !== null).map((point) => `${point.x},${point[key]}`).join(" ");
-  return <div className="price-chart-wrap">
-    <svg className="price-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="价格趋势">
+  const pricePoints = kind === "price" ? buildPriceChartPoints(trend, width, height) : [];
+  const stockPoints = kind === "stock" ? buildStockChartPoints(trend, width, height) : [];
+  const points = kind === "price" ? pricePoints : stockPoints;
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  if (points.length === 0) return <div className="detail-chart-empty">该时间范围暂无可用{kind === "price" ? "价格" : "库存"}数据</div>;
+  const activePoint = activeIndex === null ? null : trend[activeIndex];
+  const activeTooltip = activePoint ? formatTrendTooltip(activePoint, kind) : [];
+  return <div className="detail-chart-shell" onMouseLeave={() => setActiveIndex(null)}>
+    <svg className="detail-trend-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={kind === "price" ? "价格趋势" : "库存趋势"}>
       {[0, 1, 2, 3].map((step) => <line key={step} className="chart-grid-line" x1="44" x2="624" y1={top + step * (plotHeight / 3)} y2={top + step * (plotHeight / 3)} />)}
-      <polyline className="chart-line chart-line-min" points={line("min_y")} />
-      <polyline className="chart-line chart-line-max" points={line("max_y")} />
-      {points.map((point) => <g key={point.snapshot_id}>
-        {point.min_y !== null && <circle className="chart-point chart-point-min" cx={point.x} cy={point.min_y} r="4" />}
-        {point.max_y !== null && <circle className="chart-point chart-point-max" cx={point.x} cy={point.max_y} r="4" />}
-        <text className="chart-label" x={point.x} y={height - 8} textAnchor="middle">{formatChartDate(point.captured_at)}</text>
-      </g>)}
+      {kind === "price" ? <>
+        {lineSegments(pricePoints, "min_y").map((segment, index) => <polyline key={`min-${index}`} className="chart-line chart-line-min" points={segment.join(" ")} />)}
+        {lineSegments(pricePoints, "max_y").map((segment, index) => <polyline key={`max-${index}`} className="chart-line chart-line-max" points={segment.join(" ")} />)}
+        {pricePoints.map((point, index) => <g key={point.date} onMouseEnter={() => setActiveIndex(index)}>
+          {point.min_y !== null && <circle className="chart-point chart-point-min" cx={point.x} cy={point.min_y} r="4" />}
+          {point.max_y !== null && <circle className="chart-point chart-point-max" cx={point.x} cy={point.max_y} r="4" />}
+          {shouldShowChartLabel(index, pricePoints.length) && <text className="chart-label" x={point.x} y={height - 8} textAnchor="middle">{formatChartDate(point.date)}</text>}
+        </g>)}
+      </> : <>
+        {lineSegments(stockPoints, "y").map((segment, index) => <polyline key={`stock-${index}`} className="chart-line chart-line-stock" points={segment.join(" ")} />)}
+        {stockPoints.map((point, index) => <g key={point.date} onMouseEnter={() => setActiveIndex(index)}>
+          {point.y !== null && <circle className="chart-point chart-point-stock" cx={point.x} cy={point.y} r="4" />}
+          {shouldShowChartLabel(index, stockPoints.length) && <text className="chart-label" x={point.x} y={height - 8} textAnchor="middle">{formatChartDate(point.date)}</text>}
+        </g>)}
+      </>}
     </svg>
-    <div className="chart-legend"><span><i className="legend-dot legend-dot-min" />最低价</span><span><i className="legend-dot legend-dot-max" />最高价</span></div>
+    {activeTooltip.length > 0 && <div className="detail-chart-tooltip" role="status" style={{ left: `${Math.min(88, Math.max(12, ((activeIndex ?? 0) / Math.max(1, points.length - 1)) * 100))}%` }}>{activeTooltip.map((line) => <span key={line}>{line}</span>)}</div>}
+    {kind === "price" ? <div className="chart-legend"><span><i className="legend-dot legend-dot-min" />最低价</span><span><i className="legend-dot legend-dot-max" />最高价</span></div> : <div className="chart-legend"><span><i className="legend-dot legend-dot-stock" />库存</span></div>}
   </div>;
 }
 
-function DetailOverview({ data, groups }: { data: CompetitorDetail; groups: CompetitorGroup[] }) {
+function DetailOverview({ data, groups, onChangeGroup }: { data: CompetitorDetail; groups: CompetitorGroup[]; onChangeGroup?: () => void }) {
   const competitor = data.competitor;
+  const latestSnapshot = data.latest_snapshot;
   return <section className="detail-overview table-card">
     <div className="detail-overview-image"><ProductImage competitor={competitor} /></div>
     <div className="detail-overview-main">
       <h2>{competitor.title || "未采集"}</h2>
-      <div className="detail-overview-tags"><StatusBadge status={competitor.status} />{!competitor.is_active && <span className="detail-inactive-badge">已停止监控</span>}</div>
       <dl className="detail-facts">
         <div><dt>店铺名称</dt><dd>{competitor.shop_name || "未采集"}</dd></div>
         <div><dt>商品链接</dt><dd><a href={competitor.url} target="_blank" rel="noreferrer">{competitor.url}</a></dd></div>
         <div><dt>offerId</dt><dd>{competitor.offer_id}</dd></div>
-        <div><dt>所属竞品组</dt><dd>{getCompetitorGroupLabel(competitor.group_id, groups)}</dd></div>
+        <div><dt>所属竞品组</dt><dd className="detail-group-value"><span className="detail-group-badge">{getCompetitorGroupLabel(competitor.group_id, groups)}</span><button type="button" className="detail-group-edit" onClick={onChangeGroup}>修改</button></dd></div>
       </dl>
     </div>
     <div className="detail-overview-stats">
-      <div className="detail-price-stat"><span>当前价格</span><strong>{formatPriceDisplay(data.latest_snapshot)}</strong><small>{data.latest_snapshot ? `采集于 ${formatDate(data.latest_snapshot.captured_at)}` : "暂无采集数据"}</small></div>
-      <div className="detail-stat-grid"><div><span>商品状态</span><strong>{data.latest_snapshot ? <StatusBadge status={data.latest_snapshot.product_status} /> : "未采集"}</strong></div><div><span>SKU 数量</span><strong>{data.latest_snapshot ? data.latest_snapshot.sku_count : "未采集"}</strong></div><div><span>最近采集时间</span><strong>{formatDate(competitor.last_collected_at)}</strong></div><div><span>监控状态</span><strong>{competitor.is_active ? "监控中" : "已停止监控"}</strong></div></div>
+      <div className="detail-price-stat"><span>当前价格</span><div className="detail-price-value-row"><strong>{formatDetailPriceDisplay(latestSnapshot)}</strong>{data.latest_price_change && <b className="detail-price-magnitude">{formatPriceChangeMagnitude(data.latest_price_change)}</b>}</div><small>{latestSnapshot ? `采集于 ${formatDate(latestSnapshot.captured_at)}` : "暂无采集数据"}</small></div>
+      <div className="detail-latest-price-change"><span>最近变价</span><strong>{formatPriceChangeTransition(data.latest_price_change)}</strong></div>
+      <div className="detail-stat-grid"><div><span>商品状态</span><strong><StatusBadge status={competitor.status} /></strong></div><div><span>当前库存</span><strong>{latestSnapshot?.total_stock ?? "—"}</strong></div><div><span>SKU 数量</span><strong>{latestSnapshot ? latestSnapshot.sku_count : "—"}</strong></div><div><span>最近采集时间</span><strong>{formatDate(competitor.last_collected_at)}</strong></div><div><span>监控状态</span><strong>{competitor.is_active ? "监控中" : "已停止监控"}</strong></div></div>
     </div>
   </section>;
 }
 
-export function DetailPage({ data, groups, status, error, days, onRetry, onRangeChange, onBack, onLifecycleAction, lifecycleSubmitting = false, onNavigate }: DetailPageProps) {
+function DetailTrendCard({ kind, title, description, trend }: { kind: "price" | "stock"; title: string; description: string; trend: DailyTrendPoint[] }) {
+  return <section className="table-card detail-trend-card"><div className="table-heading"><div><h3>{title}</h3><span>{description}</span></div></div><DetailTrendChart kind={kind} trend={trend} /></section>;
+}
+
+function SalesPlaceholderCard() {
+  return <section className="table-card detail-trend-card detail-sales-placeholder"><div className="table-heading"><div><h3>销量趋势</h3><span>正式销量能力尚未开放</span></div></div><div className="detail-sales-placeholder-body"><strong>销量数据待接入</strong><span>当前数据源尚未达到正式采集标准</span></div></section>;
+}
+
+export function DetailPage({ data, groups, status, error, days, onRetry, onRangeChange, onBack, onChangeGroup, onLifecycleAction, lifecycleSubmitting = false, onNavigate }: DetailPageProps) {
   if (status === "loading") return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel"><div className="spinner" /><strong>正在加载竞品详情…</strong></div></AppShell>;
   if (status === "error" || data === null) return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品详情。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div></AppShell>;
   return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情">
-    <header className="page-header detail-page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、SKU 信息、变化记录与趋势数据。</p></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={onBack}>返回竞品列表</button>{data.competitor.is_active ? <button type="button" className="secondary-button" onClick={() => onLifecycleAction?.("stop", data.competitor)} disabled={lifecycleSubmitting}>停止监控</button> : <button type="button" className="primary-button" onClick={() => onLifecycleAction?.("resume", data.competitor)} disabled={lifecycleSubmitting}>恢复监控</button>}<button type="button" className="danger-button" onClick={() => onLifecycleAction?.("delete", data.competitor)} disabled={lifecycleSubmitting}>删除竞品</button></div></header>
-    <DetailOverview data={data} groups={groups} />
-    <section className="table-card detail-trend-card"><div className="table-heading"><div><h2>价格趋势</h2><span>基于 ProductSnapshot 价格事实</span></div><div className="range-selector" role="group" aria-label="价格趋势时间范围"><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)}>近 30 天</button></div></div><PriceChart trend={data.price_trend} /></section>
+    <header className="page-header detail-page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、变化趋势、SKU 信息和历史记录。</p></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={onBack}>返回竞品列表</button>{data.competitor.is_active ? <button type="button" className="secondary-button" onClick={() => onLifecycleAction?.("stop", data.competitor)} disabled={lifecycleSubmitting}>停止监控</button> : <button type="button" className="primary-button" onClick={() => onLifecycleAction?.("resume", data.competitor)} disabled={lifecycleSubmitting}>恢复监控</button>}<button type="button" className="detail-danger-button" onClick={() => onLifecycleAction?.("delete", data.competitor)} disabled={lifecycleSubmitting}>删除竞品</button></div></header>
+     <DetailOverview data={data} groups={groups} onChangeGroup={onChangeGroup} />
+    <section className="detail-trends"><div className="detail-trends-header"><div><h2>趋势数据</h2><span>价格和库存来自每日最终 ProductSnapshot</span></div><div className="range-selector" role="group" aria-label="趋势时间范围"><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)}>近 30 天</button></div></div><div className="detail-trend-grid"><DetailTrendCard kind="price" title="价格趋势" description="最低价 / 最高价" trend={data.daily_trend} /><DetailTrendCard kind="stock" title="库存趋势" description="全部 SKU 库存总和" trend={data.daily_trend} /><SalesPlaceholderCard /></div></section>
     <div className="detail-lower-grid">
       <section className="table-card detail-section-card"><div className="table-heading"><div><h2>SKU 信息</h2><span>{data.latest_snapshot ? `共 ${data.latest_snapshot.sku_count} 个` : "当前快照"}</span></div></div>{data.latest_skus.length === 0 ? <div className="detail-empty">暂无 SKU 数据</div> : <div className="table-scroll"><table><thead><tr><th>SKU 规格</th><th>SKU ID</th><th>库存</th><th>SKU 价格</th></tr></thead><tbody>{data.latest_skus.map((sku) => <tr key={sku.sku_id}><td>{sku.sku_name}</td><td>{sku.sku_id}</td><td>{sku.stock === null ? "—" : sku.stock}</td><td>{sku.price === null ? "—" : `¥${sku.price}`}</td></tr>)}</tbody></table></div>}</section>
       <section className="table-card detail-section-card"><div className="table-heading"><div><h2>最近变化</h2><span>最近 20 条</span></div></div>{data.recent_changes.length === 0 ? <div className="detail-empty">暂无变化记录</div> : <div className="detail-record-list">{data.recent_changes.map((change) => <div className="detail-record-row" key={change.id}><strong>{formatChange(change)}</strong><time>{formatDate(change.detected_at)}</time></div>)}</div>}</section>
@@ -960,6 +1128,9 @@ function App() {
   const [groupDeleteDialog, setGroupDeleteDialog] = useState<CompetitorGroupSummary | null>(null);
   const [groupDeleteSubmitting, setGroupDeleteSubmitting] = useState(false);
   const [groupDeleteError, setGroupDeleteError] = useState<string | null>(null);
+  const [groupAssignmentDialog, setGroupAssignmentDialog] = useState<{ competitorId: number; groupId: number | null } | null>(null);
+  const [groupAssignmentSubmitting, setGroupAssignmentSubmitting] = useState(false);
+  const [groupAssignmentError, setGroupAssignmentError] = useState<string | null>(null);
 
   async function loadCompetitors() {
     setListStatus("loading"); setListError(null);
@@ -1100,6 +1271,32 @@ function App() {
       setGroupDeleteError("竞品组删除失败，请稍后重试");
     } finally { setGroupDeleteSubmitting(false); }
   }
+  function openGroupAssignmentDialog() {
+    if (!detail) return;
+    setGroupAssignmentError(null);
+    setGroupAssignmentDialog({ competitorId: detail.competitor.id, groupId: detail.competitor.group_id });
+  }
+  function closeGroupAssignmentDialog() {
+    if (!groupAssignmentSubmitting) { setGroupAssignmentDialog(null); setGroupAssignmentError(null); }
+  }
+  async function submitGroupAssignment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!groupAssignmentDialog || groupAssignmentSubmitting) return;
+    setGroupAssignmentSubmitting(true); setGroupAssignmentError(null);
+    const result = await updateCompetitorGroup(groupAssignmentDialog.competitorId, groupAssignmentDialog.groupId);
+    if (!result.ok) {
+      setGroupAssignmentError(result.message);
+      setGroupAssignmentSubmitting(false);
+      return;
+    }
+    try {
+      setGroupAssignmentDialog(null);
+      setNotice({ message: "竞品组已更新。", type: "success" });
+      await Promise.all([loadDetail(groupAssignmentDialog.competitorId, detailDays), loadCompetitors(), loadDashboard(), loadGroups()]);
+    } catch {
+      setGroupAssignmentError("竞品组更新失败，请稍后重试");
+    } finally { setGroupAssignmentSubmitting(false); }
+  }
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const urls = parseCompetitorUrls(url);
@@ -1145,6 +1342,7 @@ function App() {
   }
   async function refreshAfterLifecycle(message: string, competitor: LifecycleCompetitor, deleted = false) {
     setLifecycleDialog(null); setLifecycleError(null);
+    setGroupLoaded(false);
     if (deleted) {
       latestDetailRequestId.current += 1;
       setDetail(null); setDetailError(null); setDetailStatus("loading"); setSelectedCompetitorId(null);
@@ -1153,7 +1351,6 @@ function App() {
     } else {
       await Promise.all([loadCompetitors(), loadDashboard(), loadDetail(competitor.id, detailDays)]);
     }
-    setGroupLoaded(false);
     setNotice({ message, type: "success" });
   }
   async function updateMonitoring(competitor: LifecycleCompetitor, isActive: boolean, dialogAction: "stop" | null) {
@@ -1186,7 +1383,7 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
+  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
 }
 
 export default App;

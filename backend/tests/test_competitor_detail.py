@@ -1,5 +1,5 @@
 from collections.abc import Generator
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -8,6 +8,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.competitor_detail import calculate_total_stock
+from app.dashboard import business_date_utc_bounds, business_day_bounds
 from app.database import get_db
 from app.main import app
 from app.models import Base, ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
@@ -34,15 +36,6 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
     engine.dispose()
 
 
-def test_missing_competitor_returns_stable_detail_error(
-    client: tuple[TestClient, sessionmaker[Session]],
-) -> None:
-    response = client[0].get("/api/competitors/999/detail")
-
-    assert response.status_code == 404
-    assert response.json() == {"code": "competitor_not_found", "message": "竞品不存在"}
-
-
 def add_competitor(session: Session, *, active: bool = True) -> Competitor:
     now = datetime.now(timezone.utc)
     competitor = Competitor(
@@ -62,6 +55,11 @@ def add_competitor(session: Session, *, active: bool = True) -> Competitor:
     return competitor
 
 
+def utc_for_business_day(business_date: date, *, hours: int = 12) -> datetime:
+    start_utc, _ = business_date_utc_bounds(business_date)
+    return (start_utc + timedelta(hours=hours)).replace(tzinfo=timezone.utc)
+
+
 def add_snapshot(
     session: Session,
     competitor_id: int,
@@ -69,7 +67,7 @@ def add_snapshot(
     *,
     price_min: Decimal | None = Decimal("40.00"),
     price_max: Decimal | None = Decimal("45.00"),
-    sku_id: str | None = None,
+    skus: list[tuple[str, int | None]] | None = None,
 ) -> ProductSnapshot:
     snapshot = ProductSnapshot(
         competitor_id=competitor_id,
@@ -81,17 +79,49 @@ def add_snapshot(
         product_status="unknown",
         collection_source="html",
     )
-    if sku_id is not None:
+    if skus is not None:
         snapshot.skus = [
-            SkuSnapshot(sku_id=sku_id, sku_name=sku_id, stock=0, price=None),
-            SkuSnapshot(sku_id="sku-null", sku_name="无库存", stock=None, price=Decimal("41.00")),
+            SkuSnapshot(sku_id=sku_id, sku_name=sku_id, stock=stock, price=None)
+            for sku_id, stock in skus
         ]
     session.add(snapshot)
     session.flush()
     return snapshot
 
 
-def test_no_snapshot_returns_empty_detail_sections(
+def add_change(
+    session: Session,
+    competitor_id: int,
+    snapshot_id: int,
+    change_type: str,
+    detected_at: datetime,
+    *,
+    old_value: str | None = None,
+    new_value: str | None = None,
+) -> ChangeEvent:
+    change = ChangeEvent(
+        competitor_id=competitor_id,
+        snapshot_id=snapshot_id,
+        change_type=change_type,
+        old_value=old_value,
+        new_value=new_value,
+        detected_at=detected_at,
+    )
+    session.add(change)
+    session.flush()
+    return change
+
+
+def test_missing_competitor_returns_stable_detail_error(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    response = client[0].get("/api/competitors/999/detail")
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "competitor_not_found", "message": "竞品不存在"}
+
+
+def test_no_snapshot_returns_continuous_empty_daily_trend(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     with client[1]() as session:
@@ -103,83 +133,191 @@ def test_no_snapshot_returns_empty_detail_sections(
     assert body["range_days"] == 7
     assert body["latest_snapshot"] is None
     assert body["latest_skus"] == []
-    assert body["price_trend"] == []
+    assert body["latest_price_change"] is None
+    assert len(body["daily_trend"]) == 7
+    assert [item["date"] for item in body["daily_trend"]] == sorted(item["date"] for item in body["daily_trend"])
+    assert all(item["snapshot_id"] is None for item in body["daily_trend"])
 
 
-def test_latest_snapshot_and_skus_use_captured_at_then_id_and_preserve_nulls(
+def test_daily_trend_returns_continuous_seven_and_thirty_business_days(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
-    captured_at = datetime.now(timezone.utc) - timedelta(days=20)
+    today, _, _ = business_day_bounds()
     with client[1]() as session:
         competitor = add_competitor(session)
-        older = add_snapshot(session, competitor.id, captured_at, sku_id="old-sku")
-        first = add_snapshot(session, competitor.id, captured_at, sku_id="first-sku")
-        latest = add_snapshot(
+        add_snapshot(session, competitor.id, utc_for_business_day(today - timedelta(days=6)))
+        add_snapshot(session, competitor.id, utc_for_business_day(today - timedelta(days=2)))
+        session.commit()
+
+    seven = client[0].get(f"/api/competitors/{competitor.id}/detail?days=7").json()["daily_trend"]
+    thirty = client[0].get(f"/api/competitors/{competitor.id}/detail?days=30").json()["daily_trend"]
+
+    assert len(seven) == 7
+    assert len(thirty) == 30
+    assert seven[0]["date"] < seven[-1]["date"]
+    assert sum(item["snapshot_id"] is not None for item in seven) == 2
+    assert seven[1]["snapshot_id"] is None
+
+
+def test_daily_trend_selects_largest_id_when_snapshot_times_tie(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    today, _, _ = business_day_bounds()
+    same_time = utc_for_business_day(today, hours=8)
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        tied_first = add_snapshot(
             session,
             competitor.id,
-            captured_at,
-            price_min=None,
-            price_max=None,
-            sku_id="latest-sku",
+            same_time,
+            price_min=Decimal("35.00"),
+            price_max=Decimal("35.00"),
+            skus=[("first", 10)],
+        )
+        tied_last = add_snapshot(
+            session,
+            competitor.id,
+            same_time,
+            price_min=Decimal("36.00"),
+            price_max=Decimal("36.00"),
+            skus=[("last", 20)],
         )
         session.commit()
 
-    body = client[0].get(f"/api/competitors/{competitor.id}/detail?days=7").json()
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+    today_point = body["daily_trend"][-1]
 
-    assert body["latest_snapshot"]["id"] == latest.id
-    assert body["latest_snapshot"]["sku_count"] == 2
-    assert body["latest_snapshot"]["price_min"] is None
-    assert [sku["sku_id"] for sku in body["latest_skus"]] == ["latest-sku", "sku-null"]
-    assert body["latest_skus"][0]["stock"] == 0
-    assert body["latest_skus"][1]["stock"] is None
-    assert body["latest_skus"][1]["price"] == "41.00"
-    assert body["price_trend"] == []
-    assert older.id < first.id < latest.id
+    assert tied_first.id < tied_last.id
+    assert today_point["snapshot_id"] == tied_last.id
+    assert today_point["price_min"] == "36.00"
+    assert today_point["total_stock"] == 20
 
 
-def test_price_trend_uses_utc_window_and_captured_at_id_ascending_order(
+def test_daily_trend_uses_asia_shanghai_boundary(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
-    now = datetime.now(timezone.utc)
+    today, _, _ = business_day_bounds()
+    start_utc, _ = business_date_utc_bounds(today)
+    before_midnight = (start_utc - timedelta(minutes=1)).replace(tzinfo=timezone.utc)
+    after_midnight = (start_utc + timedelta(minutes=30)).replace(tzinfo=timezone.utc)
     with client[1]() as session:
         competitor = add_competitor(session)
-        old = add_snapshot(session, competitor.id, now - timedelta(days=8))
-        in_seven_days = add_snapshot(session, competitor.id, now - timedelta(days=3))
-        same_time_first = add_snapshot(session, competitor.id, now - timedelta(days=1))
-        same_time_second = add_snapshot(session, competitor.id, now - timedelta(days=1))
-        in_thirty_days = add_snapshot(session, competitor.id, now - timedelta(days=20))
+        previous = add_snapshot(session, competitor.id, before_midnight, price_min=Decimal("39.00"), price_max=Decimal("39.00"))
+        current = add_snapshot(session, competitor.id, after_midnight, price_min=Decimal("40.00"), price_max=Decimal("40.00"))
         session.commit()
 
-    seven = client[0].get(f"/api/competitors/{competitor.id}/detail?days=7").json()["price_trend"]
-    thirty = client[0].get(f"/api/competitors/{competitor.id}/detail?days=30").json()["price_trend"]
+    trend = client[0].get(f"/api/competitors/{competitor.id}/detail?days=7").json()["daily_trend"]
 
-    assert old.id not in [item["snapshot_id"] for item in seven]
-    assert [item["snapshot_id"] for item in seven] == [in_seven_days.id, same_time_first.id, same_time_second.id]
-    assert [item["snapshot_id"] for item in thirty] == [in_thirty_days.id, old.id, in_seven_days.id, same_time_first.id, same_time_second.id]
+    assert trend[-1]["date"] == today.isoformat()
+    assert trend[-1]["snapshot_id"] == current.id
+    assert trend[-2]["snapshot_id"] == previous.id
 
 
-def test_price_trend_keeps_null_prices(
+@pytest.mark.parametrize(
+    ("skus", "expected"),
+    [
+        (["zero", "ten", "twenty"], 30),
+        (["zero"], 0),
+        (["unknown"], None),
+        ([], None),
+    ],
+)
+def test_calculate_total_stock_preserves_zero_null_and_no_sku(
+    skus: list[str],
+    expected: int | None,
+) -> None:
+    values = {"zero": 0, "ten": 10, "twenty": 20, "unknown": None}
+    sku_rows = [SkuSnapshot(sku_id=sku_id, sku_name=sku_id, stock=values[sku_id]) for sku_id in skus]
+
+    assert calculate_total_stock(sku_rows) == expected
+
+
+def test_detail_exposes_current_stock_and_daily_stock_with_same_rule(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
+    today, _, _ = business_day_bounds()
     with client[1]() as session:
         competitor = add_competitor(session)
         snapshot = add_snapshot(
             session,
             competitor.id,
-            datetime.now(timezone.utc) - timedelta(hours=1),
-            price_min=None,
-            price_max=None,
+            utc_for_business_day(today),
+            skus=[("zero", 0), ("ten", 10), ("twenty", 20)],
         )
         session.commit()
 
-    trend = client[0].get(f"/api/competitors/{competitor.id}/detail").json()["price_trend"]
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
 
-    assert trend == [{
-        "snapshot_id": snapshot.id,
-        "captured_at": snapshot.captured_at.replace(tzinfo=None).isoformat(),
-        "price_min": None,
-        "price_max": None,
-    }]
+    assert body["latest_snapshot"]["total_stock"] == 30
+    assert body["daily_trend"][-1]["snapshot_id"] == snapshot.id
+    assert body["daily_trend"][-1]["total_stock"] == 30
+
+
+def test_unknown_stock_and_no_sku_return_null_not_zero(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    today, _, _ = business_day_bounds()
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        add_snapshot(session, competitor.id, utc_for_business_day(today), skus=[("known", 10), ("unknown", None)])
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert body["latest_snapshot"]["total_stock"] is None
+    assert body["daily_trend"][-1]["total_stock"] is None
+
+
+def test_latest_price_change_ignores_newer_non_price_events_and_preserves_range(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        snapshot = add_snapshot(session, competitor.id, timestamp)
+        add_change(session, competitor.id, snapshot.id, "price_decrease", timestamp, old_value="40.00~50.00", new_value="38.00~48.00")
+        add_change(session, competitor.id, snapshot.id, "stock_changed", timestamp + timedelta(minutes=1), old_value="10", new_value="0")
+        add_change(session, competitor.id, snapshot.id, "title_changed", timestamp + timedelta(minutes=2))
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert body["latest_price_change"]["change_type"] == "price_decrease"
+    assert body["latest_price_change"]["old_value"] == "40.00~50.00"
+    assert body["latest_price_change"]["new_value"] == "38.00~48.00"
+
+
+@pytest.mark.parametrize("change_type", ["price_increase", "price_decrease"])
+def test_latest_price_change_supports_both_price_directions(
+    client: tuple[TestClient, sessionmaker[Session]],
+    change_type: str,
+) -> None:
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        snapshot = add_snapshot(session, competitor.id, timestamp)
+        add_change(session, competitor.id, snapshot.id, change_type, timestamp, old_value="40.00", new_value="42.00")
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert body["latest_price_change"]["change_type"] == change_type
+
+
+def test_no_price_event_returns_null_even_with_recent_other_changes(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        snapshot = add_snapshot(session, competitor.id, timestamp)
+        add_change(session, competitor.id, snapshot.id, "stock_changed", timestamp, old_value="1", new_value="2")
+        add_change(session, competitor.id, snapshot.id, "sku_added", timestamp + timedelta(minutes=1), new_value="红色")
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert body["latest_price_change"] is None
 
 
 def test_recent_changes_and_collection_runs_are_limited_and_stably_ordered(

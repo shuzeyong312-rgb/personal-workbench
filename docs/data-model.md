@@ -71,6 +71,7 @@ last_collected_at
 - platform + offer_id 具有唯一约束；
 - url 保存标准化后的商品链接；
 - group_id 可为 NULL，或引用 competitor_groups.id；NULL 表示未分组；
+- 竞品详情页的分组更新只修改当前 Competitor.group_id，可在已有组之间移动或设为 NULL，不改写任何历史快照、SKU、变化事件或采集记录；
 - title、shop_name、main_image_url 保存最近一次成功采集得到的当前信息；
 - main_image_url 当前允许为 NULL，尚未成为可靠的图片变化事实来源；
 - last_collected_at 只在成功采集后更新；
@@ -302,10 +303,12 @@ Competitor
 → ProductSnapshot.price_min / price_max
 
 库存趋势
-→ SkuSnapshot.stock
+→ ProductSnapshot 对应的 SkuSnapshot.stock
 ~~~
 
-当前竞品详情已支持基于 ProductSnapshot.price_min / price_max 的 7 天 / 30 天价格趋势查询和展示，未增加额外趋势聚合表。当前不支持销量趋势，因为 ProductSnapshot 没有销量字段；商品级库存趋势也未定义、未实现。
+竞品详情的 `daily_trend` 返回连续 7 天或 30 天的 Asia/Shanghai 业务日。每天只选择该业务日最后一条成功 `ProductSnapshot`，排序为 `captured_at DESC, id DESC`；缺少采集的日期保留空点，不复制上一日值。价格和库存来自同一每日最终快照，库存按该快照全部 SKU 的 `stock` 求和；无 SKU 或任一库存为 NULL 时总库存为 NULL，0 是有效库存。
+
+详情 API 还动态提供最近一条价格 `ChangeEvent`（只考虑 `price_increase` / `price_decrease`，按 `detected_at DESC, id DESC`），不新增趋势聚合表或数据库字段。当前不支持正式销量趋势，因为 ProductSnapshot 没有销量字段；前端仅展示销量能力占位。
 
 ---
 
@@ -316,7 +319,7 @@ Competitor
 - sales snapshot / sales change；
 - 可靠的商品下架检测；
 - 主图变化检测；
-- 销量趋势和商品级库存趋势展示；
+- 正式销量趋势展示；
 
 ### 10.1 未来但尚未实现的 change_type
 

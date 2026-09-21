@@ -303,6 +303,89 @@ def test_list_returns_competitor_group_id(
     assert client[0].get("/api/competitors").json()[0]["group_id"] == group_id
 
 
+def test_updates_competitor_group_assignment_and_preserves_history(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    first_group_id = test_client.post("/api/competitor-groups", json={"name": "A19"}).json()["id"]
+    second_group_id = test_client.post("/api/competitor-groups", json={"name": "X6"}).json()["id"]
+    competitor_id = test_client.post(
+        "/api/competitors",
+        json={"url": "https://detail.1688.com/offer/123456789.html", "group_id": first_group_id},
+    ).json()["id"]
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with session_factory() as session:
+        snapshot = ProductSnapshot(
+            competitor_id=competitor_id,
+            captured_at=now,
+            title="历史商品",
+            shop_name="历史店铺",
+            product_status="active",
+            collection_source="html",
+            skus=[SkuSnapshot(sku_id="sku-1", sku_name="红色", stock=2, price=None)],
+        )
+        session.add(snapshot)
+        session.flush()
+        session.add_all(
+            [
+                ChangeEvent(
+                    competitor_id=competitor_id,
+                    snapshot_id=snapshot.id,
+                    change_type="title_changed",
+                    old_value="旧标题",
+                    new_value="历史商品",
+                    detected_at=now,
+                ),
+                CollectionRun(
+                    competitor_id=competitor_id,
+                    started_at=now,
+                    finished_at=now,
+                    status="success",
+                ),
+            ]
+        )
+        session.commit()
+
+    moved = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": second_group_id})
+    assert moved.status_code == 200
+    assert moved.json()["group_id"] == second_group_id
+    assert moved.json()["is_active"] is True
+
+    unassigned = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": None})
+    assert unassigned.status_code == 200
+    assert unassigned.json()["group_id"] is None
+
+    reassigned = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": first_group_id})
+    assert reassigned.status_code == 200
+    assert reassigned.json()["group_id"] == first_group_id
+
+    idempotent = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": first_group_id})
+    assert idempotent.status_code == 200
+    assert idempotent.json()["group_id"] == first_group_id
+
+    with session_factory() as session:
+        assert session.scalar(select(ProductSnapshot)) is not None
+        assert session.scalar(select(SkuSnapshot)) is not None
+        assert session.scalar(select(ChangeEvent)) is not None
+        assert session.scalar(select(CollectionRun)) is not None
+
+
+def test_group_assignment_rejects_missing_competitor_and_group(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client = client[0]
+    missing_competitor = test_client.patch("/api/competitors/999/group", json={"group_id": None})
+    assert missing_competitor.status_code == 404
+    assert missing_competitor.json()["code"] == "competitor_not_found"
+
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/123456789.html"}
+    ).json()["id"]
+    missing_group = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": 999})
+    assert missing_group.status_code == 404
+    assert missing_group.json()["code"] == "competitor_group_not_found"
+
+
 def test_duplicate_offer_id_returns_409_without_new_record(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:

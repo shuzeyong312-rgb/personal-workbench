@@ -167,6 +167,8 @@ mtop.1688...
 
 内部统一使用项目自己的字段。
 
+竞品详情趋势继续复用现有 `GET /api/competitors/{id}/detail?days=7|30`。Backend 使用 dashboard 的 Asia/Shanghai business-day helper，将日期范围转换为 UTC 半开区间，按 `captured_at DESC, id DESC` 选择每日最终 `ProductSnapshot`，再一次性批量读取所选快照的 `SkuSnapshot`，避免按日期逐个查询 SKU 的 N+1。`daily_trend` 同时承载每日价格和库存事实；销量不进入该 contract，仅保留前端占位。
+
 ## 9. 数据库原则
 
 V1 使用 SQLite。

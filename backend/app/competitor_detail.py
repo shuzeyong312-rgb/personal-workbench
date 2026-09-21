@@ -1,4 +1,6 @@
-from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from collections.abc import Sequence
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -6,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.competitors import _price_text, error
+from app.dashboard import business_date_for_utc, business_date_utc_bounds, business_day_bounds
 from app.database import get_db
 from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
 
@@ -35,6 +38,7 @@ class LatestSnapshotDetailResponse(BaseModel):
     price_max: str | None
     product_status: str
     sku_count: int
+    total_stock: int | None
 
 
 class LatestSkuResponse(BaseModel):
@@ -44,11 +48,13 @@ class LatestSkuResponse(BaseModel):
     price: str | None
 
 
-class PriceTrendResponse(BaseModel):
-    snapshot_id: int
-    captured_at: datetime
+class DailyTrendResponse(BaseModel):
+    date: date
+    snapshot_id: int | None
+    captured_at: datetime | None
     price_min: str | None
     price_max: str | None
+    total_stock: int | None
 
 
 class DetailChangeResponse(BaseModel):
@@ -75,9 +81,45 @@ class CompetitorDetailResponse(BaseModel):
     competitor: DetailCompetitorResponse
     latest_snapshot: LatestSnapshotDetailResponse | None
     latest_skus: list[LatestSkuResponse]
-    price_trend: list[PriceTrendResponse]
+    latest_price_change: DetailChangeResponse | None
+    daily_trend: list[DailyTrendResponse]
     recent_changes: list[DetailChangeResponse]
     recent_collection_runs: list[DetailCollectionRunResponse]
+
+
+def calculate_total_stock(skus: Sequence[SkuSnapshot]) -> int | None:
+    """Return a complete SKU total, preserving unknown stock as unknown."""
+    if not skus or any(sku.stock is None for sku in skus):
+        return None
+    return sum(sku.stock for sku in skus if sku.stock is not None)
+
+
+def _daily_snapshot_selection(
+    db: Session,
+    competitor_id: int,
+    days: int,
+) -> tuple[list[date], dict[date, ProductSnapshot]]:
+    current_date, _, end_utc = business_day_bounds()
+    first_date = current_date - timedelta(days=days - 1)
+    start_utc, _ = business_date_utc_bounds(first_date)
+    snapshots = list(
+        db.scalars(
+            select(ProductSnapshot)
+            .where(
+                ProductSnapshot.competitor_id == competitor_id,
+                ProductSnapshot.captured_at >= start_utc,
+                ProductSnapshot.captured_at < end_utc,
+            )
+            .order_by(ProductSnapshot.captured_at.desc(), ProductSnapshot.id.desc())
+        ).all()
+    )
+    latest_by_date: dict[date, ProductSnapshot] = {}
+    for snapshot in snapshots:
+        snapshot_date = business_date_for_utc(snapshot.captured_at)
+        if first_date <= snapshot_date <= current_date and snapshot_date not in latest_by_date:
+            latest_by_date[snapshot_date] = snapshot
+    dates = [first_date + timedelta(days=offset) for offset in range(days)]
+    return dates, latest_by_date
 
 
 @router.get("/{competitor_id}/detail", response_model=CompetitorDetailResponse)
@@ -98,29 +140,30 @@ def get_competitor_detail(
         .order_by(ProductSnapshot.captured_at.desc(), ProductSnapshot.id.desc())
         .limit(1)
     )
-    latest_skus = (
-        list(
-            db.scalars(
-                select(SkuSnapshot)
-                .where(SkuSnapshot.product_snapshot_id == latest_snapshot.id)
-                .order_by(SkuSnapshot.id.asc())
-            ).all()
-        )
-        if latest_snapshot is not None
-        else []
-    )
+    dates, daily_snapshots = _daily_snapshot_selection(db, competitor_id, days)
+    selected_snapshot_ids = {snapshot.id for snapshot in daily_snapshots.values()}
+    if latest_snapshot is not None:
+        selected_snapshot_ids.add(latest_snapshot.id)
 
-    now = datetime.now(timezone.utc)
-    trend = list(
-        db.scalars(
-            select(ProductSnapshot)
-            .where(
-                ProductSnapshot.competitor_id == competitor_id,
-                ProductSnapshot.captured_at >= now - timedelta(days=days),
-                ProductSnapshot.captured_at <= now,
-            )
-            .order_by(ProductSnapshot.captured_at.asc(), ProductSnapshot.id.asc())
+    skus_by_snapshot: defaultdict[int, list[SkuSnapshot]] = defaultdict(list)
+    if selected_snapshot_ids:
+        selected_skus = db.scalars(
+            select(SkuSnapshot)
+            .where(SkuSnapshot.product_snapshot_id.in_(selected_snapshot_ids))
+            .order_by(SkuSnapshot.product_snapshot_id.asc(), SkuSnapshot.id.asc())
         ).all()
+        for sku in selected_skus:
+            skus_by_snapshot[sku.product_snapshot_id].append(sku)
+
+    latest_skus = skus_by_snapshot.get(latest_snapshot.id, []) if latest_snapshot is not None else []
+    latest_price_change = db.scalar(
+        select(ChangeEvent)
+        .where(
+            ChangeEvent.competitor_id == competitor_id,
+            ChangeEvent.change_type.in_(("price_increase", "price_decrease")),
+        )
+        .order_by(ChangeEvent.detected_at.desc(), ChangeEvent.id.desc())
+        .limit(1)
     )
     changes = list(
         db.scalars(
@@ -139,6 +182,21 @@ def get_competitor_detail(
         ).all()
     )
 
+    daily_trend = []
+    for snapshot_date in dates:
+        snapshot = daily_snapshots.get(snapshot_date)
+        snapshot_skus = skus_by_snapshot.get(snapshot.id, []) if snapshot is not None else []
+        daily_trend.append(
+            {
+                "date": snapshot_date,
+                "snapshot_id": snapshot.id if snapshot is not None else None,
+                "captured_at": snapshot.captured_at if snapshot is not None else None,
+                "price_min": _price_text(snapshot.price_min) if snapshot is not None else None,
+                "price_max": _price_text(snapshot.price_max) if snapshot is not None else None,
+                "total_stock": calculate_total_stock(snapshot_skus) if snapshot is not None else None,
+            }
+        )
+
     return {
         "range_days": days,
         "competitor": competitor,
@@ -150,6 +208,7 @@ def get_competitor_detail(
                 "price_max": _price_text(latest_snapshot.price_max),
                 "product_status": latest_snapshot.product_status,
                 "sku_count": len(latest_skus),
+                "total_stock": calculate_total_stock(latest_skus),
             }
             if latest_snapshot is not None
             else None
@@ -163,15 +222,8 @@ def get_competitor_detail(
             }
             for sku in latest_skus
         ],
-        "price_trend": [
-            {
-                "snapshot_id": snapshot.id,
-                "captured_at": snapshot.captured_at,
-                "price_min": _price_text(snapshot.price_min),
-                "price_max": _price_text(snapshot.price_max),
-            }
-            for snapshot in trend
-        ],
+        "latest_price_change": latest_price_change,
+        "daily_trend": daily_trend,
         "recent_changes": changes,
         "recent_collection_runs": collection_runs,
     }
