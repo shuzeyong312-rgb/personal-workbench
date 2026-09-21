@@ -22,7 +22,7 @@ CompetitorGroup
 
 ## 2. 当前已实现：CompetitorGroup
 
-表示竞品所属的分组。
+表示我方一个目标商品型号对应的竞品集合。
 
 当前字段：
 
@@ -37,6 +37,9 @@ created_at
 - name 为非空、唯一字符串，保存创建时 trim 后的名称；
 - name 长度限制为 64 个字符；
 - CompetitorGroup 与 Competitor 为 1 → N 关系。
+- name 直接作为商品型号显示，不维护独立的我方商品实体；
+- 删除型号只将其 Competitor.group_id 置为 NULL，不删除竞品或历史监控事实；
+- 重命名型号只修改 name，不修改 Competitor、Snapshot、ChangeEvent 或 CollectionRun。
 
 ---
 
@@ -310,7 +313,6 @@ Competitor
 
 以下内容仍是长期 V1 目标，但当前没有对应的完整实现，不能当作当前数据模型：
 
-- 删除、重命名和筛选竞品组；
 - sales snapshot / sales change；
 - 可靠的商品下架检测；
 - 主图变化检测；

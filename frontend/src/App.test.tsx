@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDuration, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, MoreMenu, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildDashboardTrendChartPoints, buildPriceChartPoints } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, MoreMenu, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildDashboardTrendChartPoints, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -23,6 +23,8 @@ const competitor: Competitor = {
 const noop = () => undefined;
 const listProps = { groups: [] as CompetitorGroup[] };
 const group: CompetitorGroup = { id: 1, name: "暖手宝", created_at: "2026-09-20T10:00:00Z" };
+const groupMetrics: CompetitorGroupMetrics = { competitor_count: 3, active_count: 2, price_min: "34.00", price_max: "40.00", changed_competitors_today: 2, last_change_at: "2026-09-21T10:35:00Z" };
+const groupSummary: CompetitorGroupSummary = { ...group, ...groupMetrics };
 const latestChange = (overrides: Partial<NonNullable<Competitor["latest_change"]>> = {}): NonNullable<Competitor["latest_change"]> => ({
   id: 1,
   snapshot_id: 2,
@@ -217,7 +219,7 @@ test("continues after one URL fails and retains failure reasons", async () => {
     { url: "B", code: "competitor_already_exists", reason: "已存在" },
     { url: "C", code: "invalid_competitor_url", reason: "链接格式无效" },
   ]);
-  expect(getAddFailureReason("competitor_group_not_found")).toBe("竞品组不存在");
+  expect(getAddFailureReason("competitor_group_not_found")).toBe("商品型号不存在");
 });
 
 test("converts request errors and unknown responses to server-error without stopping", async () => {
@@ -432,10 +434,10 @@ test("renders competitor group controls and new group entry", () => {
   expect(html).toContain('spellCheck="false"');
   expect(html).not.toContain('type="url"');
   expect(html).toContain("每行一个链接");
-  expect(html).toContain("竞品组");
+  expect(html).toContain("商品型号");
   expect(html).toContain("未分组");
   expect(html).toContain("暖手宝");
-  expect(html).toContain("新建分组");
+  expect(html).toContain("新建商品型号");
   expect(html).toContain("添加竞品");
 });
 
@@ -599,10 +601,70 @@ test.each([
 test("marks the active sidebar page", () => {
   const dashboard = renderToStaticMarkup(<Sidebar page="dashboard" onNavigate={noop} />);
   const competitors = renderToStaticMarkup(<Sidebar page="competitors" onNavigate={noop} />);
+  const groups = renderToStaticMarkup(<Sidebar page="groups" onNavigate={noop} />);
   expect(dashboard).toContain('class="nav-item nav-child nav-active" aria-current="page"');
   expect(dashboard).toContain("竞品监控大屏");
   expect(competitors).toContain('class="nav-item nav-child nav-active" aria-current="page"');
   expect(competitors).toContain("竞品列表");
+  expect(groups).toContain('竞品分组');
+  expect(groups).toContain('class="nav-item nav-child nav-active" aria-current="page"');
+});
+
+test.each([
+  [{ price_min: null, price_max: null }, "暂无价格"],
+  [{ price_min: "39.00", price_max: "39.00" }, "¥39.00"],
+  [{ price_min: "34.00", price_max: "40.00" }, "¥34.00 ~ ¥40.00"],
+  [{ price_min: "39.00", price_max: null }, "¥39.00"],
+] as const)("formats group price range", (metrics, expected) => {
+  expect(formatGroupPriceRange(metrics)).toBe(expected);
+});
+
+test("formats missing group latest change as an explicit empty value", () => {
+  expect(formatGroupLatestChange(null)).toBe("暂无变化");
+  expect(formatGroupLatestChange("2026-09-21T10:35:00Z")).not.toBe("暂无变化");
+});
+
+test("applies group navigation intent and clears it for normal list navigation", () => {
+  expect(applyInitialGroupFilter(defaultCompetitorFilters, 1).groupId).toBe(1);
+  expect(applyInitialGroupFilter(defaultCompetitorFilters, "unassigned").groupId).toBe("unassigned");
+  expect(applyInitialGroupFilter({ ...defaultCompetitorFilters, groupId: 1 }, null).groupId).toBe("all");
+});
+
+test("renders group page loading, error, full empty, unassigned and normal states", () => {
+  const loading = renderToStaticMarkup(<GroupPage summary={null} status="loading" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
+  const error = renderToStaticMarkup(<GroupPage summary={null} status="error" error="请求失败" onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
+  const empty = renderToStaticMarkup(<GroupPage summary={{ groups: [], unassigned: { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
+  const onlyUnassigned = renderToStaticMarkup(<GroupPage summary={{ groups: [], unassigned: { ...groupMetrics, competitor_count: 1, active_count: 1 } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
+  const normal = renderToStaticMarkup(<GroupPage summary={{ groups: [groupSummary], unassigned: { ...groupMetrics, competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
+  expect(loading).toContain("正在加载商品型号");
+  expect(error).toContain("重试");
+  expect(empty).toContain("还没有商品型号");
+  expect(onlyUnassigned).toContain("未分组");
+  expect(onlyUnassigned).toContain("查看竞品");
+  expect(normal).toContain("暖手宝");
+  expect(normal).toContain("3 个竞品");
+  expect(normal).toContain("¥34.00 ~ ¥40.00");
+  expect(normal).toContain("更多");
+});
+
+test("renders create and rename group dialogs with failure feedback", () => {
+  const create = renderToStaticMarkup(<GroupNameDialog mode="create" name="" submitting={false} error={null} onChange={noop} onClose={noop} onSubmit={noop} />);
+  const rename = renderToStaticMarkup(<GroupNameDialog mode="rename" name="A19" submitting={true} error="该商品型号已存在" onChange={noop} onClose={noop} onSubmit={noop} />);
+  expect(create).toContain("新建商品型号");
+  expect(create).toContain("例如：A19、X6、N09A");
+  expect(rename).toContain("重命名商品型号");
+  expect(rename).toContain("该商品型号已存在");
+  expect(rename).toContain('disabled=""');
+  expect(getGroupNameErrorMessage("invalid_competitor_group_name")).toBe("请输入有效的商品型号");
+});
+
+test("renders delete confirmation with the real competitor count and protects submitting state", () => {
+  const html = renderToStaticMarkup(<GroupDeleteDialog group={groupSummary} submitting={true} error="删除失败" onClose={noop} onConfirm={noop} />);
+  expect(html).toContain("删除商品型号“暖手宝”？");
+  expect(html).toContain("该型号下有 3 个竞品");
+  expect(html).toContain("3 个竞品将移至“未分组”");
+  expect(html).toContain("删除失败");
+  expect(html).toContain("删除中…");
 });
 
 const detailData: CompetitorDetail = {
