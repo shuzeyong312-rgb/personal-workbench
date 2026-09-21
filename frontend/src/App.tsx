@@ -905,6 +905,7 @@ type DetailPageProps = {
   status: DetailStatus;
   error: string | null;
   days: 7 | 30;
+  rangeLoading?: boolean;
   onRetry: () => void;
   onRangeChange: (days: 7 | 30) => void;
   onBack: () => void;
@@ -1020,13 +1021,13 @@ function SalesPlaceholderCard() {
   return <section className="table-card detail-trend-card detail-sales-placeholder"><div className="table-heading"><div><h3>销量趋势</h3><span>正式销量能力尚未开放</span></div></div><div className="detail-sales-placeholder-body"><strong>销量数据待接入</strong><span>当前数据源尚未达到正式采集标准</span></div></section>;
 }
 
-export function DetailPage({ data, groups, status, error, days, onRetry, onRangeChange, onBack, onChangeGroup, onLifecycleAction, lifecycleSubmitting = false, onNavigate }: DetailPageProps) {
+export function DetailPage({ data, groups, status, error, days, rangeLoading = false, onRetry, onRangeChange, onBack, onChangeGroup, onLifecycleAction, lifecycleSubmitting = false, onNavigate }: DetailPageProps) {
   if (status === "loading") return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel"><div className="spinner" /><strong>正在加载竞品详情…</strong></div></AppShell>;
   if (status === "error" || data === null) return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品详情。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div></AppShell>;
   return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情">
     <header className="page-header detail-page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、变化趋势、SKU 信息和历史记录。</p></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={onBack}>返回竞品列表</button>{data.competitor.is_active ? <button type="button" className="secondary-button" onClick={() => onLifecycleAction?.("stop", data.competitor)} disabled={lifecycleSubmitting}>停止监控</button> : <button type="button" className="primary-button" onClick={() => onLifecycleAction?.("resume", data.competitor)} disabled={lifecycleSubmitting}>恢复监控</button>}<button type="button" className="detail-danger-button" onClick={() => onLifecycleAction?.("delete", data.competitor)} disabled={lifecycleSubmitting}>删除竞品</button></div></header>
      <DetailOverview data={data} groups={groups} onChangeGroup={onChangeGroup} />
-    <section className="detail-trends"><div className="detail-trends-header"><div><h2>趋势数据</h2><span>价格和库存来自每日最终 ProductSnapshot</span></div><div className="range-selector" role="group" aria-label="趋势时间范围"><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)}>近 30 天</button></div></div><div className="detail-trend-grid"><DetailTrendCard kind="price" title="价格趋势" description="最低价 / 最高价" trend={data.daily_trend} /><DetailTrendCard kind="stock" title="库存趋势" description="全部 SKU 库存总和" trend={data.daily_trend} /><SalesPlaceholderCard /></div></section>
+    <section className="detail-trends"><div className="detail-trends-header"><div><h2>趋势数据</h2><span>价格和库存来自每日最终 ProductSnapshot</span></div><div className="range-selector" role="group" aria-label="趋势时间范围" aria-busy={rangeLoading}><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)} disabled={rangeLoading}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)} disabled={rangeLoading}>近 30 天</button>{rangeLoading && <span className="range-loading-indicator" role="status">更新中…</span>}</div></div><div className="detail-trend-grid"><DetailTrendCard kind="price" title="价格趋势" description="最低价 / 最高价" trend={data.daily_trend} /><DetailTrendCard kind="stock" title="库存趋势" description="全部 SKU 库存总和" trend={data.daily_trend} /><SalesPlaceholderCard /></div></section>
     <div className="detail-lower-grid">
       <section className="table-card detail-section-card"><div className="table-heading"><div><h2>SKU 信息</h2><span>{data.latest_snapshot ? `共 ${data.latest_snapshot.sku_count} 个` : "当前快照"}</span></div></div>{data.latest_skus.length === 0 ? <div className="detail-empty">暂无 SKU 数据</div> : <div className="table-scroll"><table><thead><tr><th>SKU 规格</th><th>SKU ID</th><th>库存</th><th>SKU 价格</th></tr></thead><tbody>{data.latest_skus.map((sku) => <tr key={sku.sku_id}><td>{sku.sku_name}</td><td>{sku.sku_id}</td><td>{sku.stock === null ? "—" : sku.stock}</td><td>{sku.price === null ? "—" : `¥${sku.price}`}</td></tr>)}</tbody></table></div>}</section>
       <section className="table-card detail-section-card"><div className="table-heading"><div><h2>最近变化</h2><span>最近 20 条</span></div></div>{data.recent_changes.length === 0 ? <div className="detail-empty">暂无变化记录</div> : <div className="detail-record-list">{data.recent_changes.map((change) => <div className="detail-record-row" key={change.id}><strong>{formatChange(change)}</strong><time>{formatDate(change.detected_at)}</time></div>)}</div>}</section>
@@ -1097,6 +1098,7 @@ function App() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detail, setDetail] = useState<CompetitorDetail | null>(null);
   const [detailDays, setDetailDays] = useState<7 | 30>(7);
+  const [detailRangeLoading, setDetailRangeLoading] = useState(false);
   const [selectedCompetitorId, setSelectedCompetitorId] = useState<number | null>(null);
   const latestDetailRequestId = useRef(0);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1155,9 +1157,9 @@ function App() {
       setGroupError("暂时无法获取竞品组，请检查服务是否正常运行。"); setGroupStatus("error"); setGroupLoaded(false);
     }
   }
-  async function loadDetail(competitorId: number, days: 7 | 30) {
+  async function loadDetail(competitorId: number, days: 7 | 30, preserveContent = false): Promise<boolean> {
     const requestId = ++latestDetailRequestId.current;
-    setDetailStatus("loading"); setDetailError(null);
+    if (!preserveContent) { setDetailStatus("loading"); setDetailError(null); }
     try {
       const response = await fetch(`/api/competitors/${competitorId}/detail?days=${days}`);
       if (!response.ok) {
@@ -1166,11 +1168,18 @@ function App() {
         throw new Error(getCollectionErrorMessage(body.code, body.message));
       }
       const data = await response.json() as CompetitorDetail;
-      if (!isCurrentDetailRequest(requestId, latestDetailRequestId.current)) return;
-      setDetail(data); setDetailStatus("ready");
+      if (!isCurrentDetailRequest(requestId, latestDetailRequestId.current)) return false;
+      setDetail(data); setDetailError(null); setDetailStatus("ready");
+      return true;
     } catch (error) {
-      if (!isCurrentDetailRequest(requestId, latestDetailRequestId.current)) return;
-      setDetailError(error instanceof Error ? error.message : "暂时无法获取竞品详情，请稍后重试。"); setDetailStatus("error");
+      if (!isCurrentDetailRequest(requestId, latestDetailRequestId.current)) return false;
+      const message = error instanceof Error ? error.message : "暂时无法获取竞品详情，请稍后重试。";
+      if (preserveContent) {
+        setNotice({ message, type: "error" });
+        return false;
+      }
+      setDetailError(message); setDetailStatus("error");
+      return false;
     }
   }
   async function loadBatchStatus(notifyOnError = false) {
@@ -1210,15 +1219,21 @@ function App() {
     return () => window.clearInterval(timer);
   }, [batchState.status, batchState.browser_open]);
   function navigate(nextPage: Page, initialGroupFilter: InitialGroupFilter = null) {
-    if (nextPage !== "detail") latestDetailRequestId.current += 1;
+    if (nextPage !== "detail") { latestDetailRequestId.current += 1; setDetailRangeLoading(false); }
     setListNavigationIntent((current) => ({ filter: nextPage === "competitors" ? initialGroupFilter : null, version: current.version + 1 }));
     setPage(nextPage);
     if (nextPage === "dashboard") void loadDashboard();
     if (nextPage === "competitors" && !listLoaded) void loadCompetitors();
     if (nextPage === "groups" && !groupLoaded) void loadGroups();
   }
-  function openDetail(competitorId: number) { setSelectedCompetitorId(competitorId); setDetailDays(7); setPage("detail"); void loadDetail(competitorId, 7); }
-  function changeDetailRange(days: 7 | 30) { if (selectedCompetitorId === null) return; setDetailDays(days); void loadDetail(selectedCompetitorId, days); }
+  function openDetail(competitorId: number) { setSelectedCompetitorId(competitorId); setDetailDays(7); setDetailRangeLoading(false); setPage("detail"); void loadDetail(competitorId, 7); }
+  async function changeDetailRange(days: 7 | 30) {
+    if (selectedCompetitorId === null || days === detailDays || detailRangeLoading) return;
+    setDetailRangeLoading(true);
+    const updated = await loadDetail(selectedCompetitorId, days, true);
+    if (updated) setDetailDays(days);
+    setDetailRangeLoading(false);
+  }
   function openDialog() { setNotice(null); setUrl(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true); }
   function closeDialog() { if (addStatus !== "submitting") { setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupCreateStatus("initial"); } }
   async function handleCreateGroup() {
@@ -1383,7 +1398,7 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
+  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
 }
 
 export default App;
