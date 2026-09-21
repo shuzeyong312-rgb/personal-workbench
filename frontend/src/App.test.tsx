@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getMoreMenuPosition, getResponseStatus, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, MoreMenu, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildDashboardTrendChartPoints, buildPriceChartPoints } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, buildDashboardTrendChartPoints, buildPriceChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -257,17 +257,13 @@ test.each([
   expect(html).not.toContain("未采集");
 });
 
-test("renders monitoring actions and disables collection for inactive competitors", () => {
-  const activeMenu = renderToStaticMarkup(<MoreMenu competitor={competitor} open onToggle={noop} onAction={noop} />);
-  expect(activeMenu).toContain('data-more-menu-portal="body"');
-  expect(activeMenu).toContain("停止监控");
-  expect(activeMenu).toContain("删除竞品");
+test("list keeps lifecycle actions out of the row", () => {
   const inactive = { ...competitor, is_active: false, title: "已停止商品" };
-  const inactiveMenu = renderToStaticMarkup(<MoreMenu competitor={inactive} open onToggle={noop} onAction={noop} />);
-  expect(inactiveMenu).toContain("恢复监控");
-  expect(inactiveMenu).not.toContain("停止监控");
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[inactive]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(list).toContain("已停止");
+  expect(list).toContain(">详情</button>");
+  expect(list).not.toContain("更多");
+  expect(list).not.toContain("删除竞品");
   expect(list).toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
 });
 
@@ -301,12 +297,6 @@ test("renders completed and verification batch states", () => {
   const verification = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} batchState={{ ...idleBatchState, status: "verification_required", total: 2, completed: 1, remaining: 1, verification_required: 1, browser_open: true, runner_active: true }} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(verification).toContain("1688 需要人工验证，本次采集已停止");
   expect(verification).toContain("关闭浏览器后可重新发起采集");
-});
-
-test("positions the portal below when possible and above near the viewport bottom", () => {
-  expect(getMoreMenuPosition({ top: 100, bottom: 132, right: 700 }, { width: 132, height: 96 }, 800, 900)).toEqual({ top: 138, left: 568 });
-  expect(getMoreMenuPosition({ top: 820, bottom: 852, right: 700 }, { width: 132, height: 96 }, 800, 900)).toEqual({ top: 718, left: 568 });
-  expect(getMoreMenuPosition({ top: 820, bottom: 852, right: 20 }, { width: 132, height: 96 }, 320, 900).left).toBe(8);
 });
 
 test("uses confirmation dialogs for stop and permanent delete", () => {
@@ -735,6 +725,29 @@ test("renders detail overview, mapped group, inactive status and latest sku null
   expect(html).toContain("—");
 });
 
+test("renders detail lifecycle actions for active and inactive competitors", () => {
+  const active = { ...detailData, competitor: { ...detailData.competitor, is_active: true } };
+  const activeHtml = renderToStaticMarkup(<DetailPage {...detailProps} data={active} status="ready" error={null} />);
+  expect(activeHtml).toContain(">停止监控</button>");
+  expect(activeHtml).toContain(">删除竞品</button>");
+  expect(activeHtml).not.toContain(">恢复监控</button>");
+
+  const inactiveHtml = renderToStaticMarkup(<DetailPage {...detailProps} data={detailData} status="ready" error={null} />);
+  expect(inactiveHtml).toContain(">恢复监控</button>");
+  expect(inactiveHtml).toContain(">删除竞品</button>");
+  expect(inactiveHtml).not.toContain(">停止监控</button>");
+});
+
+test("detail lifecycle callbacks receive the detail competitor", () => {
+  const calls: { action: string; competitor: unknown }[] = [];
+  const active = { ...detailData, competitor: { ...detailData.competitor, is_active: true } };
+  const page = DetailPage({ ...detailProps, data: active, status: "ready", error: null, onLifecycleAction: (action, received) => calls.push({ action, competitor: received }) }) as any;
+  const header = page.props.children[0];
+  const actions = header.props.children[1];
+  actions.props.children[1].props.onClick();
+  expect(calls).toEqual([{ action: "stop", competitor: active.competitor }]);
+});
+
 test("renders price chart data, selector state, changes and collection statuses", () => {
   const html = renderToStaticMarkup(<DetailPage {...detailProps} days={30} data={{ ...detailData, range_days: 30 }} status="ready" error={null} />);
   expect(html).toContain('aria-pressed="true"');
@@ -757,6 +770,21 @@ test("price chart points filter null snapshots and keep a single real point", ()
   expect(points[0].snapshot_id).toBe(2);
   expect(points[0].min_y).not.toBeNull();
   expect(points[0].max_y).toBeNull();
+});
+
+test("price chart centers constant prices and uses the compact viewBox", () => {
+  const points = buildPriceChartPoints([
+    { snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: "38.80", price_max: "38.80" },
+    { snapshot_id: 2, captured_at: "2026-09-19T10:00:00Z", price_min: "38.80", price_max: "38.80" },
+    { snapshot_id: 3, captured_at: "2026-09-20T10:00:00Z", price_min: "38.80", price_max: "38.80" },
+  ]);
+  expect(points).toHaveLength(3);
+  expect(points.every((point) => Number.isFinite(point.min_y) && Number.isFinite(point.max_y))).toBe(true);
+  expect(points.every((point) => point.min_y === 78 && point.max_y === 78)).toBe(true);
+
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={detailData} status="ready" error={null} />);
+  expect(html).toContain('viewBox="0 0 640 170"');
+  expect(html).not.toContain('viewBox="0 0 640 220"');
 });
 
 test("detail keeps competitor list active in the sidebar", () => {

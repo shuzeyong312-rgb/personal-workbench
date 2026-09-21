@@ -1,5 +1,4 @@
-import { createPortal } from "react-dom";
-import { FormEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import "./App.css";
 
@@ -67,6 +66,8 @@ export type Competitor = {
     detected_at: string;
   } | null;
 };
+
+type LifecycleCompetitor = Pick<Competitor, "id" | "title" | "offer_id" | "is_active">;
 
 export type CompetitorFilters = {
   search: string;
@@ -256,7 +257,7 @@ export type PriceChartPoint = {
   price_max: string | null;
 };
 
-export function buildPriceChartPoints(trend: readonly PriceTrend[], width = 640, height = 220): PriceChartPoint[] {
+export function buildPriceChartPoints(trend: readonly PriceTrend[], width = 640, height = 170): PriceChartPoint[] {
   const usable = trend.filter((item) => item.price_min !== null || item.price_max !== null);
   const values = usable.flatMap((item) => [item.price_min, item.price_max]).flatMap((value) => {
     const number = value === null ? NaN : Number(value);
@@ -269,10 +270,10 @@ export function buildPriceChartPoints(trend: readonly PriceTrend[], width = 640,
   const left = 44;
   const right = 16;
   const top = 16;
-  const bottom = 34;
+  const bottom = 30;
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
-  const y = (value: string | null) => value === null ? null : top + ((maxValue - Number(value)) / valueRange) * plotHeight;
+  const y = (value: string | null) => value === null ? null : maxValue === minValue ? top + plotHeight / 2 : top + ((maxValue - Number(value)) / valueRange) * plotHeight;
   return usable.map((item, index) => ({
     snapshot_id: item.snapshot_id,
     captured_at: item.captured_at,
@@ -539,65 +540,7 @@ function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
   </main></div>;
 }
 
-type MoreMenuRect = Pick<DOMRect, "top" | "bottom" | "right">;
-type MoreMenuSize = Pick<DOMRect, "width" | "height">;
-
-export function getMoreMenuPosition(
-  buttonRect: MoreMenuRect,
-  menuSize: MoreMenuSize,
-  viewportWidth: number,
-  viewportHeight: number,
-): { top: number; left: number } {
-  const margin = 8;
-  const gap = 6;
-  const width = menuSize.width || 132;
-  const height = menuSize.height || 96;
-  const left = Math.min(Math.max(margin, buttonRect.right - width), Math.max(margin, viewportWidth - width - margin));
-  const opensBelow = buttonRect.bottom + gap + height <= viewportHeight - margin;
-  return {
-    top: opensBelow ? buttonRect.bottom + gap : Math.max(margin, buttonRect.top - gap - height),
-    left,
-  };
-}
-
-export function MoreMenu({ competitor, open, onToggle, onAction, disabled = false }: { competitor: Competitor; open: boolean; onToggle: () => void; onAction: (action: LifecycleAction) => void; disabled?: boolean }) {
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
-
-  useLayoutEffect(() => {
-    if (!open || typeof window === "undefined") return;
-    const button = buttonRef.current;
-    if (!button) return;
-    setPosition(getMoreMenuPosition(button.getBoundingClientRect(), menuRef.current?.getBoundingClientRect() || { width: 0, height: 0 }, window.innerWidth, window.innerHeight));
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || typeof document === "undefined") return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!buttonRef.current?.contains(target) && !menuRef.current?.contains(target)) onToggle();
-    };
-    const closeOnViewportChange = () => onToggle();
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    window.addEventListener("scroll", closeOnViewportChange, true);
-    window.addEventListener("resize", closeOnViewportChange);
-    return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
-      window.removeEventListener("scroll", closeOnViewportChange, true);
-      window.removeEventListener("resize", closeOnViewportChange);
-    };
-  }, [open, onToggle]);
-
-  const menu = open && <div ref={menuRef} className="more-menu-popover" role="menu" data-more-menu-portal="body" style={{ top: position?.top ?? 0, left: position?.left ?? 0, visibility: position ? "visible" : "hidden" }}>
-    {competitor.is_active ? <button type="button" role="menuitem" onClick={() => onAction("stop")}>停止监控</button> : <button type="button" role="menuitem" onClick={() => onAction("resume")}>恢复监控</button>}
-    <button type="button" role="menuitem" className="more-menu-danger" onClick={() => onAction("delete")}>删除竞品</button>
-  </div>;
-
-  return <><div className="more-menu"><button ref={buttonRef} type="button" className="detail-button" aria-haspopup="menu" aria-expanded={open} onClick={onToggle} disabled={disabled}>更多</button></div>{open && !disabled && (typeof document === "undefined" ? menu : createPortal(menu, document.body))}</>;
-}
-
-export function ConfirmDialog({ action, competitor, submitting, error, onClose, onConfirm }: { action: "stop" | "delete"; competitor: Competitor; submitting: boolean; error: string | null; onClose: () => void; onConfirm: () => void }) {
+export function ConfirmDialog({ action, competitor, submitting, error, onClose, onConfirm }: { action: "stop" | "delete"; competitor: LifecycleCompetitor; submitting: boolean; error: string | null; onClose: () => void; onConfirm: () => void }) {
   const isDelete = action === "delete";
   const productLabel = competitor.title?.trim() || competitor.offer_id;
   return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="lifecycle-dialog-title">
@@ -704,14 +647,12 @@ type ListPageProps = {
   onReconcileSelection?: (visibleActiveIds: number[]) => void;
   onBatchAction?: (mode: "selected" | "all_active") => void;
   onOpenDetail?: (competitorId: number) => void;
-  onLifecycleAction?: (action: LifecycleAction, competitor: Competitor) => void;
   onNavigate?: (page: Page) => void;
   initialGroupFilter?: InitialGroupFilter;
   navigationVersion?: number;
 };
 
-export function ListPage({ competitors, groups, status, error, onRetry, onAdd, batchState = idleBatchState, selectedIds = new Set<number>(), onToggleSelected = noop, onToggleAll = noop, onReconcileSelection = noop, onBatchAction = noop, onOpenDetail, onLifecycleAction, onNavigate, initialGroupFilter = null, navigationVersion = 0 }: ListPageProps) {
-  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+export function ListPage({ competitors, groups, status, error, onRetry, onAdd, batchState = idleBatchState, selectedIds = new Set<number>(), onToggleSelected = noop, onToggleAll = noop, onReconcileSelection = noop, onBatchAction = noop, onOpenDetail, onNavigate, initialGroupFilter = null, navigationVersion = 0 }: ListPageProps) {
   const [batchMenuOpen, setBatchMenuOpen] = useState(false);
   const [filters, setFilters] = useState<CompetitorFilters>(defaultCompetitorFilters);
   const selectAllRef = useRef<HTMLInputElement>(null);
@@ -760,7 +701,7 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, b
           {status === "ready" && competitors.length === 0 && <div className="state-panel"><div className="empty-icon">+</div><strong>还没有添加竞品</strong><span>添加一个 1688 商品链接，开始建立你的监控列表。</span><button className="primary-button" onClick={onAdd}>添加竞品</button></div>}
           {status === "ready" && competitors.length > 0 && filteredCompetitors.length === 0 && <div className="state-panel"><strong>没有找到符合条件的竞品</strong><span>请调整搜索词或筛选条件</span><button type="button" className="secondary-button" onClick={resetFilters}>重置筛选</button></div>}
           {status === "ready" && filteredCompetitors.length > 0 && <div className="table-scroll"><table><thead><tr><th className="selection-column"><input ref={selectAllRef} type="checkbox" aria-label="全选当前页可采集竞品" checked={allSelected} disabled={filteredActiveCompetitors.length === 0 || batchBusy} onChange={(event) => onToggleAll(event.target.checked, filteredActiveCompetitors.map((item) => item.id))} /></th><th>商品信息</th><th>店铺名称</th><th>竞品组</th><th>当前价格</th><th>SKU 数量</th><th>最近变化</th><th>最近采集时间</th><th>商品状态</th><th>监控状态</th><th>操作</th></tr></thead><tbody>
-            {filteredCompetitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={competitor.is_active && selectedIds.has(competitor.id)} disabled={!competitor.is_active || batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td>{getCompetitorGroupLabel(competitor.group_id, groups)}</td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><div className="row-actions"><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button><MoreMenu competitor={competitor} disabled={batchBusy} open={openMenuId === competitor.id} onToggle={() => setOpenMenuId(openMenuId === competitor.id ? null : competitor.id)} onAction={(action) => { setOpenMenuId(null); onLifecycleAction?.(action, competitor); }} /></div></td></tr>) }
+            {filteredCompetitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={competitor.is_active && selectedIds.has(competitor.id)} disabled={!competitor.is_active || batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td>{getCompetitorGroupLabel(competitor.group_id, groups)}</td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button></td></tr>) }
           </tbody></table></div>}
         </section>
         <div className="pagination-bar"><span>显示全部竞品</span><button disabled>上一页</button><span className="page-number">1</span><button disabled>下一页</button><span>分页暂未开放</span></div>
@@ -857,6 +798,8 @@ type DetailPageProps = {
   onRetry: () => void;
   onRangeChange: (days: 7 | 30) => void;
   onBack: () => void;
+  onLifecycleAction?: (action: LifecycleAction, competitor: LifecycleCompetitor) => void;
+  lifecycleSubmitting?: boolean;
   onNavigate: (page: Page) => void;
 };
 
@@ -866,19 +809,22 @@ function formatChartDate(value: string): string {
 
 function PriceChart({ trend }: { trend: PriceTrend[] }) {
   const width = 640;
-  const height = 220;
+  const height = 170;
+  const top = 16;
+  const bottom = 30;
+  const plotHeight = height - top - bottom;
   const points = buildPriceChartPoints(trend, width, height);
   if (points.length === 0) return <div className="detail-empty">该时间范围暂无可用价格数据</div>;
   const line = (key: "min_y" | "max_y") => points.filter((point) => point[key] !== null).map((point) => `${point.x},${point[key]}`).join(" ");
   return <div className="price-chart-wrap">
-    <svg className="price-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="价格趋势">
-      {[0, 1, 2, 3].map((step) => <line key={step} className="chart-grid-line" x1="44" x2="624" y1={16 + step * 56.67} y2={16 + step * 56.67} />)}
+    <svg className="price-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="价格趋势">
+      {[0, 1, 2, 3].map((step) => <line key={step} className="chart-grid-line" x1="44" x2="624" y1={top + step * (plotHeight / 3)} y2={top + step * (plotHeight / 3)} />)}
       <polyline className="chart-line chart-line-min" points={line("min_y")} />
       <polyline className="chart-line chart-line-max" points={line("max_y")} />
       {points.map((point) => <g key={point.snapshot_id}>
         {point.min_y !== null && <circle className="chart-point chart-point-min" cx={point.x} cy={point.min_y} r="4" />}
         {point.max_y !== null && <circle className="chart-point chart-point-max" cx={point.x} cy={point.max_y} r="4" />}
-        <text className="chart-label" x={point.x} y="207" textAnchor="middle">{formatChartDate(point.captured_at)}</text>
+        <text className="chart-label" x={point.x} y={height - 8} textAnchor="middle">{formatChartDate(point.captured_at)}</text>
       </g>)}
     </svg>
     <div className="chart-legend"><span><i className="legend-dot legend-dot-min" />最低价</span><span><i className="legend-dot legend-dot-max" />最高价</span></div>
@@ -906,11 +852,11 @@ function DetailOverview({ data, groups }: { data: CompetitorDetail; groups: Comp
   </section>;
 }
 
-export function DetailPage({ data, groups, status, error, days, onRetry, onRangeChange, onBack, onNavigate }: DetailPageProps) {
+export function DetailPage({ data, groups, status, error, days, onRetry, onRangeChange, onBack, onLifecycleAction, lifecycleSubmitting = false, onNavigate }: DetailPageProps) {
   if (status === "loading") return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel"><div className="spinner" /><strong>正在加载竞品详情…</strong></div></AppShell>;
   if (status === "error" || data === null) return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品详情。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div></AppShell>;
   return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情">
-    <header className="page-header detail-page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、SKU 信息、变化记录与趋势数据。</p></div><button type="button" className="secondary-button" onClick={onBack}>返回竞品列表</button></header>
+    <header className="page-header detail-page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、SKU 信息、变化记录与趋势数据。</p></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={onBack}>返回竞品列表</button>{data.competitor.is_active ? <button type="button" className="secondary-button" onClick={() => onLifecycleAction?.("stop", data.competitor)} disabled={lifecycleSubmitting}>停止监控</button> : <button type="button" className="primary-button" onClick={() => onLifecycleAction?.("resume", data.competitor)} disabled={lifecycleSubmitting}>恢复监控</button>}<button type="button" className="danger-button" onClick={() => onLifecycleAction?.("delete", data.competitor)} disabled={lifecycleSubmitting}>删除竞品</button></div></header>
     <DetailOverview data={data} groups={groups} />
     <section className="table-card detail-trend-card"><div className="table-heading"><div><h2>价格趋势</h2><span>基于 ProductSnapshot 价格事实</span></div><div className="range-selector" role="group" aria-label="价格趋势时间范围"><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)}>近 30 天</button></div></div><PriceChart trend={data.price_trend} /></section>
     <div className="detail-lower-grid">
@@ -1004,7 +950,7 @@ function App() {
       return next.size === current.size ? current : next;
     });
   }, []);
-  const [lifecycleDialog, setLifecycleDialog] = useState<{ action: "stop" | "delete"; competitor: Competitor } | null>(null);
+  const [lifecycleDialog, setLifecycleDialog] = useState<{ action: "stop" | "delete"; competitor: LifecycleCompetitor } | null>(null);
   const [lifecycleSubmitting, setLifecycleSubmitting] = useState(false);
   const [lifecycleError, setLifecycleError] = useState<string | null>(null);
   const [groupNameDialog, setGroupNameDialog] = useState<{ mode: "create" | "rename"; group?: CompetitorGroupSummary } | null>(null);
@@ -1186,7 +1132,7 @@ function App() {
       setNotice({ message: getCollectionFailureMessage({ kind: "request", error }), type: "error" });
     }
   }
-  function openLifecycleDialog(action: "stop" | "delete", competitor: Competitor) {
+  function openLifecycleDialog(action: "stop" | "delete", competitor: LifecycleCompetitor) {
     setNotice(null); setLifecycleError(null); setLifecycleDialog({ action, competitor });
   }
   function closeLifecycleDialog() {
@@ -1197,32 +1143,41 @@ function App() {
     try { body = await response.json() as CollectionErrorBody; } catch { /* use the stable fallback below */ }
     return getLifecycleErrorMessage(body.code, body.message);
   }
-  async function refreshAfterLifecycle(message: string) {
-    setLifecycleDialog(null); setLifecycleError(null); setNotice({ message, type: "success" });
-    await Promise.all([loadCompetitors(), loadDashboard()]);
+  async function refreshAfterLifecycle(message: string, competitor: LifecycleCompetitor, deleted = false) {
+    setLifecycleDialog(null); setLifecycleError(null);
+    if (deleted) {
+      latestDetailRequestId.current += 1;
+      setDetail(null); setDetailError(null); setDetailStatus("loading"); setSelectedCompetitorId(null);
+      navigate("competitors");
+      await Promise.all([loadCompetitors(), loadDashboard()]);
+    } else {
+      await Promise.all([loadCompetitors(), loadDashboard(), loadDetail(competitor.id, detailDays)]);
+    }
+    setGroupLoaded(false);
+    setNotice({ message, type: "success" });
   }
-  async function updateMonitoring(competitor: Competitor, isActive: boolean, dialogAction: "stop" | null) {
+  async function updateMonitoring(competitor: LifecycleCompetitor, isActive: boolean, dialogAction: "stop" | null) {
     setLifecycleSubmitting(true); setLifecycleError(null);
     try {
       const response = await fetch(`/api/competitors/${competitor.id}/monitoring`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ is_active: isActive }) });
       if (!response.ok) throw new Error(await readLifecycleError(response));
-      await refreshAfterLifecycle(isActive ? "已恢复监控，列表和 Dashboard 已更新。" : "已停止监控，历史数据已保留。" );
+      await refreshAfterLifecycle(isActive ? "已恢复监控，列表和 Dashboard 已更新。" : "已停止监控，历史数据已保留。", competitor);
     } catch (error) {
       const message = error instanceof Error ? error.message : "操作失败，请稍后重试";
       if (dialogAction) setLifecycleError(message); else setNotice({ message, type: "error" });
     } finally { setLifecycleSubmitting(false); }
   }
-  async function deleteCompetitor(competitor: Competitor) {
+  async function deleteCompetitor(competitor: LifecycleCompetitor) {
     setLifecycleSubmitting(true); setLifecycleError(null);
     try {
       const response = await fetch(`/api/competitors/${competitor.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await readLifecycleError(response));
-      await refreshAfterLifecycle("竞品已永久删除，列表和 Dashboard 已更新。" );
+      await refreshAfterLifecycle("竞品已永久删除。", competitor, true);
     } catch (error) {
       setLifecycleError(error instanceof Error ? error.message : "操作失败，请稍后重试");
     } finally { setLifecycleSubmitting(false); }
   }
-  function handleLifecycleAction(action: LifecycleAction, competitor: Competitor) {
+  function handleLifecycleAction(action: LifecycleAction, competitor: LifecycleCompetitor) {
     if (action === "stop" || action === "delete") { openLifecycleDialog(action, competitor); return; }
     void updateMonitoring(competitor, true, null);
   }
@@ -1231,7 +1186,7 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onLifecycleAction={handleLifecycleAction} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
+  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
 }
 
 export default App;
