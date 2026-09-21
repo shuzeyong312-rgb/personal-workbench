@@ -68,7 +68,7 @@
 - 不新增表、字段、索引、migration 或第三方依赖。
 - 不修改 `ProductSnapshot`、`SkuSnapshot`、`ChangeEvent`、`CollectionRun` 的结构或历史记录。
 - 重命名只修改 `CompetitorGroup.name`。
-- 删除型号只解除竞品归属，不删除任何 `Competitor` 或其历史监控事实。
+- 删除竞品组只解除竞品归属，不删除任何 `Competitor` 或其历史监控事实。
 - 删除后 Dashboard 通过当前 `Competitor.group_id = null` 将竞品显示为“未分组”；历史 `ChangeEvent` 本身不改写。
 
 ### 3. 名称校验与大小写
