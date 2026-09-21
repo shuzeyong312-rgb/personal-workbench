@@ -434,6 +434,28 @@ def test_aggregates_same_sku_stock_events_and_uses_latest_summary(
     assert item["primary_change"]["sku_name"] == "白色款"
 
 
+def test_decodes_html_entities_in_recovered_sku_name(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(
+            session,
+            competitor,
+            datetime(2026, 9, 20, 1),
+            "stock_changed",
+            entity_key="sku-1",
+            old_value="100",
+            new_value="90",
+            sku_name="粉色&gt;A19",
+        )
+        session.commit()
+
+    primary = client[0].get("/api/dashboard/today").json()["items"][0]["primary_change"]
+
+    assert primary["sku_name"] == "粉色>A19"
+
+
 def test_aggregates_different_sku_stock_events_by_distinct_sku(
     client: tuple[TestClient, sessionmaker[Session]], business_day: None
 ) -> None:
