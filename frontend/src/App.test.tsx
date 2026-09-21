@@ -802,6 +802,15 @@ test("detail lifecycle callbacks receive the detail competitor", () => {
   expect(calls).toEqual([{ action: "stop", competitor: active.competitor }]);
 });
 
+test("keeps detail content mounted while a trend range refresh is pending", () => {
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={detailData} status="ready" error={null} rangeLoading />);
+  expect(html).toContain("暖手宝商品");
+  expect(html).toContain("更新中…");
+  expect(html).toContain('aria-busy="true"');
+  expect((html.match(/disabled=""/g) || []).length).toBeGreaterThanOrEqual(2);
+  expect(html).not.toContain("正在加载竞品详情");
+});
+
 test("renders price chart data, selector state, changes and collection statuses", () => {
   const html = renderToStaticMarkup(<DetailPage {...detailProps} days={30} data={{ ...detailData, range_days: 30 }} status="ready" error={null} />);
   expect(html).toContain('aria-pressed="true"');
