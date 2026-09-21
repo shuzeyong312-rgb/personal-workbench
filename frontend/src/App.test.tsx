@@ -545,7 +545,7 @@ test("formats dashboard change rows, badges, magnitudes, and collection duration
   expect(formatDashboardSummary(stockItem)).toBe("白色款 481 → 478");
   expect(formatDashboardMagnitude(stockItem)).toBe("↓ 0.6%");
   const multiStock = { ...stockItem, stock_changed_sku_count: 2 };
-  expect(formatDashboardSummary(multiStock)).toBe("库存变化 · 2 个 SKU 发生变化");
+  expect(formatDashboardSummary(multiStock)).toBe("2 个 SKU 发生变化");
   expect(formatDashboardMagnitude(multiStock)).toBe("—");
   expect(formatDuration(72)).toBe("1 分 12 秒");
   expect(formatDuration(null)).toBe("—");
