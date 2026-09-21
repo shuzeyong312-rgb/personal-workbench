@@ -309,7 +309,7 @@ export type AddSubmissionResult = { succeeded: string[]; failures: AddFailure[] 
 export function getAddFailureReason(code?: string): string {
   if (code === "invalid_competitor_url") return "链接格式无效";
   if (code === "competitor_already_exists") return "已存在";
-  if (code === "competitor_group_not_found") return "商品型号不存在";
+  if (code === "competitor_group_not_found") return "竞品组不存在";
   return "服务暂时不可用，请稍后重试";
 }
 
@@ -376,12 +376,12 @@ export function formatGroupLatestChange(value: string | null): string {
 }
 
 export function getGroupNameErrorMessage(code?: string, message?: unknown): string {
+  if (code === "invalid_competitor_group_name") return "请输入有效的竞品组名称";
+  if (code === "competitor_group_already_exists") return "该竞品组已存在";
+  if (code === "competitor_group_not_found") return "竞品组不存在";
   const backendMessage = typeof message === "string" ? message.trim() : "";
   if (backendMessage && !/[<>]/.test(backendMessage) && !/traceback|stack trace|File "/i.test(backendMessage)) return backendMessage;
-  if (code === "invalid_competitor_group_name") return "请输入有效的商品型号";
-  if (code === "competitor_group_already_exists") return "该商品型号已存在";
-  if (code === "competitor_group_not_found") return "商品型号不存在";
-  return "商品型号操作失败，请稍后重试";
+  return "竞品组操作失败，请稍后重试";
 }
 
 export function formatPriceDisplay(snapshot: Competitor["latest_snapshot"]): string {
@@ -613,8 +613,8 @@ function GroupMoreMenu({ onRename, onDelete }: { onRename: () => void; onDelete:
   return <div className="group-more-menu">
     <button type="button" className="detail-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((current) => !current)}>更多</button>
     {open && <div className="group-more-popover" role="menu">
-      <button type="button" role="menuitem" onClick={() => { setOpen(false); onRename(); }}>重命名型号</button>
-      <button type="button" role="menuitem" className="more-menu-danger" onClick={() => { setOpen(false); onDelete(); }}>删除型号</button>
+      <button type="button" role="menuitem" onClick={() => { setOpen(false); onRename(); }}>重命名竞品组</button>
+      <button type="button" role="menuitem" className="more-menu-danger" onClick={() => { setOpen(false); onDelete(); }}>删除竞品组</button>
     </div>}
   </div>;
 }
@@ -639,7 +639,7 @@ function CompetitorGroupCard({ group, onViewCompetitors, onRename, onDelete }: {
 
 function UnassignedGroupCard({ metrics, onViewCompetitors }: { metrics: CompetitorGroupMetrics; onViewCompetitors: () => void }) {
   return <article className="group-card group-card-unassigned">
-    <div className="group-card-header"><div><h2>未分组</h2><span>尚未归入商品型号</span></div></div>
+    <div className="group-card-header"><div><h2>未分组</h2><span>尚未归入竞品组</span></div></div>
     <GroupMetrics metrics={metrics} />
     <div className="group-card-actions"><button type="button" className="secondary-button" onClick={onViewCompetitors}>查看竞品</button></div>
   </article>;
@@ -661,10 +661,10 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
   const hasUnassigned = summary?.unassigned.competitor_count ? summary.unassigned.competitor_count > 0 : false;
   const isEmpty = status === "ready" && summary !== null && summary.groups.length === 0 && !hasUnassigned;
   return <AppShell page="groups" onNavigate={onNavigate} breadcrumb="竞品分组">
-    <header className="page-header"><div><h1>竞品分组</h1><p className="page-description">按我方商品型号管理对应竞品。</p></div><button type="button" className="primary-button" onClick={onCreate}>新建商品型号</button></header>
-    {status === "loading" && <section className="table-card group-state-card state-panel"><div className="spinner" /><strong>正在加载商品型号…</strong></section>}
-    {status === "error" && <section className="table-card group-state-card state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取商品型号。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></section>}
-    {isEmpty && <section className="table-card group-state-card state-panel"><div className="empty-icon">＋</div><strong>还没有商品型号</strong><span>创建商品型号后，可以把对应竞品归入同一组进行对比监控。</span><button type="button" className="primary-button" onClick={onCreate}>新建商品型号</button></section>}
+    <header className="page-header"><div><h1>竞品分组</h1><p className="page-description">以我方商品型号命名竞品组，管理对应竞品。</p></div><button type="button" className="primary-button" onClick={onCreate}>新增竞品组</button></header>
+    {status === "loading" && <section className="table-card group-state-card state-panel"><div className="spinner" /><strong>正在加载竞品组…</strong></section>}
+    {status === "error" && <section className="table-card group-state-card state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品组。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></section>}
+    {isEmpty && <section className="table-card group-state-card state-panel"><div className="empty-icon">＋</div><strong>还没有竞品组</strong><span>新增竞品组后，可按我方商品型号归集对应竞品进行对比监控。</span><button type="button" className="primary-button" onClick={onCreate}>新增竞品组</button></section>}
     {status === "ready" && summary && !isEmpty && <div className="group-card-grid">
       {summary.groups.map((group) => <CompetitorGroupCard key={group.id} group={group} onViewCompetitors={() => onViewCompetitors(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} />)}
       {hasUnassigned && <UnassignedGroupCard metrics={summary.unassigned} onViewCompetitors={() => onViewCompetitors("unassigned")} />}
@@ -674,19 +674,19 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
 
 export function GroupNameDialog({ mode, name, submitting, error, onChange, onClose, onSubmit }: { mode: "create" | "rename"; name: string; submitting: boolean; error: string | null; onChange: (name: string) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
   const isRename = mode === "rename";
-  return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="group-name-dialog-title">
-    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="group-name-dialog-title">{isRename ? "重命名商品型号" : "新建商品型号"}</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
-    <p className="dialog-description">{isRename ? "修改型号名称，竞品及历史监控数据不会变化。" : "创建商品型号后，可以把对应竞品归入同一组进行对比监控。"}</p>
-    <form onSubmit={onSubmit}><label htmlFor="group-name">商品型号</label><input id="group-name" value={name} onChange={(event) => onChange(event.target.value)} placeholder="例如：A19、X6、N09A" maxLength={64} autoComplete="off" disabled={submitting} />{error && <div className="feedback feedback-server-error" role="alert">{error}</div>}<div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="submit" className="primary-button" disabled={submitting || !name.trim()}>{submitting ? "保存中…" : isRename ? "保存" : "创建商品型号"}</button></div></form>
+  return <div className="dialog-backdrop" role="presentation"><section className="dialog group-name-dialog" role="dialog" aria-modal="true" aria-labelledby="group-name-dialog-title">
+    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="group-name-dialog-title">{isRename ? "重命名竞品组" : "新增竞品组"}</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
+    <p className="dialog-description">{isRename ? "修改竞品组名称，不影响竞品及历史监控数据。" : "竞品组使用我方商品型号命名，用于归集该商品对应的竞品。"}</p>
+    <form onSubmit={onSubmit}><label htmlFor="group-name">竞品组名称</label><input id="group-name" value={name} onChange={(event) => onChange(event.target.value)} placeholder="使用商品型号命名，例如 A19、X6" maxLength={64} autoComplete="off" disabled={submitting} />{error && <div className="feedback feedback-server-error" role="alert">{error}</div>}<div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="submit" className="primary-button" disabled={submitting || !name.trim()}>{submitting ? "保存中…" : isRename ? "保存" : "新增竞品组"}</button></div></form>
   </section></div>;
 }
 
 export function GroupDeleteDialog({ group, submitting, error, onClose, onConfirm }: { group: CompetitorGroupSummary; submitting: boolean; error: string | null; onClose: () => void; onConfirm: () => void }) {
   return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="group-delete-dialog-title">
-    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="group-delete-dialog-title">删除商品型号</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
-    <p className="dialog-description">删除商品型号“{group.name}”？<br />该型号下有 {group.competitor_count} 个竞品。<br />删除后，{group.competitor_count} 个竞品将移至“未分组”，竞品及历史监控数据不会删除。</p>
+    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="group-delete-dialog-title">删除竞品组</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
+    <p className="dialog-description">删除竞品组“{group.name}”？<br />该组下有 {group.competitor_count} 个竞品。<br />删除后，{group.competitor_count} 个竞品将移至“未分组”，竞品及历史监控数据不会删除。</p>
     {error && <div className="feedback feedback-server-error" role="alert">{error}</div>}
-    <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="button" className="danger-button" onClick={onConfirm} disabled={submitting}>{submitting ? "删除中…" : "删除型号"}</button></div>
+    <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="button" className="danger-button" onClick={onConfirm} disabled={submitting}>{submitting ? "删除中…" : "删除竞品组"}</button></div>
   </section></div>;
 }
 
@@ -958,7 +958,7 @@ export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups,
   return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
     <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="dialog-title">添加竞品</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={busy}>×</button></div>
     <p className="dialog-description">添加 1688 商品链接，系统会保存监控对象。</p>
-    <form onSubmit={onSubmit}><div className="dialog-field-header"><label htmlFor="competitor-url">1688 商品链接</label><button type="button" className="text-button clipboard-add-button" onClick={() => void handleClipboardAdd()} disabled={busy}>从剪贴板添加</button></div><textarea id="competitor-url" rows={5} value={url} onChange={(event) => { setClipboardFeedback(null); onUrlChange(event.target.value); }} placeholder={"https://detail.1688.com/offer/123456789.html\nhttps://detail.1688.com/offer/987654321.html"} autoComplete="off" spellCheck={false} autoCapitalize="none" autoCorrect="off" disabled={busy} /><p className="hint">每行一个链接，支持一次添加多个竞品；仅支持 detail.1688.com/offer/{"{offerId}"}.html</p>{clipboardFeedback && <p className={"clipboard-feedback clipboard-feedback-" + clipboardFeedback.kind} role="status" aria-live="polite">{clipboardFeedback.message}</p>}<label htmlFor="competitor-group">商品型号</label><select id="competitor-group" value={groupId === null ? "" : String(groupId)} onChange={(event) => onGroupChange(event.target.value ? Number(event.target.value) : null)} disabled={busy}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><label htmlFor="new-competitor-group">新建商品型号</label><div className="group-create-controls"><input id="new-competitor-group" type="text" value={newGroupName} onChange={(event) => onNewGroupNameChange(event.target.value)} placeholder="输入商品型号，例如 A19" maxLength={64} disabled={busy} /><button type="button" className="secondary-button" onClick={onCreateGroup} disabled={busy || groupCreateStatus === "submitting"}>{groupCreateStatus === "submitting" ? "创建中…" : "创建"}</button></div><div className={getGroupFeedbackClass(groupCreateStatus)} role="status" aria-live="polite">{groupCreateStatus === "success" && "商品型号已创建并已选中。"}{groupCreateStatus === "invalid" && "请输入有效的商品型号"}{groupCreateStatus === "duplicate" && "该商品型号已存在"}{groupCreateStatus === "server-error" && "商品型号创建失败，请稍后重试。"}</div><div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>取消</button><button type="submit" className="primary-button" disabled={busy || urlCount === 0}>{busy ? (progress.total ? `正在添加 ${progress.completed} / ${progress.total}…` : "正在添加…") : urlCount > 1 ? `添加 ${urlCount} 个竞品` : "添加竞品"}</button></div></form>
+    <form onSubmit={onSubmit}><div className="dialog-field-header"><label htmlFor="competitor-url">1688 商品链接</label><button type="button" className="text-button clipboard-add-button" onClick={() => void handleClipboardAdd()} disabled={busy}>从剪贴板添加</button></div><textarea id="competitor-url" rows={5} value={url} onChange={(event) => { setClipboardFeedback(null); onUrlChange(event.target.value); }} placeholder={"https://detail.1688.com/offer/123456789.html\nhttps://detail.1688.com/offer/987654321.html"} autoComplete="off" spellCheck={false} autoCapitalize="none" autoCorrect="off" disabled={busy} /><p className="hint">每行一个链接，支持一次添加多个竞品；仅支持 detail.1688.com/offer/{"{offerId}"}.html</p>{clipboardFeedback && <p className={"clipboard-feedback clipboard-feedback-" + clipboardFeedback.kind} role="status" aria-live="polite">{clipboardFeedback.message}</p>}<label htmlFor="competitor-group">竞品组</label><select id="competitor-group" value={groupId === null ? "" : String(groupId)} onChange={(event) => onGroupChange(event.target.value ? Number(event.target.value) : null)} disabled={busy}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><label htmlFor="new-competitor-group">新增竞品组</label><div className="group-create-controls"><input id="new-competitor-group" type="text" value={newGroupName} onChange={(event) => onNewGroupNameChange(event.target.value)} placeholder="输入商品型号作为组名，例如 A19" maxLength={64} disabled={busy} /><button type="button" className="secondary-button" onClick={onCreateGroup} disabled={busy || groupCreateStatus === "submitting"}>{groupCreateStatus === "submitting" ? "创建中…" : "创建"}</button></div><div className={getGroupFeedbackClass(groupCreateStatus)} role="status" aria-live="polite">{groupCreateStatus === "success" && "竞品组已创建并已选中。"}{groupCreateStatus === "invalid" && "请输入有效的竞品组名称"}{groupCreateStatus === "duplicate" && "该竞品组已存在"}{groupCreateStatus === "server-error" && "竞品组创建失败，请稍后重试。"}</div><div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>取消</button><button type="submit" className="primary-button" disabled={busy || urlCount === 0}>{busy ? (progress.total ? `正在添加 ${progress.completed} / ${progress.total}…` : "正在添加…") : urlCount > 1 ? `添加 ${urlCount} 个竞品` : "添加竞品"}</button></div></form>
     <div className={"feedback feedback-" + status} role="status" aria-live="polite">{status === "partial" && `已添加 ${succeededCount} 个，${failures.length} 个未添加`}{status === "failed" && `未添加 ${failures.length} 个竞品`}{status === "invalid" && "链接无效：请输入指定格式的 1688 商品链接。"}{status === "duplicate" && "该 1688 商品已经添加。"}{status === "server-error" && "服务暂时不可用，请稍后重试。"}</div>
     {failures.length > 0 && <div className="add-failures" role="status" aria-live="polite"><strong>未添加：</strong><ul>{failures.map((failure) => <li key={failure.url}>{failure.url} — {failure.reason}</li>)}</ul></div>}
   </section></div>;
@@ -1035,7 +1035,7 @@ function App() {
       setGroups(groupData as CompetitorGroup[]);
       setGroupStatus("ready"); setGroupLoaded(true);
     } catch {
-      setGroupError("暂时无法获取商品型号，请检查服务是否正常运行。"); setGroupStatus("error"); setGroupLoaded(false);
+      setGroupError("暂时无法获取竞品组，请检查服务是否正常运行。"); setGroupStatus("error"); setGroupLoaded(false);
     }
   }
   async function loadDetail(competitorId: number, days: 7 | 30) {
@@ -1129,10 +1129,10 @@ function App() {
         setGroupNameError(getGroupNameErrorMessage(body.code, body.message));
         return;
       }
-      setGroupNameDialog(null); setGroupName(""); setNotice({ message: isRename ? "商品型号已重命名。" : "商品型号已创建。", type: "success" });
+      setGroupNameDialog(null); setGroupName(""); setNotice({ message: isRename ? "竞品组已重命名。" : "竞品组已创建。", type: "success" });
       await loadGroups();
     } catch {
-      setGroupNameError("商品型号操作失败，请稍后重试");
+      setGroupNameError("竞品组操作失败，请稍后重试");
     } finally { setGroupNameSubmitting(false); }
   }
   function openGroupDeleteDialog(group: CompetitorGroupSummary) { setGroupDeleteError(null); setGroupDeleteDialog(group); }
@@ -1148,10 +1148,10 @@ function App() {
         setGroupDeleteError(getGroupNameErrorMessage(body.code, body.message));
         return;
       }
-      setGroupDeleteDialog(null); setNotice({ message: "商品型号已删除，竞品已移至未分组。", type: "success" });
+      setGroupDeleteDialog(null); setNotice({ message: "竞品组已删除，竞品已移至未分组。", type: "success" });
       await Promise.all([loadGroups(), loadCompetitors(), loadDashboard()]);
     } catch {
-      setGroupDeleteError("商品型号删除失败，请稍后重试");
+      setGroupDeleteError("竞品组删除失败，请稍后重试");
     } finally { setGroupDeleteSubmitting(false); }
   }
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
