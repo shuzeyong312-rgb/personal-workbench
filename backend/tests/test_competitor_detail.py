@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -96,6 +96,7 @@ def add_change(
     change_type: str,
     detected_at: datetime,
     *,
+    entity_key: str | None = None,
     old_value: str | None = None,
     new_value: str | None = None,
 ) -> ChangeEvent:
@@ -103,6 +104,7 @@ def add_change(
         competitor_id=competitor_id,
         snapshot_id=snapshot_id,
         change_type=change_type,
+        entity_key=entity_key,
         old_value=old_value,
         new_value=new_value,
         detected_at=detected_at,
@@ -253,6 +255,69 @@ def test_detail_exposes_current_stock_and_daily_stock_with_same_rule(
     assert body["daily_trend"][-1]["total_stock"] == 30
 
 
+def test_detail_decodes_latest_sku_name_and_resolves_exact_stock_change_sku(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        snapshot = add_snapshot(session, competitor.id, timestamp, skus=[("sku-pink", 994)])
+        snapshot.skus[0].sku_name = " 粉色&gt;A19 "
+        add_change(
+            session,
+            competitor.id,
+            snapshot.id,
+            "stock_changed",
+            timestamp,
+            entity_key="sku-pink",
+            old_value="998",
+            new_value="994",
+        )
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert body["latest_skus"][0]["sku_name"] == "粉色>A19"
+    assert body["recent_changes"][0]["sku_name"] == "粉色>A19"
+
+
+def test_detail_stock_change_uses_historical_sku_name_fallback_and_null_when_missing(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        historical = add_snapshot(session, competitor.id, timestamp - timedelta(days=1), skus=[("sku-old", 10)])
+        historical.skus[0].sku_name = "卡其色&gt;A19"
+        current = add_snapshot(session, competitor.id, timestamp, skus=[])
+        add_change(
+            session,
+            competitor.id,
+            current.id,
+            "stock_changed",
+            timestamp,
+            entity_key="sku-old",
+            old_value="10",
+            new_value="8",
+        )
+        add_change(
+            session,
+            competitor.id,
+            current.id,
+            "stock_changed",
+            timestamp + timedelta(minutes=1),
+            entity_key="sku-missing",
+            old_value="4",
+            new_value="3",
+        )
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert body["recent_changes"][0]["sku_name"] is None
+    assert body["recent_changes"][1]["sku_name"] == "卡其色>A19"
+
+
 def test_unknown_stock_and_no_sku_return_null_not_zero(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
@@ -331,10 +396,11 @@ def test_recent_changes_and_collection_runs_are_limited_and_stably_ordered(
             ChangeEvent(
                 competitor_id=competitor.id,
                 snapshot_id=snapshot.id,
-                change_type="title_changed",
+                change_type="stock_changed",
+                entity_key=f"sku-{index}",
                 detected_at=timestamp,
             )
-            for _ in range(21)
+            for index in range(21)
         ]
         runs = [
             CollectionRun(
@@ -348,9 +414,22 @@ def test_recent_changes_and_collection_runs_are_limited_and_stably_ordered(
         session.add_all([*changes, *runs])
         session.commit()
 
-    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+    query_count = [0]
+
+    def count_query(*_args: object, **_kwargs: object) -> None:
+        query_count[0] += 1
+
+    with client[1]() as session:
+        engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", count_query)
+    try:
+        body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+    finally:
+        event.remove(engine, "before_cursor_execute", count_query)
 
     assert len(body["recent_changes"]) == 20
+    assert all("sku_name" in item for item in body["recent_changes"])
+    assert query_count[0] <= 10
     assert [item["id"] for item in body["recent_changes"]] == sorted(
         (item["id"] for item in body["recent_changes"]), reverse=True
     )

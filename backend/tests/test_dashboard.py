@@ -5,7 +5,7 @@ import zoneinfo
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -148,6 +148,53 @@ def add_event(
     session.add(event)
     session.flush()
     return event
+
+
+def add_snapshot_with_stocks(
+    session: Session,
+    competitor: Competitor,
+    captured_at: datetime,
+    stocks: list[int | None],
+) -> ProductSnapshot:
+    snapshot = ProductSnapshot(
+        competitor_id=competitor.id,
+        captured_at=captured_at,
+        title=competitor.title or "",
+        shop_name=competitor.shop_name or "",
+        product_status="active",
+        collection_source="html",
+    )
+    snapshot.skus = [
+        SkuSnapshot(sku_id=f"sku-{index}", sku_name=f"SKU {index}", stock=stock)
+        for index, stock in enumerate(stocks)
+    ]
+    session.add(snapshot)
+    session.flush()
+    return snapshot
+
+
+def add_event_on_snapshot(
+    session: Session,
+    competitor: Competitor,
+    snapshot: ProductSnapshot,
+    detected_at: datetime,
+    *,
+    entity_key: str = "sku-0",
+    old_value: str = "1",
+    new_value: str = "2",
+) -> ChangeEvent:
+    change = ChangeEvent(
+        competitor_id=competitor.id,
+        snapshot_id=snapshot.id,
+        change_type="stock_changed",
+        entity_key=entity_key,
+        old_value=old_value,
+        new_value=new_value,
+        detected_at=detected_at,
+    )
+    session.add(change)
+    session.flush()
+    return change
 
 
 def add_run(
@@ -402,6 +449,7 @@ def test_returns_contract_fields_without_group_name(
         "latest_change_at",
         "primary_change",
         "stock_changed_sku_count",
+        "stock_total_change",
         "sku_added_count",
         "sku_removed_count",
     }
@@ -432,6 +480,144 @@ def test_aggregates_same_sku_stock_events_and_uses_latest_summary(
     assert item["stock_changed_sku_count"] == 1
     assert item["primary_change"]["id"] == latest.id
     assert item["primary_change"]["sku_name"] == "白色款"
+
+
+def test_stock_primary_returns_single_sku_snapshot_total_change(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 1), [998])
+        current = add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 2), [994])
+        add_event_on_snapshot(session, competitor, current, datetime(2026, 9, 20, 2), old_value="998", new_value="994")
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["stock_total_change"] == {"old_total": 998, "new_total": 994}
+
+
+def test_stock_primary_sums_all_skus_and_preserves_zero(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 1), [0, 10, 20])
+        current = add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 2), [0, 10, 17])
+        add_event_on_snapshot(session, competitor, current, datetime(2026, 9, 20, 2), entity_key="sku-2", old_value="20", new_value="17")
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["stock_total_change"] == {"old_total": 30, "new_total": 27}
+
+
+@pytest.mark.parametrize(
+    ("previous_stocks", "current_stocks", "expected"),
+    [
+        (None, [9], {"old_total": None, "new_total": 9}),
+        ([], [9], {"old_total": None, "new_total": 9}),
+        ([None], [9], {"old_total": None, "new_total": 9}),
+        ([9], [None], {"old_total": 9, "new_total": None}),
+    ],
+)
+def test_stock_total_change_preserves_unknown_snapshot_totals(
+    client: tuple[TestClient, sessionmaker[Session]],
+    business_day: None,
+    previous_stocks: list[int | None] | None,
+    current_stocks: list[int | None],
+    expected: dict[str, int | None],
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        if previous_stocks is not None:
+            add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 1), previous_stocks)
+        current = add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 2), current_stocks)
+        add_event_on_snapshot(session, competitor, current, datetime(2026, 9, 20, 2))
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["stock_total_change"] == expected
+
+
+def test_stock_total_uses_event_snapshot_not_later_no_change_snapshot(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 1), [100])
+        event_snapshot = add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 2), [90])
+        add_event_on_snapshot(session, competitor, event_snapshot, datetime(2026, 9, 20, 2), old_value="100", new_value="90")
+        add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 3), [80])
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["stock_total_change"] == {"old_total": 100, "new_total": 90}
+
+
+def test_stock_total_previous_snapshot_uses_id_tie_break(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    captured_at = datetime(2026, 9, 20, 1)
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_snapshot_with_stocks(session, competitor, captured_at, [10])
+        second_previous = add_snapshot_with_stocks(session, competitor, captured_at, [20])
+        current = add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 2), [30])
+        add_event_on_snapshot(session, competitor, current, datetime(2026, 9, 20, 2), old_value="20", new_value="30")
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert second_previous.id > 0
+    assert item["stock_total_change"] == {"old_total": 20, "new_total": 30}
+
+
+def test_multiple_stock_events_use_latest_primary_snapshot_pair(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 1), [120])
+        first_current = add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 2), [100])
+        add_event_on_snapshot(session, competitor, first_current, datetime(2026, 9, 20, 2), old_value="120", new_value="100")
+        latest = add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 3), [90])
+        add_event_on_snapshot(session, competitor, latest, datetime(2026, 9, 20, 3), old_value="100", new_value="90")
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["stock_total_change"] == {"old_total": 100, "new_total": 90}
+
+
+def test_stock_total_queries_are_batched_for_multiple_competitors(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        for competitor_id in range(1, 4):
+            competitor = add_competitor(session, competitor_id)
+            add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 1), [10])
+            current = add_snapshot_with_stocks(session, competitor, datetime(2026, 9, 20, 2), [9])
+            add_event_on_snapshot(session, competitor, current, datetime(2026, 9, 20, 2), old_value="10", new_value="9")
+        session.commit()
+
+    query_count = [0]
+
+    def count_query(*_args: object, **_kwargs: object) -> None:
+        query_count[0] += 1
+
+    with client[1]() as session:
+        engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", count_query)
+    try:
+        body = client[0].get("/api/dashboard/today").json()
+    finally:
+        event.remove(engine, "before_cursor_execute", count_query)
+
+    assert len(body["items"]) == 3
+    assert query_count[0] <= 12
 
 
 def test_decodes_html_entities_in_recovered_sku_name(

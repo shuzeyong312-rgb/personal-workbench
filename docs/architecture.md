@@ -169,6 +169,14 @@ mtop.1688...
 
 竞品详情趋势继续复用现有 `GET /api/competitors/{id}/detail?days=7|30`。Backend 使用 dashboard 的 Asia/Shanghai business-day helper，将日期范围转换为 UTC 半开区间，按 `captured_at DESC, id DESC` 选择每日最终 `ProductSnapshot`，再一次性批量读取所选快照的 `SkuSnapshot`，避免按日期逐个查询 SKU 的 N+1。`daily_trend` 同时承载每日价格和库存事实；销量不进入该 contract，仅保留前端占位。
 
+详情 API 的 `recent_changes[].sku_name` 是展示投影，不是数据库字段。Backend 对最多 20 条近期变化批量收集 `snapshot_id` / `entity_key`，一次查询精确快照映射，再一次查询同一竞品历史 SKU 映射；名称通过 `html.unescape` 和 trim 后返回，找不到则为 `null`。Frontend 只负责显示名称、SKU ID 回退和既有变化文案。
+
+Frontend 的 AppShell 使用固定 viewport 高度：Sidebar 自身允许滚动，`.main-content` 承担右侧主纵向滚动；Detail 历史卡和 Dashboard 今日变化表格使用 scoped 内部滚动、sticky 表头与 `overscroll-behavior-y: contain`，不增加 wheel handler 或新的状态层。
+
+`.main-content` 是 column flex 容器时，普通直接子级卡片必须保留自然高度，否则 `.table-card` 的 `overflow: hidden` 会配合默认 flex shrink 裁掉竞品列表。列表不增加固定高度或纵向裁切；只有 Dashboard 今日变化和 Detail 三个历史卡使用明确的内部纵向滚动。
+
+Dashboard 的 `stock_total_change` 使用固定批量查询：收集 primary stock event 的 current snapshot，批量读取相关竞品快照并按 `(captured_at, id)` 在内存确定 previous，再批量读取 current/previous 的 `SkuSnapshot` 计算 totals，避免按竞品或快照 N+1 查询。KPI、priority 和 trend_7d 不变。
+
 ## 9. 数据库原则
 
 V1 使用 SQLite。

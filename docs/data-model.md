@@ -225,6 +225,10 @@ old_value / new_value 不保存完整 Snapshot JSON、1688 原始数据、HTML�
 
 Dashboard 不改变 ChangeEvent 的事实级语义。Dashboard 今日变化在查询展示层按 active Competitor 聚合；`change_count` 仍统计真实事件条数，`ChangeEvent` 不因展示聚合而合并或删除。SKU 级事件的 `entity_key` 仍是 `sku_id`，名称可从关联快照的 `SkuSnapshot` 可靠恢复时用于展示，不能恢复时保留事实性 SKU ID 回退。
 
+Dashboard item 的 `stock_total_change` 是商品级展示投影，仅在 primary change 为 `stock_changed` 时计算，结构为 `{old_total, new_total}`。current 使用 primary 事件的 `snapshot_id`；previous 使用同一 competitor 中按 `(captured_at ASC, id ASC)` 严格紧邻的上一条 `ProductSnapshot`。每个快照必须至少有一个 SKU 且所有 `stock` 非 NULL 才能求和；否则对应 total 为 NULL，0 仍是有效库存。该投影不修改 ChangeEvent，也不把事件值相加。
+
+详情 API 的 `latest_skus[].sku_name` 和 `recent_changes[].sku_name` 是展示层字段：Backend 返回前使用 Python 标准库 `html.unescape` 并 trim，不回写数据库。`stock_changed` 的名称优先按 `snapshot_id + entity_key` 精确匹配对应 `SkuSnapshot`，再按同一竞品历史 `SkuSnapshot` 的 `sku_id` 回退；仍找不到时返回 `null`，由前端回退为事实性 `SKU {entity_key}`。
+
 ### 7.1 当前已实现的 change_type
 
 当前数据库 CHECK 和业务检测逻辑只支持以下 6 种：

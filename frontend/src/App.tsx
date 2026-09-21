@@ -195,6 +195,7 @@ export type DashboardItem = {
   latest_change_at: string;
   primary_change: (Change & { sku_name: string | null }) | null;
   stock_changed_sku_count: number | null;
+  stock_total_change: { old_total: number | null; new_total: number | null } | null;
   sku_added_count: number;
   sku_removed_count: number;
 };
@@ -249,7 +250,7 @@ export type CompetitorDetail = {
     sku_count: number;
     total_stock: number | null;
   } | null;
-  latest_skus: { sku_id: string; sku_name: string; stock: number | null; price: string | null }[];
+  latest_skus: { sku_id: string; sku_name: string | null; stock: number | null; price: string | null }[];
   latest_price_change: Change | null;
   daily_trend: DailyTrendPoint[];
   recent_changes: Change[];
@@ -492,7 +493,10 @@ export function formatChange(change: Change): string {
     case "price_decrease": return `价格下降 ${oldValue} → ${newValue}`;
     case "sku_added": { const value = displayValue(change.new_value); return value ? `新增 SKU：${value}` : "新增 SKU"; }
     case "sku_removed": { const value = displayValue(change.old_value); return value ? `移除 SKU：${value}` : "移除 SKU"; }
-    case "stock_changed": return `库存变化 ${oldValue} → ${newValue}`;
+    case "stock_changed": {
+      const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "");
+      return sku ? `${sku} · 库存 ${oldValue} → ${newValue}` : `库存变化 ${oldValue} → ${newValue}`;
+    }
     case "title_changed": return "标题已变更";
     default: return "发生变化";
   }
@@ -548,12 +552,9 @@ export function formatDashboardSummary(item: DashboardItem): string {
     return `${formatChangeValue(change, "old")} → ${formatChangeValue(change, "new")}`;
   }
   if (change.change_type === "stock_changed") {
-    if (item.stock_changed_sku_count === null) return "SKU 数量未知";
-    if (item.stock_changed_sku_count === 1) {
-      const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "SKU");
-      return `${sku} ${formatChangeValue(change, "old")} → ${formatChangeValue(change, "new")}`;
-    }
-    return `${item.stock_changed_sku_count} 个 SKU 发生变化`;
+    const totals = item.stock_total_change;
+    if (!totals || totals.old_total === null || totals.new_total === null) return "总库存发生变化";
+    return `总库存 ${formatStockDisplay(totals.old_total)} → ${formatStockDisplay(totals.new_total)}`;
   }
   if (change.change_type === "sku_added" || change.change_type === "sku_removed") {
     const parts = [];
@@ -567,7 +568,12 @@ export function formatDashboardSummary(item: DashboardItem): string {
 
 export function formatDashboardMagnitude(item: DashboardItem): string {
   if (!item.primary_change) return "—";
-  if (item.primary_change.change_type === "stock_changed" && item.stock_changed_sku_count !== 1) return "—";
+  if (item.primary_change.change_type === "stock_changed") {
+    const totals = item.stock_total_change;
+    if (!totals || totals.old_total === null || totals.new_total === null || totals.old_total === 0) return "—";
+    const percentage = ((totals.new_total - totals.old_total) / totals.old_total) * 100;
+    return `${percentage < 0 ? "↓" : "↑"} ${Math.abs(percentage).toFixed(1)}%`;
+  }
   return formatChangeMagnitude(item.primary_change);
 }
 
@@ -936,7 +942,7 @@ export function DashboardPage({ data, groups, status, error, batchState = idleBa
       {status === "loading" && <div className="state-panel dashboard-inline-state"><div className="spinner" /><strong>正在加载今日变化…</strong></div>}
       {status === "error" && <div className="state-panel state-error dashboard-inline-state"><strong>加载失败</strong><span>{error || "暂时无法获取今日变化。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div>}
       {status === "ready" && data && rows.length === 0 && <div className="state-panel dashboard-empty"><div className="empty-icon">✓</div><strong>今日暂无竞品变化</strong><span>系统会继续按照每日采集规则监控竞品变化。</span></div>}
-      {rows.length > 0 && <div className="table-scroll"><table className="dashboard-events-table"><thead><tr><th>商品信息</th><th>变化类型</th><th>变化摘要</th><th>变化幅度</th><th>变化时间</th><th>竞品组</th><th>操作</th></tr></thead><tbody>{rows.map((item) => <tr key={item.competitor_id}><td><div className="product-cell"><ProductImage competitor={item} /><div><strong>{item.title || "未采集"}</strong><span>{item.shop_name || "未采集"}</span></div></div></td><td>{dashboardChangeBadges(item.change_types).map((badge) => <span key={badge.label} className={`change-type-badge ${badge.className}`}>{badge.label}</span>)}</td><td className="change-transition">{formatDashboardSummary(item)}</td><td className={`change-magnitude change-magnitude-${item.primary_change?.change_type || "unknown"}`}>{formatDashboardMagnitude(item)}</td><td className="collection-date-cell">{formatDate(item.latest_change_at)}</td><td>{getCompetitorGroupLabel(item.group_id, groups)}</td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(item.competitor_id)}>查看详情</button></td></tr>)}</tbody></table></div>}
+      {rows.length > 0 && <div className="table-scroll dashboard-table-scroll"><table className="dashboard-events-table"><thead><tr><th>商品信息</th><th>变化类型</th><th>变化摘要</th><th>变化幅度</th><th>变化时间</th><th>竞品组</th><th>操作</th></tr></thead><tbody>{rows.map((item) => <tr key={item.competitor_id}><td><div className="product-cell"><ProductImage competitor={item} /><div><strong>{item.title || "未采集"}</strong><span>{item.shop_name || "未采集"}</span></div></div></td><td>{dashboardChangeBadges(item.change_types).map((badge) => <span key={badge.label} className={`change-type-badge ${badge.className}`}>{badge.label}</span>)}</td><td className="change-transition">{formatDashboardSummary(item)}</td><td className={`change-magnitude change-magnitude-${item.primary_change?.change_type || "unknown"}`}>{formatDashboardMagnitude(item)}</td><td className="collection-date-cell">{formatDate(item.latest_change_at)}</td><td>{getCompetitorGroupLabel(item.group_id, groups)}</td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(item.competitor_id)}>查看详情</button></td></tr>)}</tbody></table></div>}
     </section><CollectionOverview data={data} batchState={batchState} /></div>
     <div className="dashboard-lower-grid"><section className="table-card dashboard-trend-section"><div className="table-heading"><div><h2>近 7 天竞品变化趋势</h2><span>每天真实监控事件数量</span></div><span className="trend-period">连续 7 个业务日</span></div>{status === "ready" && data ? <DashboardTrendChart trend={data.trend_7d} /> : <div className="dashboard-trend-placeholder">—</div>}</section><QuickActions data={data} batchState={batchState} onAdd={onAdd} onCollect={onCollect} onNavigate={onNavigate} /></div>
   </AppShell>;
@@ -1073,9 +1079,9 @@ export function DetailPage({ data, groups, status, error, days, rangeLoading = f
      <DetailOverview data={data} groups={groups} onChangeGroup={onChangeGroup} />
     <section className="detail-trends"><div className="detail-trends-header"><div><h2>趋势数据</h2><span>价格和库存来自每日最终 ProductSnapshot</span></div><div className="range-selector" role="group" aria-label="趋势时间范围" aria-busy={rangeLoading}><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)} disabled={rangeLoading}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)} disabled={rangeLoading}>近 30 天</button>{rangeLoading && <span className="range-loading-indicator" role="status">更新中…</span>}</div></div><div className="detail-trend-grid"><DetailTrendCard kind="price" title="价格趋势" description="最低价 / 最高价" trend={data.daily_trend} /><DetailTrendCard kind="stock" title="库存趋势" description="全部 SKU 库存总和" trend={data.daily_trend} /><SalesPlaceholderCard /></div></section>
     <div className="detail-lower-grid">
-      <section className="table-card detail-section-card"><div className="table-heading"><div><h2>SKU 信息</h2><span>{data.latest_snapshot ? `共 ${data.latest_snapshot.sku_count} 个` : "当前快照"}</span></div></div>{data.latest_skus.length === 0 ? <div className="detail-empty">暂无 SKU 数据</div> : <div className="table-scroll"><table><thead><tr><th>SKU 规格</th><th>SKU ID</th><th>库存</th><th>SKU 价格</th></tr></thead><tbody>{data.latest_skus.map((sku) => <tr key={sku.sku_id}><td>{sku.sku_name}</td><td>{sku.sku_id}</td><td>{sku.stock === null ? "—" : sku.stock}</td><td>{sku.price === null ? "—" : `¥${sku.price}`}</td></tr>)}</tbody></table></div>}</section>
+      <section className="table-card detail-section-card"><div className="table-heading"><div><h2>SKU 信息</h2><span>{data.latest_snapshot ? `共 ${data.latest_snapshot.sku_count} 个` : "当前快照"}</span></div></div>{data.latest_skus.length === 0 ? <div className="detail-empty">暂无 SKU 数据</div> : <div className="table-scroll detail-table-scroll"><table><thead><tr><th>SKU 规格</th><th>SKU ID</th><th>库存</th><th>SKU 价格</th></tr></thead><tbody>{data.latest_skus.map((sku) => <tr key={sku.sku_id}><td>{sku.sku_name ?? "未命名 SKU"}</td><td>{sku.sku_id}</td><td>{sku.stock === null ? "—" : sku.stock}</td><td>{sku.price === null ? "—" : `¥${sku.price}`}</td></tr>)}</tbody></table></div>}</section>
       <section className="table-card detail-section-card"><div className="table-heading"><div><h2>最近变化</h2><span>最近 20 条</span></div></div>{data.recent_changes.length === 0 ? <div className="detail-empty">暂无变化记录</div> : <div className="detail-record-list">{data.recent_changes.map((change) => <div className="detail-record-row" key={change.id}><strong>{formatChange(change)}</strong><time>{formatDate(change.detected_at)}</time></div>)}</div>}</section>
-      <section className="table-card detail-section-card"><div className="table-heading"><div><h2>最近采集记录</h2><span>最近 20 条</span></div></div>{data.recent_collection_runs.length === 0 ? <div className="detail-empty">暂无采集记录</div> : <div className="table-scroll"><table className="collection-runs-table"><thead><tr><th>开始时间</th><th>结束时间</th><th>状态</th><th>结果</th></tr></thead><tbody>{data.recent_collection_runs.map((run) => <tr key={run.id}><td>{formatDate(run.started_at)}</td><td>{run.finished_at ? formatDate(run.finished_at) : "—"}</td><td>{run.status === "success" ? "成功" : run.status === "failed" ? "失败" : "采集中"}</td><td>{run.status === "failed" ? run.error_message || "采集失败" : run.status === "success" ? "成功" : "—"}</td></tr>)}</tbody></table></div>}</section>
+      <section className="table-card detail-section-card"><div className="table-heading"><div><h2>最近采集记录</h2><span>最近 20 条</span></div></div>{data.recent_collection_runs.length === 0 ? <div className="detail-empty">暂无采集记录</div> : <div className="table-scroll detail-table-scroll"><table className="collection-runs-table"><thead><tr><th>开始时间</th><th>结束时间</th><th>状态</th><th>结果</th></tr></thead><tbody>{data.recent_collection_runs.map((run) => <tr key={run.id}><td>{formatDate(run.started_at)}</td><td>{run.finished_at ? formatDate(run.finished_at) : "—"}</td><td>{run.status === "success" ? "成功" : run.status === "failed" ? "失败" : "采集中"}</td><td>{run.status === "failed" ? run.error_message || "采集失败" : run.status === "success" ? "成功" : "—"}</td></tr>)}</tbody></table></div>}</section>
     </div>
   </AppShell>;
 }

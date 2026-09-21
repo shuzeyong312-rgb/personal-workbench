@@ -347,6 +347,12 @@ test.each([
   expect(formatLatestChange(change)).toBe(expected);
 });
 
+test("formats stock changes with SKU identity and keeps the legacy fallback", () => {
+  expect(formatChange({ ...latestChange({ change_type: "stock_changed", entity_key: "6298697170559", old_value: "998", new_value: "994" }), sku_name: "粉色>A19" })).toBe("粉色>A19 · 库存 998 → 994");
+  expect(formatChange({ ...latestChange({ change_type: "stock_changed", entity_key: "6298697170559", old_value: "998", new_value: "994" }) })).toBe("SKU 6298697170559 · 库存 998 → 994");
+  expect(formatChange(latestChange({ change_type: "stock_changed", old_value: "998", new_value: "994" }))).toBe("库存变化 998 → 994");
+});
+
 test("renders the real latest change in the recent change column", () => {
   const changed = {
     ...competitor,
@@ -490,6 +496,7 @@ const dashboardData: DashboardData = {
     latest_change_at: "2026-09-20T10:00:00Z",
     primary_change: { id: 2, change_type: "price_increase", entity_key: null, sku_name: null, old_value: "40.00", new_value: "45.00", detected_at: "2026-09-20T10:00:00Z" },
     stock_changed_sku_count: 0,
+    stock_total_change: null,
     sku_added_count: 0,
     sku_removed_count: 0,
   }],
@@ -505,6 +512,9 @@ test("renders dashboard loading, error and empty states", () => {
 
 test("renders dashboard stats, mapped group and aggregated change item", () => {
   const html = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  expect(html).toContain('class="app-shell"');
+  expect(html).toContain('class="sidebar"');
+  expect(html).toContain('class="main-content"');
   expect(html).toContain("监控中 5 个竞品");
   expect(html).toContain("今日变价竞品");
   expect(html).toContain("今日库存变化竞品");
@@ -528,6 +538,7 @@ test("renders all competitor items without expanding event rows", () => {
   const html = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items, stats: { ...dashboardData.stats, changed_competitors: 6, change_events: 12 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
   expect((html.match(/class="product-cell/g) || []).length).toBe(6);
   expect(html).toContain("今日 6 个竞品 · 12 条变化");
+  expect(html).toContain("dashboard-table-scroll");
 });
 
 test("formats dashboard change rows, badges, magnitudes, and collection durations", () => {
@@ -541,12 +552,14 @@ test("formats dashboard change rows, badges, magnitudes, and collection duration
   expect(formatChangeMagnitude(sku)).toBe("—");
   expect(getChangeTypeLabel("stock_changed")).toBe("库存变化");
   const stock = { ...price, change_type: "stock_changed", entity_key: "sku-red", sku_name: "白色款", old_value: "481", new_value: "478" };
-  const stockItem = { ...dashboardData.items[0], change_count: 2, change_types: ["stock_changed"], primary_change: stock, stock_changed_sku_count: 1 };
-  expect(formatDashboardSummary(stockItem)).toBe("白色款 481 → 478");
-  expect(formatDashboardMagnitude(stockItem)).toBe("↓ 0.6%");
-  const multiStock = { ...stockItem, stock_changed_sku_count: 2 };
-  expect(formatDashboardSummary(multiStock)).toBe("2 个 SKU 发生变化");
-  expect(formatDashboardMagnitude(multiStock)).toBe("—");
+  const stockItem = { ...dashboardData.items[0], change_count: 2, change_types: ["stock_changed"], primary_change: stock, stock_changed_sku_count: 2, stock_total_change: { old_total: 300, new_total: 270 } };
+  expect(formatDashboardSummary(stockItem)).toBe("总库存 300 → 270");
+  expect(formatDashboardMagnitude(stockItem)).toBe("↓ 10.0%");
+  expect(formatDashboardSummary({ ...stockItem, stock_total_change: { old_total: null, new_total: 270 } })).toBe("总库存发生变化");
+  expect(formatDashboardMagnitude({ ...stockItem, stock_total_change: { old_total: null, new_total: 270 } })).toBe("—");
+  expect(formatDashboardMagnitude({ ...stockItem, stock_total_change: { old_total: 0, new_total: 10 } })).toBe("—");
+  expect(formatDashboardSummary(stockItem)).not.toContain("白色款");
+  expect(formatDashboardSummary(stockItem)).not.toContain("个 SKU");
   expect(formatDuration(72)).toBe("1 分 12 秒");
   expect(formatDuration(null)).toBe("—");
 });
@@ -724,12 +737,25 @@ test("renders detail overview, mapped group, inactive status and latest sku null
   expect(html).toContain("123456789");
   expect(html).toContain("暖手宝");
   expect(html).toContain("¥40.00 ~ ¥45.00");
+  expect(html).toContain('class="detail-overview table-card"');
+  expect(html).not.toContain('detail-overview detail-section-card');
+  expect(html).not.toContain('detail-overview detail-table-scroll');
   expect(html).toContain("已停止监控");
   expect(html).toContain("红色");
   expect(html).toContain(">0<");
   expect(html).toContain("蓝色");
   expect(html).toContain("¥41.00");
   expect(html).toContain("—");
+});
+
+test("keeps detail history cards and their scoped scroll containers", () => {
+  const data = { ...detailData, recent_changes: [{ ...latestChange({ change_type: "stock_changed", entity_key: "6298697170559", old_value: "998", new_value: "994" }), sku_name: "粉色>A19" }] };
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={data} status="ready" error={null} />);
+  expect((html.match(/detail-section-card/g) || []).length).toBe(3);
+  expect((html.match(/detail-table-scroll/g) || []).length).toBe(2);
+  expect(html).toContain("detail-record-list");
+  expect(html).toContain("粉色&gt;A19 · 库存 998 → 994");
+  expect(html).not.toContain("onWheel");
 });
 
 test("detail keeps status in the summary and exposes group assignment", () => {

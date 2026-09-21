@@ -1,6 +1,7 @@
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
+from html import unescape
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -43,7 +44,7 @@ class LatestSnapshotDetailResponse(BaseModel):
 
 class LatestSkuResponse(BaseModel):
     sku_id: str
-    sku_name: str
+    sku_name: str | None
     stock: int | None
     price: str | None
 
@@ -65,6 +66,7 @@ class DetailChangeResponse(BaseModel):
     old_value: str | None
     new_value: str | None
     detected_at: datetime
+    sku_name: str | None = None
 
 
 class DetailCollectionRunResponse(BaseModel):
@@ -92,6 +94,91 @@ def calculate_total_stock(skus: Sequence[SkuSnapshot]) -> int | None:
     if not skus or any(sku.stock is None for sku in skus):
         return None
     return sum(sku.stock for sku in skus if sku.stock is not None)
+
+
+def _display_sku_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    name = unescape(value).strip()
+    return name or None
+
+
+def _change_sku_names(
+    db: Session,
+    competitor_id: int,
+    changes: Sequence[ChangeEvent],
+) -> dict[tuple[int, str], str | None]:
+    stock_changes = [
+        change
+        for change in changes
+        if change.change_type == "stock_changed" and change.entity_key
+    ]
+    if not stock_changes:
+        return {}
+
+    snapshot_ids = {change.snapshot_id for change in stock_changes}
+    sku_ids = {change.entity_key for change in stock_changes if change.entity_key is not None}
+    exact_names: dict[tuple[int, str], str] = {}
+    exact_rows = db.execute(
+        select(SkuSnapshot.product_snapshot_id, SkuSnapshot.sku_id, SkuSnapshot.sku_name).where(
+            SkuSnapshot.product_snapshot_id.in_(snapshot_ids),
+            SkuSnapshot.sku_id.in_(sku_ids),
+        )
+    ).all()
+    for snapshot_id, sku_id, sku_name in exact_rows:
+        display_name = _display_sku_name(sku_name)
+        if display_name is not None:
+            exact_names[(snapshot_id, sku_id)] = display_name
+
+    historical_names: dict[str, str] = {}
+    historical_rows = db.execute(
+        select(SkuSnapshot.sku_id, SkuSnapshot.sku_name)
+        .join(ProductSnapshot, ProductSnapshot.id == SkuSnapshot.product_snapshot_id)
+        .where(
+            ProductSnapshot.competitor_id == competitor_id,
+            SkuSnapshot.sku_id.in_(sku_ids),
+        )
+        .order_by(
+            SkuSnapshot.sku_id.asc(),
+            ProductSnapshot.captured_at.desc(),
+            ProductSnapshot.id.desc(),
+            SkuSnapshot.id.desc(),
+        )
+    ).all()
+    for sku_id, sku_name in historical_rows:
+        if sku_id in historical_names:
+            continue
+        display_name = _display_sku_name(sku_name)
+        if display_name is not None:
+            historical_names[sku_id] = display_name
+
+    return {
+        (change.snapshot_id, change.entity_key): exact_names.get(
+            (change.snapshot_id, change.entity_key),
+            historical_names.get(change.entity_key),
+        )
+        for change in stock_changes
+        if change.entity_key is not None
+    }
+
+
+def _change_response(
+    change: ChangeEvent,
+    sku_names: dict[tuple[int, str], str | None],
+) -> dict[str, object]:
+    sku_name = None
+    if change.change_type == "stock_changed" and change.entity_key:
+        sku_name = sku_names.get((change.snapshot_id, change.entity_key))
+    return {
+        "id": change.id,
+        "snapshot_id": change.snapshot_id,
+        "change_type": change.change_type,
+        "entity_key": change.entity_key,
+        "old_value": change.old_value,
+        "new_value": change.new_value,
+        "detected_at": change.detected_at,
+        "sku_name": sku_name,
+    }
 
 
 def _daily_snapshot_selection(
@@ -181,6 +268,7 @@ def get_competitor_detail(
             .limit(20)
         ).all()
     )
+    change_sku_names = _change_sku_names(db, competitor_id, changes)
 
     daily_trend = []
     for snapshot_date in dates:
@@ -216,14 +304,18 @@ def get_competitor_detail(
         "latest_skus": [
             {
                 "sku_id": sku.sku_id,
-                "sku_name": sku.sku_name,
+                "sku_name": _display_sku_name(sku.sku_name),
                 "stock": sku.stock,
                 "price": _price_text(sku.price),
             }
             for sku in latest_skus
         ],
-        "latest_price_change": latest_price_change,
+        "latest_price_change": (
+            _change_response(latest_price_change, change_sku_names)
+            if latest_price_change is not None
+            else None
+        ),
         "daily_trend": daily_trend,
-        "recent_changes": changes,
+        "recent_changes": [_change_response(change, change_sku_names) for change in changes],
         "recent_collection_runs": collection_runs,
     }

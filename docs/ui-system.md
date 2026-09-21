@@ -276,6 +276,8 @@ PageHeader
 - 不做传统 BI 大屏；
 - 不把装饰性数据放在核心位置；
 - 统计卡片可以使用不同轻辅助色增加识别度。
+- 今日变化表格在约 5～7 行后进入内部滚动，表头保持可见，避免 Dashboard 无限撑高。
+- Dashboard 库存摘要展示商品总库存变化；Detail 最近变化继续展示 SKU 级库存事件。
 
 以后其他总览型页面优先参考本页面，而不是重新设计 Dashboard。
 
@@ -434,6 +436,11 @@ SKU 信息
 - 图表视觉必须与 Dashboard 保持一致；
 - 详情页允许信息密度略高，但仍保持清晰分区；
 - 不要把所有字段塞进一个巨大表单。
+- 工作台 shell 固定在 viewport 内，Sidebar 可独立滚动，main content 是右侧唯一主滚动容器；
+- Detail Overview 保持自然高度，不使用固定高度、max-height 或内部纵向滚动；固定高度只属于底部三张历史卡；
+- 底部 SKU、最近变化和最近采集记录三张卡桌面端等高，历史内容在卡片内部滚动，表格表头使用 Detail scoped sticky 样式；
+- Sidebar 隐藏横向溢出但保留纵向滚动；竞品列表不设置固定高度，整页由 main content 滚动；
+- 内嵌滚动区域使用 `overscroll-behavior-y: contain`，不使用 JS wheel 阻断。
 
 以后实体详情页优先参考本页面。
 

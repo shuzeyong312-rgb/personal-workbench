@@ -28,6 +28,11 @@ class DashboardPrimaryChangeResponse(BaseModel):
     detected_at: datetime
 
 
+class DashboardStockTotalChangeResponse(BaseModel):
+    old_total: int | None
+    new_total: int | None
+
+
 class DashboardItemResponse(BaseModel):
     competitor_id: int
     title: str | None
@@ -40,6 +45,7 @@ class DashboardItemResponse(BaseModel):
     latest_change_at: datetime
     primary_change: DashboardPrimaryChangeResponse | None
     stock_changed_sku_count: int | None
+    stock_total_change: DashboardStockTotalChangeResponse | None
     sku_added_count: int
     sku_removed_count: int
 
@@ -158,6 +164,73 @@ def _sku_names(
     return exact, historical
 
 
+def _calculate_total_stock(skus: list[SkuSnapshot]) -> int | None:
+    if not skus or any(sku.stock is None for sku in skus):
+        return None
+    return sum(sku.stock for sku in skus if sku.stock is not None)
+
+
+def _stock_total_changes(
+    db: Session,
+    primary_stock_events: list[ChangeEvent],
+) -> dict[int, DashboardStockTotalChangeResponse]:
+    current_snapshot_ids = {event.snapshot_id for event in primary_stock_events}
+    if not current_snapshot_ids:
+        return {}
+
+    current_snapshots = list(
+        db.scalars(
+            select(ProductSnapshot).where(ProductSnapshot.id.in_(current_snapshot_ids))
+        ).all()
+    )
+    if not current_snapshots:
+        return {}
+
+    competitor_ids = {snapshot.competitor_id for snapshot in current_snapshots}
+    snapshots = list(
+        db.scalars(
+            select(ProductSnapshot)
+            .where(ProductSnapshot.competitor_id.in_(competitor_ids))
+            .order_by(
+                ProductSnapshot.competitor_id.asc(),
+                ProductSnapshot.captured_at.asc(),
+                ProductSnapshot.id.asc(),
+            )
+        ).all()
+    )
+    previous_by_snapshot_id: dict[int, ProductSnapshot | None] = {}
+    last_by_competitor: dict[int, ProductSnapshot] = {}
+    for snapshot in snapshots:
+        previous_by_snapshot_id[snapshot.id] = last_by_competitor.get(snapshot.competitor_id)
+        last_by_competitor[snapshot.competitor_id] = snapshot
+
+    previous_snapshot_ids = {
+        previous.id
+        for snapshot_id, previous in previous_by_snapshot_id.items()
+        if snapshot_id in current_snapshot_ids and previous is not None
+    }
+    sku_snapshot_ids = current_snapshot_ids | previous_snapshot_ids
+    sku_by_snapshot: dict[int, list[SkuSnapshot]] = {}
+    for sku in db.scalars(
+        select(SkuSnapshot)
+        .where(SkuSnapshot.product_snapshot_id.in_(sku_snapshot_ids))
+        .order_by(SkuSnapshot.product_snapshot_id.asc(), SkuSnapshot.id.asc())
+    ).all():
+        sku_by_snapshot.setdefault(sku.product_snapshot_id, []).append(sku)
+
+    current_by_id = {snapshot.id: snapshot for snapshot in current_snapshots}
+    return {
+        snapshot_id: DashboardStockTotalChangeResponse(
+            old_total=_calculate_total_stock(
+                sku_by_snapshot.get(previous.id, []) if previous is not None else []
+            ),
+            new_total=_calculate_total_stock(sku_by_snapshot.get(snapshot_id, [])),
+        )
+        for snapshot_id, snapshot in current_by_id.items()
+        for previous in [previous_by_snapshot_id.get(snapshot_id)]
+    }
+
+
 def _primary_event(events: list[ChangeEvent]) -> ChangeEvent:
     return min(
         enumerate(events),
@@ -218,6 +291,13 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
 
     event_list = [event for aggregate in aggregates.values() for event in aggregate["events"]]  # type: ignore[union-attr]
     exact_sku_names, historical_sku_names = _sku_names(db, event_list)
+    primary_stock_events = [
+        primary
+        for aggregate in aggregates.values()
+        for primary in [_primary_event(aggregate["events"])]  # type: ignore[union-attr]
+        if primary.change_type == "stock_changed"
+    ]
+    stock_total_changes = _stock_total_changes(db, primary_stock_events)
     items = []
     for aggregate in aggregates.values():
         competitor = aggregate["competitor"]
@@ -256,6 +336,9 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
                     detected_at=primary.detected_at,
                 ),
                 stock_changed_sku_count=stock_sku_count,
+                stock_total_change=stock_total_changes.get(primary.snapshot_id)
+                if primary.change_type == "stock_changed"
+                else None,
                 sku_added_count=aggregate["sku_added_count"],
                 sku_removed_count=aggregate["sku_removed_count"],
             ),
