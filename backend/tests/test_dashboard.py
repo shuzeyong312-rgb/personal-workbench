@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 import app.dashboard as dashboard
 from app.database import get_db
 from app.main import app
-from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
 
 
 @pytest.fixture()
@@ -105,7 +105,17 @@ def add_competitor(
     return competitor
 
 
-def add_event(session: Session, competitor: Competitor, detected_at: datetime, change_type: str) -> ChangeEvent:
+def add_event(
+    session: Session,
+    competitor: Competitor,
+    detected_at: datetime,
+    change_type: str,
+    *,
+    entity_key: str | None = None,
+    old_value: str = "1.00",
+    new_value: str = "2.00",
+    sku_name: str | None = None,
+) -> ChangeEvent:
     snapshot = ProductSnapshot(
         competitor_id=competitor.id,
         captured_at=detected_at,
@@ -116,12 +126,23 @@ def add_event(session: Session, competitor: Competitor, detected_at: datetime, c
     )
     session.add(snapshot)
     session.flush()
+    if entity_key is not None and sku_name is not None:
+        session.add(
+            SkuSnapshot(
+                product_snapshot_id=snapshot.id,
+                sku_id=entity_key,
+                sku_name=sku_name,
+                stock=int(float(new_value)) if change_type == "stock_changed" else None,
+            )
+        )
+        session.flush()
     event = ChangeEvent(
         competitor_id=competitor.id,
         snapshot_id=snapshot.id,
         change_type=change_type,
-        old_value="1.00",
-        new_value="2.00",
+        entity_key=entity_key,
+        old_value=old_value,
+        new_value=new_value,
         detected_at=detected_at,
     )
     session.add(event)
@@ -201,7 +222,9 @@ def test_groups_two_events_for_one_active_competitor(
     }
     assert len(body["items"]) == 1
     assert body["items"][0]["competitor_id"] == 1
-    assert [change["id"] for change in body["items"][0]["changes"]] == [second.id, first.id]
+    assert body["items"][0]["change_count"] == 2
+    assert body["items"][0]["change_types"] == ["price_increase", "title_changed"]
+    assert body["items"][0]["primary_change"]["id"] == second.id
     assert body["items"][0]["group_id"] == 7
 
 
@@ -218,7 +241,8 @@ def test_returns_two_items_in_latest_event_order(
     items = client[0].get("/api/dashboard/today").json()["items"]
 
     assert [item["competitor_id"] for item in items] == [2, 1]
-    assert items[0]["changes"][0]["id"] == newest.id
+    assert items[0]["latest_change_at"] == "2026-09-20T02:00:00"
+    assert items[0]["primary_change"]["id"] == newest.id
 
 
 def test_orders_same_timestamp_events_and_items_by_id_desc(
@@ -235,11 +259,8 @@ def test_orders_same_timestamp_events_and_items_by_id_desc(
 
     body = client[0].get("/api/dashboard/today").json()
 
-    assert [item["competitor_id"] for item in body["items"]] == [1, 2]
-    assert [change["id"] for change in body["items"][0]["changes"]] == [
-        newest_first_event.id,
-        first_event.id,
-    ]
+    assert [item["competitor_id"] for item in body["items"]] == [2, 1]
+    assert body["items"][1]["primary_change"]["id"] == newest_first_event.id
 
 
 def test_excludes_yesterday_and_boundary_belongs_to_local_today(
@@ -252,9 +273,10 @@ def test_excludes_yesterday_and_boundary_belongs_to_local_today(
         add_event(session, competitor, END_UTC, "stock_changed")
         session.commit()
 
-    changes = client[0].get("/api/dashboard/today").json()["items"][0]["changes"]
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
 
-    assert [change["id"] for change in changes] == [boundary.id]
+    assert item["change_count"] == 1
+    assert item["primary_change"]["id"] == boundary.id
 
 
 def test_excludes_inactive_competitor_even_with_today_event(
@@ -375,14 +397,101 @@ def test_returns_contract_fields_without_group_name(
         "main_image_url",
         "group_id",
         "last_collected_at",
-        "changes",
+        "change_count",
+        "change_types",
+        "latest_change_at",
+        "primary_change",
+        "stock_changed_sku_count",
+        "sku_added_count",
+        "sku_removed_count",
     }
     assert "group_name" not in item
-    assert set(item["changes"][0]) == {
+    assert set(item["primary_change"]) == {
         "id",
         "change_type",
         "entity_key",
+        "sku_name",
         "old_value",
         "new_value",
         "detected_at",
     }
+
+
+def test_aggregates_same_sku_stock_events_and_uses_latest_summary(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(session, competitor, datetime(2026, 9, 20, 1), "stock_changed", entity_key="sku-1", old_value="100", new_value="90", sku_name="白色款")
+        latest = add_event(session, competitor, datetime(2026, 9, 20, 2), "stock_changed", entity_key="sku-1", old_value="90", new_value="80", sku_name="白色款")
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["change_count"] == 2
+    assert item["stock_changed_sku_count"] == 1
+    assert item["primary_change"]["id"] == latest.id
+    assert item["primary_change"]["sku_name"] == "白色款"
+
+
+def test_aggregates_different_sku_stock_events_by_distinct_sku(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(session, competitor, datetime(2026, 9, 20, 1), "stock_changed", entity_key="sku-1", sku_name="白色款")
+        add_event(session, competitor, datetime(2026, 9, 20, 2), "stock_changed", entity_key="sku-2", sku_name="黑色款")
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["change_count"] == 2
+    assert item["stock_changed_sku_count"] == 2
+
+
+def test_stock_primary_keeps_sku_id_when_name_cannot_be_recovered(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(session, competitor, datetime(2026, 9, 20, 1), "stock_changed", entity_key="sku-unknown", old_value="10", new_value="8")
+        session.commit()
+
+    primary = client[0].get("/api/dashboard/today").json()["items"][0]["primary_change"]
+
+    assert primary["entity_key"] == "sku-unknown"
+    assert primary["sku_name"] is None
+
+
+def test_primary_priority_and_counts_preserve_all_change_types(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(session, competitor, datetime(2026, 9, 20, 1), "stock_changed", entity_key="sku-1", sku_name="白色款")
+        price = add_event(session, competitor, datetime(2026, 9, 20, 2), "price_decrease", old_value="40.00", new_value="38.00")
+        add_event(session, competitor, datetime(2026, 9, 20, 3), "sku_added", entity_key="sku-2", new_value="蓝色款")
+        add_event(session, competitor, datetime(2026, 9, 20, 4), "title_changed", old_value="旧标题", new_value="新标题")
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["change_count"] == 4
+    assert item["change_types"] == ["price_decrease", "stock_changed", "sku_added", "title_changed"]
+    assert item["primary_change"]["id"] == price.id
+
+
+def test_multiple_price_events_use_latest_price_event(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(session, competitor, datetime(2026, 9, 20, 1), "price_decrease", old_value="40.00", new_value="39.00")
+        latest = add_event(session, competitor, datetime(2026, 9, 20, 2), "price_decrease", old_value="39.00", new_value="38.00")
+        session.commit()
+
+    primary = client[0].get("/api/dashboard/today").json()["items"][0]["primary_change"]
+
+    assert primary["id"] == latest.id
+    assert primary["old_value"] == "39.00"
+    assert primary["new_value"] == "38.00"

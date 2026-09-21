@@ -177,6 +177,7 @@ export type Change = {
   snapshot_id?: number;
   change_type: string;
   entity_key: string | null;
+  sku_name?: string | null;
   old_value: string | null;
   new_value: string | null;
   detected_at: string;
@@ -189,7 +190,13 @@ export type DashboardItem = {
   main_image_url: string | null;
   group_id: number | null;
   last_collected_at: string | null;
-  changes: Change[];
+  change_count: number;
+  change_types: string[];
+  latest_change_at: string;
+  primary_change: (Change & { sku_name: string | null }) | null;
+  stock_changed_sku_count: number | null;
+  sku_added_count: number;
+  sku_removed_count: number;
 };
 
 export type DashboardData = {
@@ -499,6 +506,18 @@ export function getChangeTypeLabel(changeType: string): string {
   return "其他变化";
 }
 
+function dashboardChangeBadges(changeTypes: readonly string[]): { label: string; className: string }[] {
+  const badges: { label: string; className: string }[] = [];
+  const labels = new Set<string>();
+  for (const changeType of changeTypes) {
+    const label = getChangeTypeLabel(changeType);
+    if (labels.has(label)) continue;
+    labels.add(label);
+    badges.push({ label, className: `change-type-${changeType}` });
+  }
+  return badges;
+}
+
 export function formatChangeValue(change: Change, side: "old" | "new"): string {
   const value = side === "old" ? change.old_value : change.new_value;
   const raw = value?.trim() || "";
@@ -522,9 +541,34 @@ export function formatDuration(seconds: number | null): string {
   return `${Math.floor(rounded / 60)} 分 ${rounded % 60} 秒`;
 }
 
-export function buildDashboardChangeRows(data: DashboardData): { item: DashboardItem; change: Change }[] {
-  return data.items.flatMap((item) => item.changes.map((change) => ({ item, change })))
-    .sort((left, right) => new Date(right.change.detected_at).getTime() - new Date(left.change.detected_at).getTime() || right.change.id - left.change.id);
+export function formatDashboardSummary(item: DashboardItem): string {
+  const change = item.primary_change;
+  if (!change) return "发生变化";
+  if (change.change_type === "price_increase" || change.change_type === "price_decrease") {
+    return `${formatChangeValue(change, "old")} → ${formatChangeValue(change, "new")}`;
+  }
+  if (change.change_type === "stock_changed") {
+    if (item.stock_changed_sku_count === null) return "库存变化 · SKU 数量未知";
+    if (item.stock_changed_sku_count === 1) {
+      const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "SKU");
+      return `${sku} ${formatChangeValue(change, "old")} → ${formatChangeValue(change, "new")}`;
+    }
+    return `库存变化 · ${item.stock_changed_sku_count} 个 SKU 发生变化`;
+  }
+  if (change.change_type === "sku_added" || change.change_type === "sku_removed") {
+    const parts = [];
+    if (item.sku_added_count > 0) parts.push(`新增 ${item.sku_added_count} 个 SKU`);
+    if (item.sku_removed_count > 0) parts.push(`移除 ${item.sku_removed_count} 个 SKU`);
+    return parts.join("，") || "SKU 发生变化";
+  }
+  if (change.change_type === "title_changed") return "标题已变更";
+  return "发生变化";
+}
+
+export function formatDashboardMagnitude(item: DashboardItem): string {
+  if (!item.primary_change) return "—";
+  if (item.primary_change.change_type === "stock_changed" && item.stock_changed_sku_count !== 1) return "—";
+  return formatChangeMagnitude(item.primary_change);
 }
 
 export type DashboardTrendChartPoint = DashboardTrendPoint & { x: number; y: Record<"price_changes" | "stock_changes" | "sku_changes" | "failed_collections", number> };
@@ -883,16 +927,16 @@ function QuickActions({ data, batchState, onAdd, onCollect, onNavigate }: { data
 }
 
 export function DashboardPage({ data, groups, status, error, batchState = idleBatchState, onRetry, onNavigate, onAdd, onCollect, onOpenDetail }: DashboardPageProps) {
-  const rows = status === "ready" && data ? buildDashboardChangeRows(data).slice(0, 5) : [];
+  const rows = status === "ready" && data ? data.items : [];
   const value = (field: keyof DashboardData["stats"]) => status === "ready" && data ? data.stats[field] : "—";
   return <AppShell page="dashboard" onNavigate={onNavigate} breadcrumb="竞品监控大屏">
     <header className="page-header dashboard-page-header"><div><h1>竞品监控大屏</h1><p className="page-description">查看今日竞品变化、采集状态与近期趋势。</p></div><span className="dashboard-monitoring-count">监控中 {value("monitored_competitors")} 个竞品</span></header>
     <section className="dashboard-stats" aria-label="今日变化统计"><DashboardStatCard label="今日变价竞品" value={value("price_changed_competitors")} kind="price" tone="blue" /><DashboardStatCard label="今日库存变化竞品" value={value("stock_changed_competitors")} kind="stock" tone="green" /><DashboardStatCard label="今日 SKU 变化竞品" value={value("sku_changed_competitors")} kind="sku" tone="purple" /><DashboardStatCard label="异常采集" value={value("failed_collections")} kind="error" tone="orange" /></section>
-    <div className="dashboard-main-grid"><section className="table-card dashboard-change-section"><div className="table-heading"><div><h2>今日发生变化的竞品</h2><span>{status === "ready" && data ? data.date : "本地业务日"}</span></div><span className="table-count">{status === "ready" && data ? `今日共 ${data.stats.change_events} 条变化` : "—"}</span></div>
+    <div className="dashboard-main-grid"><section className="table-card dashboard-change-section"><div className="table-heading"><div><h2>今日发生变化的竞品</h2><span>{status === "ready" && data ? data.date : "本地业务日"}</span></div><span className="table-count">{status === "ready" && data ? `今日 ${data.stats.changed_competitors} 个竞品 · ${data.stats.change_events} 条变化` : "—"}</span></div>
       {status === "loading" && <div className="state-panel dashboard-inline-state"><div className="spinner" /><strong>正在加载今日变化…</strong></div>}
       {status === "error" && <div className="state-panel state-error dashboard-inline-state"><strong>加载失败</strong><span>{error || "暂时无法获取今日变化。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div>}
       {status === "ready" && data && rows.length === 0 && <div className="state-panel dashboard-empty"><div className="empty-icon">✓</div><strong>今日暂无竞品变化</strong><span>系统会继续按照每日采集规则监控竞品变化。</span></div>}
-      {rows.length > 0 && <div className="table-scroll"><table className="dashboard-events-table"><thead><tr><th>商品信息</th><th>变化类型</th><th>旧值 → 新值</th><th>变化幅度</th><th>变化时间</th><th>竞品组</th><th>操作</th></tr></thead><tbody>{rows.map(({ item, change }) => <tr key={change.id}><td><div className="product-cell"><ProductImage competitor={item} /><div><strong>{item.title || "未采集"}</strong><span>{item.shop_name || "未采集"}</span></div></div></td><td><span className={`change-type-badge change-type-${change.change_type}`}>{getChangeTypeLabel(change.change_type)}</span></td><td className="change-transition">{formatChangeValue(change, "old")} <span>→</span> {formatChangeValue(change, "new")}</td><td className={`change-magnitude change-magnitude-${change.change_type}`}>{formatChangeMagnitude(change)}</td><td className="collection-date-cell">{formatDate(change.detected_at)}</td><td>{getCompetitorGroupLabel(item.group_id, groups)}</td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(item.competitor_id)}>查看详情</button></td></tr>)}</tbody></table></div>}
+      {rows.length > 0 && <div className="table-scroll"><table className="dashboard-events-table"><thead><tr><th>商品信息</th><th>变化类型</th><th>变化摘要</th><th>变化幅度</th><th>变化时间</th><th>竞品组</th><th>操作</th></tr></thead><tbody>{rows.map((item) => <tr key={item.competitor_id}><td><div className="product-cell"><ProductImage competitor={item} /><div><strong>{item.title || "未采集"}</strong><span>{item.shop_name || "未采集"}</span></div></div></td><td>{dashboardChangeBadges(item.change_types).map((badge) => <span key={badge.label} className={`change-type-badge ${badge.className}`}>{badge.label}</span>)}</td><td className="change-transition">{formatDashboardSummary(item)}</td><td className={`change-magnitude change-magnitude-${item.primary_change?.change_type || "unknown"}`}>{formatDashboardMagnitude(item)}</td><td className="collection-date-cell">{formatDate(item.latest_change_at)}</td><td>{getCompetitorGroupLabel(item.group_id, groups)}</td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(item.competitor_id)}>查看详情</button></td></tr>)}</tbody></table></div>}
     </section><CollectionOverview data={data} batchState={batchState} /></div>
     <div className="dashboard-lower-grid"><section className="table-card dashboard-trend-section"><div className="table-heading"><div><h2>近 7 天竞品变化趋势</h2><span>每天真实监控事件数量</span></div><span className="trend-period">连续 7 个业务日</span></div>{status === "ready" && data ? <DashboardTrendChart trend={data.trend_7d} /> : <div className="dashboard-trend-placeholder">—</div>}</section><QuickActions data={data} batchState={batchState} onAdd={onAdd} onCollect={onCollect} onNavigate={onNavigate} /></div>
   </AppShell>;

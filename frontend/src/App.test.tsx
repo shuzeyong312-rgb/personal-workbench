@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildPriceChartPoints, buildStockChartPoints } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildPriceChartPoints, buildStockChartPoints } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -485,10 +485,13 @@ const dashboardData: DashboardData = {
     main_image_url: null,
     group_id: 1,
     last_collected_at: "2026-09-20T10:00:00Z",
-    changes: [
-      { id: 2, change_type: "price_increase", entity_key: null, old_value: "40.00", new_value: "45.00", detected_at: "2026-09-20T10:00:00Z" },
-      { id: 1, change_type: "title_changed", entity_key: null, old_value: null, new_value: null, detected_at: "2026-09-20T09:00:00Z" },
-    ],
+    change_count: 2,
+    change_types: ["price_increase", "title_changed"],
+    latest_change_at: "2026-09-20T10:00:00Z",
+    primary_change: { id: 2, change_type: "price_increase", entity_key: null, sku_name: null, old_value: "40.00", new_value: "45.00", detected_at: "2026-09-20T10:00:00Z" },
+    stock_changed_sku_count: 0,
+    sku_added_count: 0,
+    sku_removed_count: 0,
   }],
   collection_summary: { last_collection_at: "2026-09-20T10:00:00Z", success_runs: 3, failed_runs: 0, average_duration_seconds: 28 },
   trend_7d: ["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-19", "2026-09-20"].map((date, index) => ({ date, price_changes: index === 6 ? 2 : 0, stock_changes: index === 5 ? 1 : 0, sku_changes: 0, failed_collections: 0 })),
@@ -500,7 +503,7 @@ test("renders dashboard loading, error and empty states", () => {
   expect(renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [], stats: { ...dashboardData.stats, changed_competitors: 0, change_events: 0 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />)).toContain("今日暂无竞品变化");
 });
 
-test("renders dashboard stats, mapped group and all changes", () => {
+test("renders dashboard stats, mapped group and aggregated change item", () => {
   const html = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
   expect(html).toContain("监控中 5 个竞品");
   expect(html).toContain("今日变价竞品");
@@ -513,24 +516,18 @@ test("renders dashboard stats, mapped group and all changes", () => {
   expect(html).toContain("¥45.00");
   expect(html).toContain("变价");
   expect(html).toContain("标题变化");
-  expect(html).toContain("今日共 2 条变化");
+  expect(html).toContain("今日 1 个竞品 · 2 条变化");
+  expect((html.match(/class="change-type-badge/g) || []).length).toBe(2);
   expect(html).not.toContain("最近变化列表");
   const unknownGroup = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [{ ...dashboardData.items[0], group_id: 99 }] }} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
   expect(unknownGroup).toContain(">—</td>");
 });
 
-test("limits dashboard change rows to five", () => {
-  const changes = Array.from({ length: 6 }, (_, index) => ({
-    id: index + 1,
-    change_type: "price_increase",
-    entity_key: null,
-    old_value: "40",
-    new_value: "45",
-    detected_at: "2026-09-20T10:00:00Z",
-  }));
-  const html = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [{ ...dashboardData.items[0], changes }], stats: { ...dashboardData.stats, change_events: 6 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
-  expect((html.match(/class="change-type-badge/g) || []).length).toBe(5);
-  expect(html).toContain("今日共 6 条变化");
+test("renders all competitor items without expanding event rows", () => {
+  const items = Array.from({ length: 6 }, (_, index) => ({ ...dashboardData.items[0], competitor_id: index + 1 }));
+  const html = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items, stats: { ...dashboardData.stats, changed_competitors: 6, change_events: 12 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  expect((html.match(/class="product-cell/g) || []).length).toBe(6);
+  expect(html).toContain("今日 6 个竞品 · 12 条变化");
 });
 
 test("formats dashboard change rows, badges, magnitudes, and collection durations", () => {
@@ -543,6 +540,13 @@ test("formats dashboard change rows, badges, magnitudes, and collection duration
   expect(formatChangeValue(sku, "new")).toBe("红色");
   expect(formatChangeMagnitude(sku)).toBe("—");
   expect(getChangeTypeLabel("stock_changed")).toBe("库存变化");
+  const stock = { ...price, change_type: "stock_changed", entity_key: "sku-red", sku_name: "白色款", old_value: "481", new_value: "478" };
+  const stockItem = { ...dashboardData.items[0], change_count: 2, change_types: ["stock_changed"], primary_change: stock, stock_changed_sku_count: 1 };
+  expect(formatDashboardSummary(stockItem)).toBe("白色款 481 → 478");
+  expect(formatDashboardMagnitude(stockItem)).toBe("↓ 0.6%");
+  const multiStock = { ...stockItem, stock_changed_sku_count: 2 };
+  expect(formatDashboardSummary(multiStock)).toBe("库存变化 · 2 个 SKU 发生变化");
+  expect(formatDashboardMagnitude(multiStock)).toBe("—");
   expect(formatDuration(72)).toBe("1 分 12 秒");
   expect(formatDuration(null)).toBe("—");
 });

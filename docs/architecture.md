@@ -81,7 +81,7 @@ dashboard
 - collection：采集 1688 数据；
 - snapshots：保存每天采集到的事实数据；
 - changes：比较前后快照并生成变化记录；
-- dashboard：首页查询和聚合；
+- dashboard：首页查询和聚合；今日变化在 Backend 按 active Competitor 聚合 ChangeEvent，Frontend 只展示聚合后的 item；
 - shared：少量真正跨模块共享的基础能力。
 
 不要提前创建大量抽象层。

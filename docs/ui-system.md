@@ -269,6 +269,8 @@ PageHeader
 ### 8.2 Dashboard 规则
 
 - “今日发生变化的竞品”是页面最重要的信息；
+- 今日变化表格一行一个 active Competitor；同一竞品的多个 ChangeEvent 聚合为一行，右侧统计同时显示竞品数和事件数；
+- 变化类型允许多个已有 Badge 同行显示，同一大类只显示一次；变化摘要使用 Backend 提供的 primary change，完整事件进入现有竞品详情页；
 - KPI 卡片数量保持克制；
 - 图表只展示真正有判断价值的数据；
 - 不做传统 BI 大屏；

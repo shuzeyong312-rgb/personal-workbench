@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import ChangeEvent, CollectionRun, Competitor
+from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
 
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -17,10 +17,11 @@ except ZoneInfoNotFoundError:
     BUSINESS_TIMEZONE = timezone(timedelta(hours=8))
 
 
-class DashboardChangeResponse(BaseModel):
+class DashboardPrimaryChangeResponse(BaseModel):
     id: int
     change_type: str
     entity_key: str | None
+    sku_name: str | None
     old_value: str | None
     new_value: str | None
     detected_at: datetime
@@ -33,7 +34,13 @@ class DashboardItemResponse(BaseModel):
     main_image_url: str | None
     group_id: int | None
     last_collected_at: datetime | None
-    changes: list[DashboardChangeResponse]
+    change_count: int
+    change_types: list[str]
+    latest_change_at: datetime
+    primary_change: DashboardPrimaryChangeResponse | None
+    stock_changed_sku_count: int | None
+    sku_added_count: int
+    sku_removed_count: int
 
 
 class DashboardStatsResponse(BaseModel):
@@ -102,6 +109,58 @@ def _average_duration_seconds(runs: list[CollectionRun]) -> float | None:
     return round(sum(durations) / len(durations), 2) if durations else None
 
 
+_CHANGE_PRIORITY = {
+    "price_increase": 0,
+    "price_decrease": 0,
+    "stock_changed": 1,
+    "sku_added": 2,
+    "sku_removed": 2,
+    "title_changed": 3,
+}
+
+
+def _sku_names(
+    db: Session,
+    events: list[ChangeEvent],
+) -> tuple[dict[tuple[int, str], str], dict[tuple[int, str], str]]:
+    stock_events = [
+        event for event in events if event.change_type == "stock_changed" and event.entity_key is not None
+    ]
+    if not stock_events:
+        return {}, {}
+    competitor_ids = {event.competitor_id for event in stock_events}
+    sku_ids = {event.entity_key for event in stock_events if event.entity_key is not None}
+    rows = db.execute(
+        select(
+            ProductSnapshot.competitor_id,
+            ProductSnapshot.id,
+            SkuSnapshot.sku_id,
+            SkuSnapshot.sku_name,
+            ProductSnapshot.captured_at,
+            SkuSnapshot.id,
+        )
+        .join(SkuSnapshot, SkuSnapshot.product_snapshot_id == ProductSnapshot.id)
+        .where(
+            ProductSnapshot.competitor_id.in_(competitor_ids),
+            SkuSnapshot.sku_id.in_(sku_ids),
+        )
+        .order_by(ProductSnapshot.captured_at.desc(), ProductSnapshot.id.desc(), SkuSnapshot.id.desc())
+    ).all()
+    historical: dict[tuple[int, str], str] = {}
+    exact: dict[tuple[int, str], str] = {}
+    for competitor_id, snapshot_id, sku_id, sku_name, _captured_at, _sku_snapshot_id in rows:
+        historical.setdefault((competitor_id, sku_id), sku_name)
+        exact.setdefault((snapshot_id, sku_id), sku_name)
+    return exact, historical
+
+
+def _primary_event(events: list[ChangeEvent]) -> ChangeEvent:
+    return min(
+        enumerate(events),
+        key=lambda pair: (_CHANGE_PRIORITY[pair[1].change_type], pair[0]),
+    )[1]
+
+
 @router.get("/today", response_model=DashboardResponse)
 def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
     business_date, start_utc, end_utc = business_day_bounds()
@@ -120,13 +179,59 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
         .order_by(ChangeEvent.detected_at.desc(), ChangeEvent.id.desc())
     ).all()
 
-    items: dict[int, DashboardItemResponse] = {}
+    aggregates: dict[int, dict[str, object]] = {}
     price_changed_competitors: set[int] = set()
     stock_changed_competitors: set[int] = set()
     sku_changed_competitors: set[int] = set()
     for competitor, event in rows:
-        item = items.setdefault(
+        aggregate = aggregates.setdefault(
             competitor.id,
+            {
+                "competitor": competitor,
+                "events": [],
+                "stock_sku_ids": set(),
+                "stock_key_unknown": False,
+                "sku_added_count": 0,
+                "sku_removed_count": 0,
+            },
+        )
+        aggregate["events"].append(event)  # type: ignore[union-attr]
+        if event.change_type == "stock_changed":
+            if event.entity_key is None:
+                aggregate["stock_key_unknown"] = True
+            else:
+                aggregate["stock_sku_ids"].add(event.entity_key)  # type: ignore[union-attr]
+        elif event.change_type == "sku_added":
+            aggregate["sku_added_count"] += 1  # type: ignore[operator]
+        elif event.change_type == "sku_removed":
+            aggregate["sku_removed_count"] += 1  # type: ignore[operator]
+        if event.change_type in {"price_increase", "price_decrease"}:
+            price_changed_competitors.add(competitor.id)
+        elif event.change_type == "stock_changed":
+            stock_changed_competitors.add(competitor.id)
+        elif event.change_type in {"sku_added", "sku_removed"}:
+            sku_changed_competitors.add(competitor.id)
+
+    event_list = [event for aggregate in aggregates.values() for event in aggregate["events"]]  # type: ignore[union-attr]
+    exact_sku_names, historical_sku_names = _sku_names(db, event_list)
+    items = []
+    for aggregate in aggregates.values():
+        competitor = aggregate["competitor"]
+        events = aggregate["events"]
+        primary = _primary_event(events)
+        event_types = []
+        for event in events:
+            if event.change_type not in event_types:
+                event_types.append(event.change_type)
+        event_types.sort(key=lambda change_type: _CHANGE_PRIORITY[change_type])
+        primary_sku_name = None
+        if primary.change_type == "stock_changed" and primary.entity_key is not None:
+            primary_sku_name = exact_sku_names.get(
+                (primary.snapshot_id, primary.entity_key),
+                historical_sku_names.get((competitor.id, primary.entity_key)),
+            )
+        stock_sku_count = None if aggregate["stock_key_unknown"] else len(aggregate["stock_sku_ids"])
+        items.append(
             DashboardItemResponse(
                 competitor_id=competitor.id,
                 title=competitor.title,
@@ -134,25 +239,24 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
                 main_image_url=competitor.main_image_url,
                 group_id=competitor.group_id,
                 last_collected_at=competitor.last_collected_at,
-                changes=[],
+                change_count=len(events),
+                change_types=event_types,
+                latest_change_at=events[0].detected_at,
+                primary_change=DashboardPrimaryChangeResponse(
+                    id=primary.id,
+                    change_type=primary.change_type,
+                    entity_key=primary.entity_key,
+                    sku_name=primary_sku_name,
+                    old_value=primary.old_value,
+                    new_value=primary.new_value,
+                    detected_at=primary.detected_at,
+                ),
+                stock_changed_sku_count=stock_sku_count,
+                sku_added_count=aggregate["sku_added_count"],
+                sku_removed_count=aggregate["sku_removed_count"],
             ),
         )
-        item.changes.append(
-            DashboardChangeResponse(
-                id=event.id,
-                change_type=event.change_type,
-                entity_key=event.entity_key,
-                old_value=event.old_value,
-                new_value=event.new_value,
-                detected_at=event.detected_at,
-            )
-        )
-        if event.change_type in {"price_increase", "price_decrease"}:
-            price_changed_competitors.add(competitor.id)
-        elif event.change_type == "stock_changed":
-            stock_changed_competitors.add(competitor.id)
-        elif event.change_type in {"sku_added", "sku_removed"}:
-            sku_changed_competitors.add(competitor.id)
+    items.sort(key=lambda item: (item.latest_change_at, item.competitor_id), reverse=True)
 
     today_runs = list(
         db.scalars(
@@ -213,7 +317,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
             sku_changed_competitors=len(sku_changed_competitors),
             failed_collections=sum(run.status == "failed" for run in today_runs),
         ),
-        items=list(items.values()),
+        items=items,
         collection_summary=CollectionSummaryResponse(
             last_collection_at=last_collection_at,
             success_runs=sum(run.status == "success" for run in today_runs),

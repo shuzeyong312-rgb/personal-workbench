@@ -223,6 +223,8 @@ detected_at
 
 old_value / new_value 不保存完整 Snapshot JSON、1688 原始数据、HTML、Cookie、Token 或请求头。
 
+Dashboard 不改变 ChangeEvent 的事实级语义。Dashboard 今日变化在查询展示层按 active Competitor 聚合；`change_count` 仍统计真实事件条数，`ChangeEvent` 不因展示聚合而合并或删除。SKU 级事件的 `entity_key` 仍是 `sku_id`，名称可从关联快照的 `SkuSnapshot` 可靠恢复时用于展示，不能恢复时保留事实性 SKU ID 回退。
+
 ### 7.1 当前已实现的 change_type
 
 当前数据库 CHECK 和业务检测逻辑只支持以下 6 种：
