@@ -219,7 +219,7 @@ test("continues after one URL fails and retains failure reasons", async () => {
     { url: "B", code: "competitor_already_exists", reason: "已存在" },
     { url: "C", code: "invalid_competitor_url", reason: "链接格式无效" },
   ]);
-  expect(getAddFailureReason("competitor_group_not_found")).toBe("商品型号不存在");
+  expect(getAddFailureReason("competitor_group_not_found")).toBe("竞品组不存在");
 });
 
 test("converts request errors and unknown responses to server-error without stopping", async () => {
@@ -434,10 +434,10 @@ test("renders competitor group controls and new group entry", () => {
   expect(html).toContain('spellCheck="false"');
   expect(html).not.toContain('type="url"');
   expect(html).toContain("每行一个链接");
-  expect(html).toContain("商品型号");
+  expect(html).toContain("竞品组");
   expect(html).toContain("未分组");
   expect(html).toContain("暖手宝");
-  expect(html).toContain("新建商品型号");
+  expect(html).toContain("新增竞品组");
   expect(html).toContain("添加竞品");
 });
 
