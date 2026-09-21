@@ -636,9 +636,9 @@ test("renders group page loading, error, full empty, unassigned and normal state
   const empty = renderToStaticMarkup(<GroupPage summary={{ groups: [], unassigned: { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
   const onlyUnassigned = renderToStaticMarkup(<GroupPage summary={{ groups: [], unassigned: { ...groupMetrics, competitor_count: 1, active_count: 1 } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
   const normal = renderToStaticMarkup(<GroupPage summary={{ groups: [groupSummary], unassigned: { ...groupMetrics, competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
-  expect(loading).toContain("正在加载商品型号");
+  expect(loading).toContain("正在加载竞品组");
   expect(error).toContain("重试");
-  expect(empty).toContain("还没有商品型号");
+  expect(empty).toContain("还没有竞品组");
   expect(onlyUnassigned).toContain("未分组");
   expect(onlyUnassigned).toContain("查看竞品");
   expect(normal).toContain("暖手宝");
@@ -649,19 +649,19 @@ test("renders group page loading, error, full empty, unassigned and normal state
 
 test("renders create and rename group dialogs with failure feedback", () => {
   const create = renderToStaticMarkup(<GroupNameDialog mode="create" name="" submitting={false} error={null} onChange={noop} onClose={noop} onSubmit={noop} />);
-  const rename = renderToStaticMarkup(<GroupNameDialog mode="rename" name="A19" submitting={true} error="该商品型号已存在" onChange={noop} onClose={noop} onSubmit={noop} />);
-  expect(create).toContain("新建商品型号");
-  expect(create).toContain("例如：A19、X6、N09A");
-  expect(rename).toContain("重命名商品型号");
-  expect(rename).toContain("该商品型号已存在");
+  const rename = renderToStaticMarkup(<GroupNameDialog mode="rename" name="A19" submitting={true} error="该竞品组已存在" onChange={noop} onClose={noop} onSubmit={noop} />);
+  expect(create).toContain("新增竞品组");
+  expect(create).toContain("使用商品型号命名，例如 A19、X6");
+  expect(rename).toContain("重命名竞品组");
+  expect(rename).toContain("该竞品组已存在");
   expect(rename).toContain('disabled=""');
-  expect(getGroupNameErrorMessage("invalid_competitor_group_name")).toBe("请输入有效的商品型号");
+  expect(getGroupNameErrorMessage("invalid_competitor_group_name")).toBe("请输入有效的竞品组名称");
 });
 
 test("renders delete confirmation with the real competitor count and protects submitting state", () => {
   const html = renderToStaticMarkup(<GroupDeleteDialog group={groupSummary} submitting={true} error="删除失败" onClose={noop} onConfirm={noop} />);
-  expect(html).toContain("删除商品型号“暖手宝”？");
-  expect(html).toContain("该型号下有 3 个竞品");
+  expect(html).toContain("删除竞品组“暖手宝”？");
+  expect(html).toContain("该组下有 3 个竞品");
   expect(html).toContain("3 个竞品将移至“未分组”");
   expect(html).toContain("删除失败");
   expect(html).toContain("删除中…");
