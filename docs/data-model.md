@@ -73,7 +73,7 @@ last_collected_at
 - group_id 可为 NULL，或引用 competitor_groups.id；NULL 表示未分组；
 - 竞品详情页的分组更新只修改当前 Competitor.group_id，可在已有组之间移动或设为 NULL，不改写任何历史快照、SKU、变化事件或采集记录；
 - title、shop_name、main_image_url 保存最近一次成功采集得到的当前信息；
-- main_image_url 当前优先来自 `gallery.fields.offerImgList[0]`，缺失或无效时仅使用已验证的结构化 fallback；字段仍允许为 NULL，且不作为主图变化事实来源；
+- main_image_url 当前优先来自 `gallery.fields.offerImgList[0]`，缺失或无效时仅使用已验证的结构化 fallback；字段仍允许为 NULL，并用于相邻快照的主图变化比较；
 - Competitor 只保存当前 `main_image_url`，不保存完整商品图库；
 - last_collected_at 只在成功采集后更新；
 - is_active 表示是否继续监控。
@@ -86,7 +86,7 @@ active
 offline
 ~~~
 
-当前 1688 Parser 尚没有可靠的下架判定，因此正式采集通常仍使用 unknown，不能把 offline 描述成已经稳定支持的采集能力。
+正式采集在从 `active` 检测到明确下架证据时将商品状态记为 `offline`；恢复上架时回到 `active`，初始或尚未形成商品事实的竞品仍可为 `unknown`。下架和恢复上架分别通过生命周期 ChangeEvent 表达。
 
 ---
 
@@ -115,7 +115,7 @@ collection_source
 
 - 每次成功采集新增一条快照，不覆盖历史快照；
 - `image_urls` 是本次历史快照的 nullable JSON ordered list，来自 `gallery.fields.offerImgList` 的有效 URL，按 normalization 后的原始顺序 exact 去重；Fallback 主图只在必要时作为首项加入；旧 Snapshot 为 NULL；
-- 当前手动“立即采集”也会生成快照；
+- 当前手动或自动采集也会生成快照；
 - Backend 运行期间存在每日自动调度：每小时进行 due-check，最近一条 CollectionRun.started_at 距当前 UTC 时间达到 24 小时才自动尝试；failed 尝试同样计入该窗口；
 - price_min / price_max 使用 Numeric(18, 2)，用于保存商品级价格区间；
 - min_order_quantity 保存本次采集的 Offer 级最小起批数量，可为 NULL，非 NULL 时必须大于等于 1；
@@ -240,7 +240,7 @@ Dashboard item 的 `stock_total_change` 是商品级展示投影，仅在 primar
 
 ### 7.1 当前已实现的 change_type
 
-当前数据库 CHECK 和业务检测逻辑支持以下 7 种：
+当前数据库 CHECK 和业务检测逻辑支持以下 9 种：
 
 ~~~text
 price_increase
@@ -250,9 +250,13 @@ sku_removed
 stock_changed
 title_changed
 main_image_changed
+product_offline
+product_online
 ~~~
 
-当前检测语义覆盖价格、标题、SKU 新增、SKU 删除、库存变化和主图变化。`main_image_changed` 仅比较相邻快照中已经 normalization 并持久化的 `main_image_url`：两侧均为非空且不相等时生成事件；首次采集、任一侧为 NULL、相同 URL 或 `image_urls` 变化均不生成事件。具体比较规则由对应 Feature Spec 负责，本文只保留稳定的数据边界。
+当前检测语义覆盖价格、标题、SKU 新增、SKU 删除、库存变化、主图变化和商品生命周期变化。`main_image_changed` 仅比较相邻快照中已经 normalization 并持久化的 `main_image_url`：两侧均为非空且不相等时生成事件；首次采集、任一侧为 NULL、相同 URL 或 `image_urls` 变化均不生成事件。从 `active` 明确检测到下架时生成 `product_offline`，从 `offline` 恢复采集并重新获得商品事实时生成 `product_online`。
+
+`snapshot_id` 规则由数据库约束保证：`product_offline` 必须为 `NULL`；其他 8 种事件必须非 `NULL`，并指向本次对应的 `ProductSnapshot`。下架不创建空 `ProductSnapshot`。
 
 ### 7.2 当前检测基线
 
@@ -333,23 +337,27 @@ Competitor
 以下内容仍是长期 V1 目标，但当前没有对应的完整实现，不能当作当前数据模型：
 
 - sales snapshot / sales change；
-- 可靠的商品下架检测；
-- 主图变化检测；
 - 正式销量趋势展示；
 
 ### 10.1 未来但尚未实现的 change_type
 
-以下 3 种属于未来 V1 计划，当前不能生成，也不在当前 ChangeEvent CHECK 中：
+以下 1 种属于未来 V1 计划，当前不能生成，也不在当前 ChangeEvent CHECK 中：
 
 | change_type | 当前未实现原因 |
 |---|---|
 | sales_increase | 当前 ProductSnapshot 没有销量字段 |
-| product_offline | 当前 Parser 没有可靠下架判定 |
-| main_image_changed | 本轮不实现主图变化检测，需独立 Feature |
 
 SKU price change 当前也不支持，且不属于当前 change_type 集合。
 
 这些能力具备可靠数据来源和明确规则后，才能通过独立变更加入当前模型。
+
+商品生命周期规则：
+
+- 商品状态只允许 `unknown` / `active` / `offline`；
+- `status` 与 `is_active` 独立，后者只表示是否继续监控；
+- 商品下架不自动停止监控；
+- 商品下架不创建空 `ProductSnapshot`，历史有效快照和其他历史事实保留；
+- 恢复上架时创建新的 `ProductSnapshot`，并生成 `product_online`。
 
 ---
 

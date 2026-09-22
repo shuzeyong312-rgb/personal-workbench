@@ -185,7 +185,7 @@ Frontend 的 AppShell 使用固定 viewport 高度：Sidebar 自身允许滚动�
 
 `.main-content` 是 column flex 容器时，普通直接子级卡片必须保留自然高度，否则 `.table-card` 的 `overflow: hidden` 会配合默认 flex shrink 裁掉竞品列表。列表不增加固定高度或纵向裁切；只有 Dashboard 今日变化和 Detail 三个历史卡使用明确的内部纵向滚动。
 
-Dashboard 的 `stock_total_change` 使用固定批量查询：收集 primary stock event 的 current snapshot，批量读取相关竞品快照并按 `(captured_at, id)` 在内存确定 previous，再批量读取 current/previous 的 `SkuSnapshot` 计算 totals，避免按竞品或快照 N+1 查询。主图事件参与今日变化 badge 和 primary priority，顺序为 price > stock > SKU > main_image > title；不新增主图 KPI 或 7 天趋势系列。
+Dashboard 的 `stock_total_change` 使用固定批量查询：收集 primary stock event 的 current snapshot，批量读取相关竞品快照并按 `(captured_at, id)` 在内存确定 previous，再批量读取 current/previous 的 `SkuSnapshot` 计算 totals，避免按竞品或快照 N+1 查询。当天存在上下架生命周期事件时，primary change 取最新一条 lifecycle event；生命周期变化整体优先于价格、库存、SKU、主图和标题，即 `lifecycle > price > stock > SKU > main_image > title`。不新增主图 KPI 或 7 天趋势系列。
 
 ## 9. 数据库原则
 
@@ -209,7 +209,7 @@ V1 使用 SQLite。
 
 当前实现使用 FastAPI lifespan 启动一个 asyncio 后台 task。Backend 启动约 30 秒后进行首次 due-check，之后每小时检查一次。
 
-due-check 只处理 active Competitor，使用最近一条 CollectionRun.started_at 统一按 UTC 判断 24 小时窗口，并按顺序调用现有 collect_competitor()。每个竞品使用独立 Session；同步采集批次放入线程，不阻塞 API event loop。
+due-check 只处理 `is_active=true` 的 Competitor，使用最近一条 CollectionRun.started_at 统一按 UTC 判断 24 小时窗口，并按顺序调用现有 collect_competitor()。每个竞品使用独立 Session；同步采集批次放入线程，不阻塞 API event loop。
 
 自动采集依赖 Backend 正在运行，电脑关机时不会执行。单个采集失败继续后续竞品；如果全局 COLLECTION_LOCK 忙，则中断当前 cycle，下一次检查再尝试。Backend shutdown 时唤醒 scheduler，允许当前竞品完成后正常退出，不再启动下一个竞品。
 

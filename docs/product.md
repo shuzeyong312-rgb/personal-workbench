@@ -56,21 +56,23 @@ V1 完成并稳定运行之前，不扩展其他业务模块。
 当前 1688 正式采集已保存商品主图 URL：优先读取结构化
 `gallery.fields.offerImgList[0]`，缺失或无效时仅使用已验证的
 `gallery.fields.mainImage[0]`、`dataJson.images[0].fullPathImageURI` fallback。
-主图缺失仍允许本次商品采集成功；本轮不实现主图变化识别。
+主图缺失仍允许本次商品采集成功；相邻有效快照的主图 URL 变化会生成主图变化事件。
 成功采集同时按原顺序保存 `gallery.fields.offerImgList` 的有效 URL 到
 `ProductSnapshot.image_urls`；详情页可在不改变正式首图语义的前提下预览这些图片，列表仍只展示 `Competitor.main_image_url`。
 
 ### 3.3 变化识别
 
-系统需要识别：
+当前正式识别：
 
 - 涨价 / 降价；
-- 销量增加；
 - SKU 新增 / 减少；
 - SKU 库存变化；
 - 商品下架；
+- 商品恢复上架；
 - 标题变化；
 - 主图变化。
+
+销量仍未正式接入，详情页只显示“销量数据待接入”，不作为当前 ChangeEvent。
 
 ### 3.4 趋势
 
@@ -171,10 +173,8 @@ Dashboard 的库存摘要是商品总库存变化：以 primary `stock_changed` 
 
 ## 8. Unknowns
 
-以下问题仍需在正式实现过程中继续验证：
+以下问题仍需继续验证：
 
-- 主图变化最稳定的识别方式；
-- 商品下架 / 失效的统一判定规则；
 - 官方采购助手接口长期稳定性；
 - 登录状态失效后的处理方式；
 - 1688 页面结构变化时的兼容策略；
