@@ -55,6 +55,13 @@ _VERIFICATION_TITLE_EXACT = frozenset(
     }
 )
 _VERIFICATION_SELECTORS = ("#nc_1_wrapper",)
+_BAXIA_PUNISH_SELECTOR = "#baxia-punish"
+_BAXIA_CAPTCHA_TIPS_SELECTOR = "#baxia-punish .captcha-tips"
+_BAXIA_VERIFICATION_TEXTS = (
+    "请拖动下方滑块完成验证",
+    "通过验证以确保正常访问",
+)
+_VERIFICATION_RECHECK_DELAY_MS = 300
 
 
 def _project_root() -> Path:
@@ -90,6 +97,21 @@ def _is_verification_page(page: object, page_url: str, title: str) -> bool:
                 return True
         except Exception:
             continue
+
+    try:
+        punish = locator_factory(_BAXIA_PUNISH_SELECTOR)
+        tips = locator_factory(_BAXIA_CAPTCHA_TIPS_SELECTOR)
+        if (
+            punish.count()
+            and punish.first.is_visible()
+            and tips.count()
+            and tips.first.is_visible()
+        ):
+            text = " ".join(tips.first.inner_text().split())
+            if any(marker in text for marker in _BAXIA_VERIFICATION_TEXTS):
+                return True
+    except Exception:
+        pass
     return False
 
 
@@ -164,6 +186,15 @@ def collect_1688_product_in_context(
         except PlaywrightError as error:
             raise PageUnavailableError("1688 page navigation failed") from error
 
+        status = response.status if response is not None else None
+        try:
+            _check_page_access(page, status)
+            page.wait_for_timeout(_VERIFICATION_RECHECK_DELAY_MS)
+            _check_page_access(page, status)
+        except VerificationRequiredError:
+            keep_page = keep_page_on_verification
+            raise
+
         try:
             html = page.content()
         except (PlaywrightTimeoutError, TimeoutError) as error:
@@ -171,12 +202,6 @@ def collect_1688_product_in_context(
         except PlaywrightError as error:
             raise PageUnavailableError("1688 page content was unavailable") from error
 
-        status = response.status if response is not None else None
-        try:
-            _check_page_access(page, status)
-        except VerificationRequiredError:
-            keep_page = keep_page_on_verification
-            raise
         return parse_1688_html(html, expected_offer_id)
     finally:
         if close_page and not keep_page:

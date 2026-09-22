@@ -11,6 +11,7 @@ from app.collection.collector_1688 import (
     LoginRequiredError,
     PageUnavailableError,
     VerificationRequiredError,
+    _is_verification_page,
     collect_1688_product,
     collect_1688_product_in_context,
 )
@@ -41,6 +42,7 @@ class FakePage:
         self.closed = False
         self.content_error = None
         self.goto_error = None
+        self.wait_for_timeout_calls: list[int] = []
 
     def goto(self, url: str, **kwargs):
         self.goto_args = (url, kwargs)
@@ -54,11 +56,45 @@ class FakePage:
             raise self.content_error
         return self.html
 
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        self.wait_for_timeout_calls.append(timeout_ms)
+
     def title(self) -> str:
         return self.title_text
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeLocator:
+    def __init__(self, page: "SelectorPage", selector: str):
+        self.page = page
+        self.selector = selector
+        self.first = self
+
+    def count(self) -> int:
+        return int(self.selector in self.page.selector_states)
+
+    def is_visible(self) -> bool:
+        return self.page.selector_states[self.selector][0]
+
+    def inner_text(self) -> str:
+        return self.page.selector_states[self.selector][1]
+
+
+class SelectorPage(FakePage):
+    def __init__(self, *args, selector_states=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.selector_states = selector_states or {}
+        self.on_wait = None
+
+    def locator(self, selector: str) -> FakeLocator:
+        return FakeLocator(self, selector)
+
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        super().wait_for_timeout(timeout_ms)
+        if self.on_wait is not None:
+            self.on_wait()
 
 
 class FakeContext:
@@ -183,6 +219,102 @@ def test_shared_context_keeps_verification_page_for_manual_recovery() -> None:
     assert context.pages == [context.page]
     assert not context.page.closed
     context.close()
+
+
+def test_visible_nc_wrapper_is_detected_before_content_read() -> None:
+    page = SelectorPage(
+        (FIXTURES / "normal_product.html").read_text(encoding="utf-8"),
+        selector_states={"#nc_1_wrapper": (True, "")},
+    )
+    page.content_error = PlaywrightError("content should not be read")
+    context = FakeContext(page)
+
+    with pytest.raises(VerificationRequiredError):
+        collect_1688_product_in_context(context, PRODUCT_URL, "1081895898799")
+
+    assert page.wait_for_timeout_calls == []
+
+
+@pytest.mark.parametrize(
+    ("page_url", "title"),
+    [
+        ("https://detail.1688.com/offer/1.html?verify=1", "普通页面"),
+        (PRODUCT_URL, "滑动验证"),
+    ],
+)
+def test_existing_verification_url_and_title_signals_remain(page_url: str, title: str) -> None:
+    page = FakePage(url=page_url, title_text=title)
+
+    assert _is_verification_page(page, page_url, title)
+
+
+def test_visible_baxia_punish_with_captcha_tips_is_verification() -> None:
+    page = SelectorPage(
+        title_text="验证码拦截",
+        selector_states={
+            "#baxia-punish": (True, ""),
+            "#baxia-punish .captcha-tips": (True, "亲，请拖动下方滑块完成验证"),
+        },
+    )
+
+    assert _is_verification_page(page, PRODUCT_URL, page.title())
+
+
+def test_invisible_baxia_captcha_tips_is_not_verification() -> None:
+    page = SelectorPage(
+        selector_states={
+            "#baxia-punish": (True, ""),
+            "#baxia-punish .captcha-tips": (False, "亲，请拖动下方滑块完成验证"),
+        },
+    )
+
+    assert not _is_verification_page(page, PRODUCT_URL, page.title())
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        (FIXTURES / "normal_product.html").read_text(encoding="utf-8"),
+        '<h3 class="mod-detail-offline-title">商品已下架</h3>',
+    ],
+)
+def test_normal_and_offline_pages_do_not_match_baxia_verification(html: str) -> None:
+    page = SelectorPage(html)
+
+    assert not _is_verification_page(page, PRODUCT_URL, page.title())
+
+
+def test_verification_appearing_after_300ms_is_detected() -> None:
+    page = SelectorPage(
+        (FIXTURES / "normal_product.html").read_text(encoding="utf-8"),
+        selector_states={},
+    )
+    page.on_wait = lambda: page.selector_states.update(
+        {
+            "#baxia-punish": (True, ""),
+            "#baxia-punish .captcha-tips": (True, "通过验证以确保正常访问"),
+        }
+    )
+    context = FakeContext(page)
+
+    with pytest.raises(VerificationRequiredError):
+        collect_1688_product_in_context(context, PRODUCT_URL, "1081895898799")
+
+    assert page.wait_for_timeout_calls == [300]
+
+
+def test_second_verification_check_is_single_and_bounded() -> None:
+    page = SelectorPage((FIXTURES / "normal_product.html").read_text(encoding="utf-8"))
+    context = FakeContext(page)
+
+    with patch(
+        "app.collection.collector_1688.parse_1688_html",
+        return_value=SimpleNamespace(offer_id="1081895898799"),
+    ):
+        result = collect_1688_product_in_context(context, PRODUCT_URL, "1081895898799")
+
+    assert result.offer_id == "1081895898799"
+    assert page.wait_for_timeout_calls == [300]
 
 
 def test_collects_html_and_passes_expected_offer_id() -> None:
