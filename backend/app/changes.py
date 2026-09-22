@@ -53,6 +53,16 @@ def detect_changes(
     if old_title and new_title and old_title != new_title:
         changes.append(ChangeDraft("title_changed", None, old_title, new_title))
 
+    if previous.main_image_url and current.main_image_url and previous.main_image_url != current.main_image_url:
+        changes.append(
+            ChangeDraft(
+                "main_image_changed",
+                None,
+                previous.main_image_url,
+                current.main_image_url,
+            )
+        )
+
     old_skus = {sku.sku_id: sku for sku in previous.skus}
     new_skus = {sku.sku_id: sku for sku in current.skus}
     for sku_id in sorted(new_skus.keys() - old_skus.keys()):

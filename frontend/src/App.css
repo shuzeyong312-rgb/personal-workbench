@@ -290,3 +290,5 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .dashboard-trend-tooltip span { white-space: nowrap; }
 .detail-trend-chart .chart-y-label { font-size: 10px; }
 
+.change-type-main_image_changed { color: #9a5f2a; border-color: #f0d5bd; background: #fff4eb; }
+

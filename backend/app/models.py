@@ -113,7 +113,7 @@ class ChangeEvent(Base):
     __tablename__ = "change_events"
     __table_args__ = (
         CheckConstraint(
-            "change_type IN ('price_increase', 'price_decrease', 'sku_added', 'sku_removed', 'stock_changed', 'title_changed')",
+            "change_type IN ('price_increase', 'price_decrease', 'sku_added', 'sku_removed', 'stock_changed', 'title_changed', 'main_image_changed')",
             name="ck_change_events_change_type",
         ),
         Index(

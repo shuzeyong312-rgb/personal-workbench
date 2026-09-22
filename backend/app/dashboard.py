@@ -122,7 +122,8 @@ _CHANGE_PRIORITY = {
     "stock_changed": 1,
     "sku_added": 2,
     "sku_removed": 2,
-    "title_changed": 3,
+    "main_image_changed": 3,
+    "title_changed": 4,
 }
 
 

@@ -240,7 +240,7 @@ Dashboard item 的 `stock_total_change` 是商品级展示投影，仅在 primar
 
 ### 7.1 当前已实现的 change_type
 
-当前数据库 CHECK 和业务检测逻辑只支持以下 6 种：
+当前数据库 CHECK 和业务检测逻辑支持以下 7 种：
 
 ~~~text
 price_increase
@@ -249,9 +249,10 @@ sku_added
 sku_removed
 stock_changed
 title_changed
+main_image_changed
 ~~~
 
-当前检测语义只覆盖价格、标题、SKU 新增、SKU 删除和库存变化。具体比较规则由 docs/specs/detect-competitor-changes.md 负责，本文只保留稳定的数据边界。
+当前检测语义覆盖价格、标题、SKU 新增、SKU 删除、库存变化和主图变化。`main_image_changed` 仅比较相邻快照中已经 normalization 并持久化的 `main_image_url`：两侧均为非空且不相等时生成事件；首次采集、任一侧为 NULL、相同 URL 或 `image_urls` 变化均不生成事件。具体比较规则由对应 Feature Spec 负责，本文只保留稳定的数据边界。
 
 ### 7.2 当前检测基线
 

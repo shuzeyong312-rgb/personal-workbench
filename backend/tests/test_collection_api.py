@@ -261,7 +261,9 @@ def test_repeated_collection_adds_snapshot_and_latest_listing_projection(
         "price_max": "42.00",
         "sku_count": 3,
     }
-    assert body[0]["latest_change"] is None
+    assert body[0]["latest_change"]["change_type"] == "main_image_changed"
+    assert body[0]["latest_change"]["old_value"] == "https://example.com/product.jpg"
+    assert body[0]["latest_change"]["new_value"] == "https://example.com/product-updated.jpg"
     assert "latest_collection_run" not in body[0]
     with client[1]() as session:
         snapshots = session.scalars(
@@ -280,7 +282,76 @@ def test_repeated_collection_adds_snapshot_and_latest_listing_projection(
         assert saved_competitor is not None
         assert saved_competitor.main_image_url == "https://example.com/product-updated.jpg"
         assert session.query(SkuSnapshot).count() == 6
-        assert session.query(ChangeEvent).count() == 0
+        events = session.scalars(select(ChangeEvent)).all()
+        assert len(events) == 1
+        assert events[0].change_type == "main_image_changed"
+        assert events[0].entity_key is None
+        assert events[0].old_value == "https://example.com/product.jpg"
+        assert events[0].new_value == "https://example.com/product-updated.jpg"
+        assert events[0].snapshot_id == snapshots[1].id
+
+
+def test_main_image_change_does_not_repeat_for_repeated_current_image(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1])
+    first = product(captured_at=datetime(2026, 9, 19, 1, tzinfo=timezone.utc))
+    second = replace(
+        first,
+        captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc),
+        main_image_url="https://example.com/product-b.jpg",
+        image_urls=["https://example.com/product-b.jpg"],
+    )
+    third = replace(second, captured_at=datetime(2026, 9, 19, 3, tzinfo=timezone.utc))
+
+    with patch("app.collection.service.collect_1688_product", side_effect=[first, second, third]):
+        for _ in range(3):
+            assert client[0].post(f"/api/competitors/{competitor_id}/collect").status_code == 200
+
+    with client[1]() as session:
+        snapshots = session.scalars(
+            select(ProductSnapshot).order_by(ProductSnapshot.id)
+        ).all()
+        events = session.scalars(select(ChangeEvent)).all()
+        assert len(snapshots) == 3
+        assert len(events) == 1
+        assert events[0].old_value == "https://example.com/product.jpg"
+        assert events[0].new_value == "https://example.com/product-b.jpg"
+        assert events[0].snapshot_id == snapshots[1].id
+
+
+def test_main_image_changes_are_recorded_for_each_adjacent_transition(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1])
+    products = [
+        product(captured_at=datetime(2026, 9, 19, 1, tzinfo=timezone.utc)),
+        replace(
+            product(captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc)),
+            main_image_url="https://example.com/product-b.jpg",
+            image_urls=["https://example.com/product-b.jpg"],
+        ),
+        replace(
+            product(captured_at=datetime(2026, 9, 19, 3, tzinfo=timezone.utc)),
+            main_image_url="https://example.com/product-c.jpg",
+            image_urls=["https://example.com/product-c.jpg"],
+        ),
+    ]
+
+    with patch("app.collection.service.collect_1688_product", side_effect=products):
+        for _ in products:
+            assert client[0].post(f"/api/competitors/{competitor_id}/collect").status_code == 200
+
+    with client[1]() as session:
+        snapshots = session.scalars(
+            select(ProductSnapshot).order_by(ProductSnapshot.id)
+        ).all()
+        events = session.scalars(select(ChangeEvent).order_by(ChangeEvent.id)).all()
+        assert len(events) == 2
+        assert [(event.old_value, event.new_value, event.snapshot_id) for event in events] == [
+            ("https://example.com/product.jpg", "https://example.com/product-b.jpg", snapshots[1].id),
+            ("https://example.com/product-b.jpg", "https://example.com/product-c.jpg", snapshots[2].id),
+        ]
 
 
 def test_collect_without_new_changes_keeps_historical_latest_change(

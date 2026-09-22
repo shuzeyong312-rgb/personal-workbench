@@ -242,11 +242,71 @@ def test_multiple_sku_events_are_sorted_by_sku_id() -> None:
     ]
 
 
-def test_main_image_change_is_ignored() -> None:
+@pytest.mark.parametrize(
+    ("previous_url", "current_url", "expected"),
+    [
+        ("https://img.example.com/a.jpg", "https://img.example.com/a.jpg", []),
+        (
+            "https://img.example.com/a.jpg",
+            "https://img.example.com/b.jpg",
+            [ChangeDraft("main_image_changed", None, "https://img.example.com/a.jpg", "https://img.example.com/b.jpg")],
+        ),
+        (None, "https://img.example.com/a.jpg", []),
+        ("https://img.example.com/a.jpg", None, []),
+        (None, None, []),
+    ],
+)
+def test_main_image_change_matrix(
+    previous_url: str | None,
+    current_url: str | None,
+    expected: list[ChangeDraft],
+) -> None:
     assert detect_changes(
-        product_snapshot(main_image_url="old-image"),
-        product_data(main_image_url="new-image"),
+        product_snapshot(main_image_url=previous_url),
+        product_data(main_image_url=current_url),
+    ) == expected
+
+
+def test_main_image_change_chain_only_reports_adjacent_differences() -> None:
+    baseline = product_snapshot(main_image_url="https://img.example.com/a.jpg")
+    changed = product_data(main_image_url="https://img.example.com/b.jpg")
+    unchanged = product_data(main_image_url="https://img.example.com/b.jpg")
+    changed_again = product_data(main_image_url="https://img.example.com/c.jpg")
+
+    assert detect_changes(baseline, changed) == [
+        ChangeDraft(
+            "main_image_changed",
+            None,
+            "https://img.example.com/a.jpg",
+            "https://img.example.com/b.jpg",
+        )
+    ]
+    assert detect_changes(
+        product_snapshot(main_image_url=changed.main_image_url), unchanged
     ) == []
+    assert detect_changes(
+        product_snapshot(main_image_url=unchanged.main_image_url), changed_again
+    ) == [
+        ChangeDraft(
+            "main_image_changed",
+            None,
+            "https://img.example.com/b.jpg",
+            "https://img.example.com/c.jpg",
+        )
+    ]
+
+
+def test_image_urls_change_without_main_image_change_is_ignored() -> None:
+    previous = product_snapshot(
+        main_image_url="https://img.example.com/a.jpg",
+        image_urls=["https://img.example.com/a.jpg", "https://img.example.com/old-detail.jpg"],
+    )
+    current = product_data(
+        main_image_url="https://img.example.com/a.jpg",
+        image_urls=["https://img.example.com/a.jpg", "https://img.example.com/new-detail.jpg"],
+    )
+
+    assert detect_changes(previous, current) == []
 
 
 def test_product_status_change_is_ignored() -> None:

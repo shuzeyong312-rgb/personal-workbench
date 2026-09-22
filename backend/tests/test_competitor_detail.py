@@ -441,6 +441,42 @@ def test_latest_price_change_ignores_newer_non_price_events_and_preserves_range(
     assert body["latest_price_change"]["new_value"] == "38.00~48.00"
 
 
+def test_detail_recent_changes_returns_main_image_change_payload(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        previous = add_snapshot(session, competitor.id, timestamp - timedelta(minutes=1))
+        previous.main_image_url = "https://img.example.com/a.jpg"
+        current = add_snapshot(session, competitor.id, timestamp)
+        current.main_image_url = "https://img.example.com/b.jpg"
+        change = add_change(
+            session,
+            competitor.id,
+            current.id,
+            "main_image_changed",
+            timestamp,
+            old_value=previous.main_image_url,
+            new_value=current.main_image_url,
+        )
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert body["recent_changes"][0] == {
+        "id": change.id,
+        "snapshot_id": current.id,
+        "change_type": "main_image_changed",
+        "entity_key": None,
+        "old_value": "https://img.example.com/a.jpg",
+        "new_value": "https://img.example.com/b.jpg",
+        "detected_at": timestamp.replace(tzinfo=None).isoformat(),
+        "sku_name": None,
+    }
+    assert body["latest_price_change"] is None
+
+
 @pytest.mark.parametrize("change_type", ["price_increase", "price_decrease"])
 def test_latest_price_change_supports_both_price_directions(
     client: tuple[TestClient, sessionmaker[Session]],

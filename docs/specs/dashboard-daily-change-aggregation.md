@@ -8,7 +8,7 @@ Dashboard 的“今日发生变化的竞品”当前在 Backend 中虽已按 `co
 
 现状数据事实：
 
-- `ChangeEvent` 支持 `price_increase`、`price_decrease`、`sku_added`、`sku_removed`、`stock_changed`、`title_changed`。
+- `ChangeEvent` 支持 `price_increase`、`price_decrease`、`sku_added`、`sku_removed`、`stock_changed`、`main_image_changed`、`title_changed`。
 - 商品级事件的 `entity_key` 为 `NULL`；SKU 级事件的 `entity_key` 保存 `sku_id`。
 - `ChangeEvent.snapshot_id` 指向产生该事件的当前 `ProductSnapshot`；该快照下的 `SkuSnapshot` 保存同一 SKU 的 `sku_name`。
 - `Competitor.group_id` 是当前竞品组关系；不保存事件发生时的历史分组快照。
@@ -112,7 +112,7 @@ Dashboard 同时明确两个计数：
 字段规则：
 
 - `change_count`：该竞品今日全部 ChangeEvent 条数；
-- `change_types`：该竞品今日出现的 distinct 原始 `change_type` 值，不重复；不返回事件数组。按“价格、库存、SKU、标题”的稳定优先级排列，同一优先级按最近事件优先；
+- `change_types`：该竞品今日出现的 distinct 原始 `change_type` 值，不重复；不返回事件数组。按“价格、库存、SKU、主图、标题”的稳定优先级排列，同一优先级按最近事件优先；
 - `latest_change_at`：该竞品今日所有事件的 `max(detected_at)`；同时间不影响时间值，事件排序 tie-break 使用事件 `id DESC`；
 - `primary_change`：主要摘要使用的一个事件投影，或无事件时为 `null`。包含 `id`、`change_type`、`entity_key`、`sku_name`、`old_value`、`new_value`、`detected_at`；`sku_name` 对商品级事件为 `null`；
 - `stock_changed_sku_count`：有库存事件时按非空 `entity_key` 的 distinct SKU ID 计数；无库存事件时为 `0`；如果历史数据中存在库存事件但缺少可靠 `entity_key`，返回 `null`，不得伪造数量；
@@ -138,7 +138,7 @@ Dashboard 同时明确两个计数：
 - 先按 `competitor_id` 聚合今日事件，因此任意数量事件只产生一个 item。
 - `change_count` 计所有事件，不按类型、SKU 或时间去重。
 - `change_types` 去重但不丢失类型。`price_increase` 与 `price_decrease` 可以同时存在；`sku_added` 与 `sku_removed` 也可以同时存在。
-- UI badge 将同一大类只显示一次：两种价格事件显示一个“变价” badge，`stock_changed` 显示一个“库存变化” badge，任一 SKU 增删事件显示一个“SKU变化” badge，`title_changed` 显示一个“标题变化” badge。这个映射只负责显示，不承担事件聚合。
+- UI badge 将同一大类只显示一次：两种价格事件显示一个“变价” badge，`stock_changed` 显示一个“库存变化” badge，任一 SKU 增删事件显示一个“SKU变化” badge，`main_image_changed` 显示一个“主图变化” badge，`title_changed` 显示一个“标题变化” badge。这个映射只负责显示，不承担事件聚合。
 - 同一个竞品既有价格、库存、SKU、标题事件时，所有相应 badge 都必须显示；主要摘要只选择一个事件，不能隐藏其它事实。
 
 ### 5. `primary_change` 规则
@@ -148,7 +148,8 @@ Dashboard 同时明确两个计数：
 1. `price_increase` / `price_decrease`；
 2. `stock_changed`；
 3. `sku_added` / `sku_removed`；
-4. `title_changed`。
+4. `main_image_changed`；
+5. `title_changed`。
 
 在同一优先级内选择 `detected_at DESC, id DESC` 的最近事件。因而价格事件即使早于库存事件，只要当天存在价格事件，价格仍是主要摘要；时间列仍显示竞品的最新事件时间。
 
@@ -198,6 +199,12 @@ Dashboard 同时明确两个计数：
 - `title_changed` 只归入“标题变化” badge。
 - 当没有价格、库存或 SKU 事件时，标题变化可以成为主要摘要，显示“标题变化”。
 - 标题变化不抢过价格、库存或 SKU 的主要摘要；旧标题、新标题事实仍保留在 ChangeEvent 和详情页。
+
+### 9.1 主图变化
+
+- `main_image_changed` 只归入“主图变化” badge；
+- 当没有价格、库存或 SKU 事件时，主图变化优先于标题变化成为主要摘要，显示“主图发生变化”；
+- 主图变化不计算变化幅度；旧 URL、新 URL 事实保留在 ChangeEvent 和详情页。
 
 ### 10. 变化幅度
 
@@ -306,7 +313,7 @@ Dashboard 同时明确两个计数：
 
 - 不修改 ChangeEvent schema、字段含义或事实写入逻辑；
 - 不合并、删除或回写数据库中的 ChangeEvent；
-- 不新增数据库表、字段、索引或 migration；
+- 不新增数据库表、字段或索引；`main_image_changed` 仅通过现有 `change_events.change_type` CHECK 的 Alembic migration 加入。
 - 不新增 Event Detail Page、Dashboard Change Detail Page 或 Dashboard 行展开；
 - 不做多级折叠、复杂 Tooltip、变化历史导出或分页；
 - 不修改现有竞品详情页的完整事件明细 contract；

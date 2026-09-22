@@ -334,6 +334,7 @@ test.each([
   [latestChange({ change_type: "sku_removed", old_value: "蓝色" }), "移除 SKU：蓝色"],
   [latestChange({ change_type: "stock_changed", old_value: "10", new_value: "20" }), "库存变化 10 → 20"],
   [latestChange({ change_type: "stock_changed", old_value: "10", new_value: "0" }), "库存变化 10 → 0"],
+  [latestChange({ change_type: "main_image_changed" }), "主图发生变化"],
   [latestChange({ change_type: "title_changed" }), "标题已变更"],
   [latestChange({ change_type: "new_change_type" }), "发生变化"],
   [null, "暂无变化记录"],
@@ -564,6 +565,7 @@ test("formats dashboard change rows, badges, magnitudes, and collection duration
   expect(formatChangeValue(sku, "new")).toBe("红色");
   expect(formatChangeMagnitude(sku)).toBe("—");
   expect(getChangeTypeLabel("stock_changed")).toBe("库存变化");
+  expect(getChangeTypeLabel("main_image_changed")).toBe("主图变化");
   const stock = { ...price, change_type: "stock_changed", entity_key: "sku-red", sku_name: "白色款", old_value: "481", new_value: "478" };
   const stockItem = { ...dashboardData.items[0], change_count: 2, change_types: ["stock_changed"], primary_change: stock, stock_changed_sku_count: 2, stock_total_change: { old_total: 300, new_total: 270 } };
   expect(formatDashboardSummary(stockItem)).toBe("总库存 300 → 270");
@@ -573,6 +575,13 @@ test("formats dashboard change rows, badges, magnitudes, and collection duration
   expect(formatDashboardMagnitude({ ...stockItem, stock_total_change: { old_total: 0, new_total: 10 } })).toBe("—");
   expect(formatDashboardSummary(stockItem)).not.toContain("白色款");
   expect(formatDashboardSummary(stockItem)).not.toContain("个 SKU");
+  const mainImage = { ...price, change_type: "main_image_changed", entity_key: null, sku_name: null, old_value: "https://img.example.com/a.jpg", new_value: "https://img.example.com/b.jpg" };
+  const mainImageItem = { ...dashboardData.items[0], change_types: ["main_image_changed"], primary_change: mainImage, stock_total_change: null };
+  expect(formatDashboardSummary(mainImageItem)).toBe("主图发生变化");
+  expect(formatDashboardMagnitude(mainImageItem)).toBe("—");
+  const mainImageHtml = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [mainImageItem] }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  expect(mainImageHtml).toContain("主图变化");
+  expect(mainImageHtml).toContain("主图发生变化");
   expect(formatDuration(72)).toBe("1 分 12 秒");
   expect(formatDuration(null)).toBe("—");
 });
@@ -627,6 +636,7 @@ test.each([
   [latestChange({ change_type: "sku_added", new_value: "红色" }), "新增 SKU：红色"],
   [latestChange({ change_type: "sku_removed", old_value: "蓝色" }), "移除 SKU：蓝色"],
   [latestChange({ change_type: "stock_changed", old_value: "1", new_value: "0" }), "库存变化 1 → 0"],
+  [latestChange({ change_type: "main_image_changed" }), "主图发生变化"],
   [latestChange({ change_type: "title_changed" }), "标题已变更"],
   [latestChange({ change_type: "unknown" }), "发生变化"],
 ] as const)("formats dashboard changes through the shared formatter", (change, expected) => {

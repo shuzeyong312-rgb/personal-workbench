@@ -316,7 +316,7 @@ def test_excludes_yesterday_and_boundary_belongs_to_local_today(
     with client[1]() as session:
         competitor = add_competitor(session, 1)
         add_event(session, competitor, START_UTC - timedelta(seconds=1), "title_changed")
-        boundary = add_event(session, competitor, START_UTC, "price_increase")
+        boundary = add_event(session, competitor, START_UTC, "main_image_changed")
         add_event(session, competitor, END_UTC, "stock_changed")
         session.commit()
 
@@ -355,7 +355,7 @@ def test_today_stats_count_distinct_active_competitors_by_change_type_and_failed
         add_event(session, first, datetime(2026, 9, 20, 3), "stock_changed")
         add_event(session, second, datetime(2026, 9, 20, 4), "sku_added")
         add_event(session, second, datetime(2026, 9, 20, 5), "sku_removed")
-        add_event(session, inactive, datetime(2026, 9, 20, 6), "price_increase")
+        add_event(session, inactive, datetime(2026, 9, 20, 6), "main_image_changed")
         add_run(session, first, datetime(2026, 9, 20, 7), "failed", datetime(2026, 9, 20, 7, 0, 3))
         add_run(session, second, datetime(2026, 9, 20, 8), "failed", datetime(2026, 9, 20, 8, 0, 4))
         session.commit()
@@ -679,14 +679,56 @@ def test_primary_priority_and_counts_preserve_all_change_types(
         add_event(session, competitor, datetime(2026, 9, 20, 1), "stock_changed", entity_key="sku-1", sku_name="白色款")
         price = add_event(session, competitor, datetime(2026, 9, 20, 2), "price_decrease", old_value="40.00", new_value="38.00")
         add_event(session, competitor, datetime(2026, 9, 20, 3), "sku_added", entity_key="sku-2", new_value="蓝色款")
-        add_event(session, competitor, datetime(2026, 9, 20, 4), "title_changed", old_value="旧标题", new_value="新标题")
+        add_event(
+            session,
+            competitor,
+            datetime(2026, 9, 20, 4),
+            "main_image_changed",
+            old_value="https://img.example.com/a.jpg",
+            new_value="https://img.example.com/b.jpg",
+        )
+        add_event(session, competitor, datetime(2026, 9, 20, 5), "title_changed", old_value="旧标题", new_value="新标题")
         session.commit()
 
     item = client[0].get("/api/dashboard/today").json()["items"][0]
 
-    assert item["change_count"] == 4
-    assert item["change_types"] == ["price_decrease", "stock_changed", "sku_added", "title_changed"]
+    assert item["change_count"] == 5
+    assert item["change_types"] == ["price_decrease", "stock_changed", "sku_added", "main_image_changed", "title_changed"]
     assert item["primary_change"]["id"] == price.id
+
+
+def test_main_image_primary_is_above_title_and_keeps_one_competitor_row(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(
+            session,
+            competitor,
+            datetime(2026, 9, 20, 1),
+            "title_changed",
+            old_value="旧标题",
+            new_value="新标题",
+        )
+        main_image = add_event(
+            session,
+            competitor,
+            datetime(2026, 9, 20, 2),
+            "main_image_changed",
+            old_value="https://img.example.com/a.jpg",
+            new_value="https://img.example.com/b.jpg",
+        )
+        session.commit()
+
+    body = client[0].get("/api/dashboard/today").json()
+
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["change_types"] == ["main_image_changed", "title_changed"]
+    assert item["primary_change"]["id"] == main_image.id
+    assert item["primary_change"]["change_type"] == "main_image_changed"
+    assert item["primary_change"]["old_value"] == "https://img.example.com/a.jpg"
+    assert item["primary_change"]["new_value"] == "https://img.example.com/b.jpg"
 
 
 def test_multiple_price_events_use_latest_price_event(

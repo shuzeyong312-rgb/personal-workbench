@@ -564,6 +564,7 @@ export function formatChange(change: Change): string {
       const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "");
       return sku ? `${sku} · 库存 ${oldValue} → ${newValue}` : `库存变化 ${oldValue} → ${newValue}`;
     }
+    case "main_image_changed": return "主图发生变化";
     case "title_changed": return "标题已变更";
     default: return "发生变化";
   }
@@ -573,6 +574,7 @@ export function getChangeTypeLabel(changeType: string): string {
   if (changeType === "price_increase" || changeType === "price_decrease") return "变价";
   if (changeType === "stock_changed") return "库存变化";
   if (changeType === "sku_added" || changeType === "sku_removed") return "SKU变化";
+  if (changeType === "main_image_changed") return "主图变化";
   if (changeType === "title_changed") return "标题变化";
   return "其他变化";
 }
@@ -629,6 +631,7 @@ export function formatDashboardSummary(item: DashboardItem): string {
     if (item.sku_removed_count > 0) parts.push(`移除 ${item.sku_removed_count} 个 SKU`);
     return parts.join("，") || "SKU 发生变化";
   }
+  if (change.change_type === "main_image_changed") return "主图发生变化";
   if (change.change_type === "title_changed") return "标题已变更";
   return "发生变化";
 }
