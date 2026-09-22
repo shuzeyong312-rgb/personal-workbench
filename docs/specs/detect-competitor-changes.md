@@ -2,7 +2,7 @@
 
 状态：正式 Spec，仅定义下一阶段实现边界；本轮不实现。
 
-本 Spec 更新现有“单次采集后的快照变化检测” Spec。后续实现以本文为准；与旧文档中仅支持 `stock_changed`、不支持主图或商品生命周期的描述，以本文为准。
+本 Spec 更新现有“单次采集后的快照变化检测” Spec。后续实现以本文为准；与旧文档中仅支持 `stock_changed`、不支持主图或商品生命周期的描述，以本文为准。当前 main 仍运行旧版事件写入逻辑，本 Spec 定义的是下一阶段 V2 规则，不把未来事件描述成当前已实现能力。
 
 ## 1. Problem Statement
 
@@ -19,7 +19,8 @@ Snapshot 记录某个时点的商品事实，ChangeEvent 记录本次有效采�
 - 价格已经区分 `price_increase` / `price_decrease`；
 - SKU 已经区分 `sku_added` / `sku_removed`；
 - 商品生命周期已经区分 `product_offline` / `product_online`；
-- 库存仍只有笼统的 `stock_changed`，页面需要再次判断方向；
+- 当前 `stock_changed` 实际已经记录同一 `sku_id` 的普通库存变化，但没有方向类型；
+- `SkuSnapshot.price` 已经保存 SKU 当前页面展示价格，但当前 ChangeEvent 尚未记录 SKU 级价格变化；
 - SKU 售罄与恢复有货尚未成为独立事件；
 - 每条事件没有正式关联发现它的 `CollectionRun`；
 - 价格和库存变化没有可直接使用的数值差值字段；
@@ -32,7 +33,7 @@ Snapshot 记录某个时点的商品事实，ChangeEvent 记录本次有效采�
 建立一个统一的、只表达客观变化的 ChangeEvent V2：
 
 1. 以同一竞品的上一份有效 ProductSnapshot 为比较基线；
-2. 把商品价格、商品总库存、SKU 状态、商品生命周期、标题和主图变化拆成标准事件；
+2. 用统一事件类型表达商品级 / SKU 级价格、SKU 库存、SKU 状态、商品生命周期、标题和主图变化；
 3. 一次采集发现多个事实变化时保存多条独立 ChangeEvent；
 4. 第一次成功采集只建立 Snapshot baseline，不生成普通变化事件；
 5. 下架只在采集器取得明确正面证据时生成 `product_offline`；
@@ -80,6 +81,8 @@ product_online
 
 `product_offline` 的 `snapshot_id` 为 `NULL`；其他当前事件必须关联 Snapshot。当前没有 ChangeEvent 到 CollectionRun 的外键。
 
+当前 `stock_changed` 的真实语义是 SKU 级：`entity_key = sku_id`，`old_value` / `new_value` 保存同一 SKU 的旧、新库存字符串。当前 `SkuSnapshot.price` 只保存事实，不生成 SKU 价格 ChangeEvent；当前 `ProductSnapshot.min_order_quantity` 只保存事实，不生成起批量 ChangeEvent。
+
 ### 3.2 当前采集与保存流程
 
 - CollectionRun 先以 `running` 短事务提交；Playwright/网络采集不持有业务保存事务。
@@ -117,7 +120,8 @@ product_online
 
 ChangeEvent V2 的目标：
 
-- 冻结 12 种标准变化事件及其触发条件；
+- 冻结 14 种标准变化事件及其触发条件；
+- 让价格和库存事件通过 `entity_key` 区分商品级与 SKU 级，而不是新增层级字段或重复事件类型；
 - 让库存方向和 SKU 售罄/恢复无需消费者二次推断；
 - 让事件能追溯到发现它的 CollectionRun；
 - 让价格和库存事件在可靠时直接携带差值和变化率；
@@ -149,19 +153,20 @@ ChangeEvent V2 的目标：
 
 ## 6. V2 标准事件清单
 
-V2 正式标准事件共 12 种：
+V2 正式标准事件共 14 种：
 
 | 领域 | `change_type` |
 |---|---|
-| 价格 | `price_decrease`、`price_increase` |
-| 商品总库存 | `stock_decrease`、`stock_increase` |
+| 价格（商品级或 SKU 级） | `price_decrease`、`price_increase` |
+| SKU 普通库存 | `stock_decrease`、`stock_increase` |
 | SKU | `sku_added`、`sku_removed`、`sku_sold_out`、`sku_restocked` |
+| 起批量 | `min_order_quantity_decrease`、`min_order_quantity_increase` |
 | 商品生命周期 | `product_offline`、`product_online` |
 | 商品内容 | `title_changed`、`main_image_changed` |
 
-`stock_changed` 不属于 V2 新标准事件，但在兼容期保留为历史 legacy 类型，见第 19 节。
+`stock_changed` 不属于 V2 新标准事件，但在兼容期继续允许作为历史 legacy 类型读取，见第 19 节。V2 新事件不再生成新的 `stock_changed`。
 
-V2 不支持 `sales_increase`、SKU 独立价格变化或其他未列出的类型。
+V2 不支持 `sales_increase`、`sku_price_increase`、`sku_price_decrease`、商品总库存专用 ChangeEvent 或其他未列出的类型。
 
 ## 7. 事件共同规则
 
@@ -190,10 +195,11 @@ ChangeEvent 只记录“相邻有效事实之间发生了什么”，不记录�
 一次采集可产生多条事件，示例：
 
 ```text
-价格 42 → 35
-总库存 8240 → 3110
-黑色 SKU 127 → 0
-新增白色 SKU
+商品价格 42 → 35
+黑色 SKU 42 → 35
+黑色 SKU 库存 127 → 0
+白色 SKU 库存 20 → 30
+新增粉色 SKU
 ```
 
 应保存：
@@ -202,16 +208,42 @@ ChangeEvent 只记录“相邻有效事实之间发生了什么”，不记录�
 price_decrease
 stock_decrease
 sku_sold_out
+stock_increase
 sku_added
 ```
 
 不创建“大变化”单条事件，不把多个客观变化压缩成一行。
 
+### 7.5 `entity_key` 统一层级语义
+
+同一种业务事实使用同一个 `change_type`，事件发生层级由 `entity_key` 表示，不新增 `subject_type`、`scope_type` 或第二套事件模型。
+
+商品级事件：`entity_key = NULL`。
+
+- 商品级 `price_increase` / `price_decrease`；
+- `min_order_quantity_increase` / `min_order_quantity_decrease`；
+- `product_offline` / `product_online`；
+- `title_changed`；
+- `main_image_changed`。
+
+SKU 级事件：`entity_key = sku_id`。
+
+- SKU 级 `price_increase` / `price_decrease`；
+- `stock_increase` / `stock_decrease`；
+- `sku_added` / `sku_removed`；
+- `sku_sold_out` / `sku_restocked`。
+
+页面可以按商品聚合多个 SKU 事件，但不得把聚合摘要回写成新的 ChangeEvent。
+
 ## 8. 各事件的业务含义与触发条件
 
 ### 8.1 `price_decrease` / `price_increase`
 
-价格比较继续沿用当前明确方向规则。只有 previous/current 的 `price_min` 和 `price_max` 都非 `NULL` 时才比较：
+价格事件统一使用 `price_decrease` / `price_increase`，通过 `entity_key` 区分商品级和 SKU 级，不新增 `sku_price_*` 类型。
+
+#### 商品级价格
+
+商品级比较继续沿用当前明确方向规则。只有 previous/current 的 `price_min` 和 `price_max` 都非 `NULL` 时才比较：
 
 ```text
 current.price_min > previous.price_min
@@ -233,43 +265,37 @@ current.price_min < previous.price_min
 
 `old_value` / `new_value` 沿用当前稳定字符串：统一价使用 `40.00`，区间价使用 `40.00~45.00`，不带人民币符号。
 
+商品级价格事件的 `entity_key = NULL`。
+
+#### SKU 级价格
+
+同一 `sku_id` 在 previous 和 current 中都存在，且两侧 `SkuSnapshot.price` 均非 `NULL` 且不同：
+
+```text
+current.price < previous.price → price_decrease
+current.price > previous.price → price_increase
+```
+
+SKU 级价格事件的 `entity_key = sku_id`，`old_value` / `new_value` 使用两位小数价格字符串。SKU 新增或删除时只生成 `sku_added` / `sku_removed`，不伪造 SKU 价格事件。
+
+商品级价格与一个或多个 SKU 级价格可以在同一次采集中同时产生；它们是不同层级的客观事实，不合并、不互相覆盖。SKU 价格表示当前页面展示价格，不宣称为所有促销体系下的最终成交价。
+
 ### 8.2 `stock_decrease` / `stock_increase`
 
-它们表达商品总库存方向，不表达某个 SKU 的普通库存变化。
+它们表达同一 `sku_id` 的普通正库存方向变化，不表达商品总库存变化。
 
-previous 和 current 都只有在以下条件全部满足时，才得到可比较的商品总库存：
-
-1. 快照至少有一个可识别 SKU；
-2. 快照中每个已保存 SKU 的 `stock` 都是非 `NULL` 的非负整数；
-3. 快照是正常成功采集产生的完整 Snapshot，而不是解析失败或下架状态。
-
-总库存定义为该快照所有 SKU `stock` 的算术和：
+只有 previous 和 current 中同一个 `sku_id` 都存在，且两侧库存都是非 `NULL` 正整数、数值不同，才比较：
 
 ```text
-total_stock = sum(all identifiable SKU stock values)
+current.stock < previous.stock → stock_decrease
+current.stock > previous.stock → stock_increase
 ```
 
-比较规则：
+事件为 SKU 级事件：`entity_key = sku_id`。`old_value` / `new_value` 保存该 SKU 的库存整数字符串。普通正库存变化不与 `sku_sold_out` / `sku_restocked` 同时生成。
 
-```text
-current_total < previous_total → stock_decrease
-current_total > previous_total → stock_increase
-current_total = previous_total → 不产生商品总库存事件
-```
+SKU 新增 / 删除不进入本规则；库存未知不按 `0` 参与比较，也不从其他 SKU 或商品页面摘要推断。
 
-事件为商品级事件：`entity_key = NULL`。`old_value` / `new_value` 保存总库存整数的字符串值。
-
-以下情况不能产生 `stock_decrease` 或 `stock_increase`：
-
-- previous 或 current 没有 SKU；
-- 任一侧存在 `stock = NULL`；
-- 商品页解析失败、字段不完整或保存失败；
-- 本次没有有效 ProductSnapshot；
-- 只能得到部分 SKU，无法证明快照是完整可比较集合。
-
-未知库存保持未知，不能按 `0` 参与求和，不能用 ChangeEvent 的 SKU 事件值相加代替总库存。
-
-SKU 集合增删本身不阻止总库存比较：只要前后两个 Snapshot 各自满足完整库存条件，就按各自全部可识别 SKU 的总和比较，同时另行产生 `sku_added` / `sku_removed`。
+商品总库存仍可由相邻完整 Snapshot 的全部 SKU 库存求和得到，但它是展示 / 分析投影，不额外生成 product-level `stock_increase` / `stock_decrease` ChangeEvent。
 
 ### 8.3 `sku_added`
 
@@ -295,6 +321,8 @@ previous 中存在该 `sku_id`，current 中不存在该 `sku_id`。
 
 SKU 消失时只产生 `sku_removed`，不因为旧库存为 0 再产生 `sku_sold_out`。
 
+SKU 删除不同时产生价格或库存事件。
+
 ### 8.5 `sku_sold_out`
 
 只有同一个 `sku_id` 同时存在于 previous 和 current，且库存发生以下转换时产生：
@@ -310,8 +338,9 @@ previous.stock > 0
 - `entity_key = sku_id`；
 - `old_value = previous.stock` 的字符串值；
 - `new_value = "0"`；
-- 可保存库存差值；
-- 不能与同一次 SKU 删除同时产生。
+- 可保存 `delta_value` / `delta_rate`，例如 `100 → 0` 的变化率为 `-100%`；
+- 不能与同一次 SKU 删除同时产生；
+- 不同时产生 `stock_decrease`。
 
 ### 8.6 `sku_restocked`
 
@@ -328,14 +357,26 @@ previous.stock = 0
 - `entity_key = sku_id`；
 - `old_value = "0"`；
 - `new_value = current.stock` 的字符串值；
-- 可保存库存差值；
-- 不能与同一次 SKU 新增同时产生。
+- 可保存 `delta_value`；old 为 0 时 `delta_rate = NULL`；
+- 不能与同一次 SKU 新增同时产生；
+- 不同时产生 `stock_increase`。
 
 如果任一侧库存为 `NULL`，不产生 `sku_sold_out` 或 `sku_restocked`。例如 `NULL → 0` 和 `0 → NULL` 都只是未知，不能猜测。
 
-对同一 SKU 的 `10 → 20`、`20 → 10` 等普通非零库存变化，V2 不单独创建 SKU 普通库存事件；若商品总库存因此改变，则由 `stock_increase` / `stock_decrease` 表达商品级客观变化。
+对同一 SKU 的 `10 → 20`、`20 → 10` 等普通非零库存变化，按 8.2 生成 SKU 级 `stock_increase` / `stock_decrease`。
 
-### 8.7 `product_offline`
+### 8.7 `min_order_quantity_decrease` / `min_order_quantity_increase`
+
+起批量是商品级事件，`entity_key = NULL`。只有 previous/current 两侧 `min_order_quantity` 都是合法非 NULL 整数且不同，才生成：
+
+```text
+current < previous → min_order_quantity_decrease
+current > previous → min_order_quantity_increase
+```
+
+`old_value` / `new_value` 保存整数字符串；两侧均为合法正整数，因此可以保存 `delta_value` 和 `delta_rate`。首次采集、任一侧为 `NULL`、解析失败和恢复上架首轮不产生起批量事件。
+
+### 8.8 `product_offline`
 
 只有当前状态为 `active`，且采集器取得明确、正面的“商品已下架”证据时产生：
 
@@ -347,7 +388,7 @@ previous.stock = 0
 
 下架不创建全 NULL Snapshot，不删除历史 Snapshot，不清空 Competitor 的标题、价格、库存、SKU 或主图摘要，也不修改 `is_active`。
 
-### 8.8 `product_online`
+### 8.9 `product_online`
 
 只有 previous Competitor 状态为 `offline`，并且后续一次采集重新成功打开正常商品页并完成标准化时产生：
 
@@ -357,11 +398,11 @@ previous.stock = 0
 - `snapshot_id` 指向恢复本次新建的 ProductSnapshot；
 - `collection_run_id` 指向本次恢复采集的成功 CollectionRun。
 
-恢复上架这一轮只记录 `product_online`，不同时产生价格、商品总库存、SKU、标题或主图普通变化事件。原因是下架期间可能发生了多个未知时点的变化，当前系统只能确认“现在恢复了”，不能把差异归因到恢复这一刻。
+恢复上架这一轮只记录 `product_online`，不同时产生价格、SKU 价格、SKU 库存、SKU 结构、起批量、标题或主图普通变化事件。原因是下架期间可能发生了多个未知时点的变化，当前系统只能确认“现在恢复了”，不能把差异归因到恢复这一刻。
 
 恢复 Snapshot 作为下一次 `active → active` 普通比较的基线。
 
-### 8.9 `title_changed`
+### 8.10 `title_changed`
 
 previous 和 current 的标准化标题都为非空字符串，且 trim 后不相等时产生：
 
@@ -372,7 +413,7 @@ previous 和 current 的标准化标题都为非空字符串，且 trim 后不�
 
 不使用编辑距离、AI、模糊匹配或标题语义判断。
 
-### 8.10 `main_image_changed`
+### 8.11 `main_image_changed`
 
 previous 和 current 都存在已经标准化的非空主图 URL，且 URL 不相等时产生：
 
@@ -391,7 +432,7 @@ previous 和 current 都存在已经标准化的非空主图 URL，且 URL 不�
 - 创建全部可识别的 SkuSnapshot；
 - 创建成功 CollectionRun；
 - 更新 Competitor 当前摘要和状态；
-- 不创建价格、总库存、SKU、标题或主图普通事件。
+- 不创建商品级价格、SKU 级价格、SKU 库存、SKU 增删、SKU 售罄 / 恢复、起批量、标题或主图普通事件。
 
 如果没有上一份有效 ProductSnapshot，即使 current 与“没有数据”相比看起来像新增，也不生成 `sku_added` 或其他普通事件。
 
@@ -421,14 +462,14 @@ previous 和 current 都存在已经标准化的非空主图 URL，且 URL 不�
 
 ### 10.4 重复有效采集
 
-如果连续两次有效采集的价格、总库存、SKU 集合与库存状态、标题和主图都没有产生 V2 定义的变化：
+如果连续两次有效采集的商品价格、SKU 价格、SKU 库存、SKU 集合与库存状态、起批量、标题和主图都没有产生 V2 定义的变化：
 
 - 仍创建新的 ProductSnapshot；
 - 仍创建新的 SkuSnapshot；
 - 仍创建成功 CollectionRun；
 - 不创建 ChangeEvent。
 
-## 11. 商品总库存比较规则
+## 11. 商品总库存派生规则
 
 总库存只从当前 Snapshot 下所有可识别 SKU 的 `stock` 计算，不从页面摘要、旧事件或 SKU 名称推断。
 
@@ -442,7 +483,7 @@ previous 和 current 都满足：
 
 ### 不可比较
 
-任一侧满足以下条件时跳过商品总库存事件：
+任一侧满足以下条件时无法计算商品总库存投影：
 
 - 没有 SKU；
 - 存在任意未知库存；
@@ -451,7 +492,7 @@ previous 和 current 都满足：
 - 本次是下架检查，没有 ProductSnapshot；
 - 无法证明当前 Snapshot 的 SKU 库存集合是完整可识别结果。
 
-跳过只影响 `stock_decrease` / `stock_increase`，不阻止在证据充分时保存其他独立事件，例如 `title_changed` 或 `sku_added`。
+无法计算总库存只影响展示 / 分析投影，不影响同一有效 SKU 的价格或库存事件。不得把 SKU ChangeEvent 的 `old_value` / `new_value` 相加替代商品总库存，也不得为了总库存投影额外保存 product-level `stock_increase` / `stock_decrease`。
 
 ## 12. SKU 身份判断规则
 
@@ -481,6 +522,7 @@ SKU 身份严格使用 parser/collector 产出的稳定 `sku_id`：
 | 不存在 | `stock > 0` | 只有 `sku_added` |
 | `stock = 0` | 不存在 | 只有 `sku_removed` |
 | `stock > 0` | 不存在 | 只有 `sku_removed` |
+| `stock > 0` | 其他正数 | `stock_increase` 或 `stock_decrease` |
 | `stock > 0` | `stock = 0` | `sku_sold_out` |
 | `stock = 0` | `stock > 0` | `sku_restocked` |
 | `stock = NULL` 或 current/previous 缺失 | 任意 | 不产生售罄/恢复事件 |
@@ -523,9 +565,9 @@ SKU 身份严格使用 parser/collector 产出的稳定 `sku_id`：
 
 ChangeEvent 是事件集合，不是商品版本摘要。一次 CollectionRun 可以同时产生：
 
-- 一条价格事件；
-- 一条商品总库存事件；
-- 多条 SKU 新增、删除、售罄、恢复事件；
+- 一条或多条商品级 / SKU 级价格事件；
+- 多条 SKU 普通库存、SKU 新增、删除、售罄、恢复事件；
+- 一条商品级起批量事件；
 - 一条标题事件；
 - 一条主图事件。
 
@@ -540,14 +582,16 @@ ChangeEvent 是事件集合，不是商品版本摘要。一次 CollectionRun �
 
 实现应保持稳定生成顺序，建议按以下领域顺序生成，顺序不是业务优先级：
 
-1. 价格；
-2. 商品总库存；
-3. SKU 新增；
-4. SKU 删除；
-5. SKU 售罄；
-6. SKU 恢复；
-7. 标题；
-8. 主图。
+1. 商品级价格；
+2. SKU 级价格；
+3. SKU 普通库存；
+4. SKU 新增；
+5. SKU 删除；
+6. SKU 售罄；
+7. SKU 恢复；
+8. 起批量；
+9. 标题；
+10. 主图。
 
 同类型多条 SKU 事件按 `sku_id` 排序。消费者不得依赖插入顺序代替自己的展示优先级。
 
@@ -562,8 +606,8 @@ ChangeEvent 是事件集合，不是商品版本摘要。一次 CollectionRun �
 | `id` | 主键 |
 | `competitor_id` | 必填，发生变化的竞品 |
 | `snapshot_id` | 普通事件指向本次 Snapshot；`product_offline` 为 `NULL` |
-| `change_type` | 12 种 V2 标准类型，兼容期保留 legacy `stock_changed` |
-| `entity_key` | 商品级为 `NULL`；SKU 级为 `sku_id` |
+| `change_type` | 14 种 V2 标准类型，兼容期保留 legacy `stock_changed` |
+| `entity_key` | 商品级为 `NULL`；SKU 级为 `sku_id`；不新增 `subject_type` / `scope_type` |
 | `old_value` | 稳定、简短的旧事实字符串；没有旧值时为 `NULL` |
 | `new_value` | 稳定、简短的新事实字符串；没有新值时为 `NULL` |
 | `detected_at` | 本次检测时间，保存 UTC 事实 |
@@ -599,11 +643,12 @@ delta_value = new numeric value - old numeric value
 
 使用范围：
 
-- `price_increase` / `price_decrease`：两侧都是统一价时使用；
-- `stock_increase` / `stock_decrease`：使用商品总库存差值；
+- `price_increase` / `price_decrease`：商品级统一价或 SKU 级价格变化时使用；
+- `stock_increase` / `stock_decrease`：同一 SKU 的普通正库存变化时使用；
 - `sku_sold_out` / `sku_restocked`：使用该 SKU 库存差值。
+- `min_order_quantity_increase` / `min_order_quantity_decrease`：使用商品级起批量差值。
 
-价格区间一侧或两侧不是统一价时，`delta_value = NULL`，因为一个区间没有单一、无歧义的价格差值。标题、主图、SKU 新增、SKU 删除和生命周期事件不保存差值。
+商品级价格区间一侧或两侧不是统一价时，`delta_value = NULL`，因为一个区间没有单一、无歧义的价格差值。SKU 价格和 SKU 库存使用其自身 old/new 数值。标题、主图、SKU 新增、SKU 删除和生命周期事件不保存差值。
 
 ### 16.4 新增 `delta_rate`
 
@@ -617,7 +662,8 @@ delta_rate = (new - old) / old × 100
 
 - 只在 old 是非零且两侧数值可靠时计算；
 - old 为 0 时 `delta_rate = NULL`，但 `delta_value` 仍可保存；
-- 价格区间事件不计算单一变化率；
+- 商品级价格区间事件不计算单一变化率；
+- 起批量两侧均为合法正整数，old 非零时可以计算变化率；
 - 标题、主图、SKU 新增、SKU 删除和生命周期事件为 `NULL`；
 - 差值和变化率的精度、舍入由数据库 Numeric 类型和现有 Decimal 约定统一实现，不把格式化百分号存入字段。
 
@@ -628,9 +674,9 @@ delta_rate = (new - old) / old × 100
 delta_value = -7
 delta_rate = -16.666...  （展示层可格式化为 -16.67%）
 
-8240 → 3110
-delta_value = -5130
-delta_rate = -62.257...  （展示层可格式化为 -62.26%）
+500 → 400（同一 SKU 普通库存）
+delta_value = -100
+delta_rate = -20.00%  （展示层可格式化）
 
 0 → 500
 delta_value = 500
@@ -647,7 +693,7 @@ ChangeEvent.snapshot_id = current ProductSnapshot.id
 
 关系规则：
 
-- `price_*`、`stock_*`、`sku_*`、`title_changed`、`main_image_changed`、`product_online` 必须有关联 Snapshot；
+- `price_*`、`stock_*`、`sku_*`、`min_order_quantity_*`、`title_changed`、`main_image_changed`、`product_online` 必须有关联 Snapshot；
 - `product_offline` 必须没有 Snapshot；
 - 下架不创建占位 Snapshot；
 - 恢复上架的 `product_online` 指向恢复本次新 Snapshot；
@@ -680,15 +726,15 @@ CollectionRun 1 ─── N ChangeEvent
 推荐采用方案 C：
 
 1. 不删除任何历史 ChangeEvent；
-2. 不默认把历史 `stock_changed` 改写成 `stock_increase` 或 `stock_decrease`；
-3. V2 新采集只生成 `stock_increase` / `stock_decrease`，不再生成新的 `stock_changed`；
+2. 不默认把历史 `stock_changed` 改写成 `stock_increase`、`stock_decrease`、`sku_sold_out` 或 `sku_restocked`；
+3. V2 新采集只生成 SKU 级 `stock_increase` / `stock_decrease`、`sku_sold_out` 或 `sku_restocked`，不再生成新的 `stock_changed`；
 4. 兼容期数据库 CHECK 继续允许 `stock_changed`，让旧数据可读；
 5. 消费者同时识别 V2 新事件和历史 legacy `stock_changed`；
 6. legacy `stock_changed` 的方向未知时，不在消费者中猜测。
 
 ### 19.2 为什么不采用直接全量转换
 
-当前正式生成逻辑确实把 SKU 库存保存为字符串整数，现有本地数据库中的历史 `stock_changed` 样本也都是可解析的整数对。但数据库字段本身是普通字符串，没有约束保证所有历史写入路径都遵守该格式。
+当前正式生成逻辑确实把同一 SKU 的库存保存为字符串整数，现有本地数据库中的历史 `stock_changed` 样本也都是 SKU 级可解析的整数对。但数据库字段本身是普通字符串，没有约束保证所有历史写入路径都遵守该格式。
 
 因此，直接把所有旧行改名存在两个问题：
 
@@ -702,8 +748,8 @@ V2 的目标是统一未来事件，不是重写历史。
 如果未来确实需要历史方向统计，可以另行做只读分析或独立、经过审计的 backfill：
 
 - 只有 old/new 都能严格解析为非负整数且不相等时，才允许分类；
-- old < new 才能分类为 increase；
-- old > new 才能分类为 decrease；
+- old < new 才能分类为 SKU `stock_increase`；
+- old > new 才能分类为 SKU `stock_decrease`；
 - 其他情况保持 `stock_changed`，不猜；
 - 该 backfill 不属于本 V2 migration，也不作为 V2 上线前提。
 
@@ -713,7 +759,7 @@ V2 的目标是统一未来事件，不是重写历史。
 
 迁移至少覆盖：
 
-- `change_type` CHECK 增加四种库存方向/SKU 状态事件，继续允许 legacy `stock_changed`；
+- `change_type` CHECK 增加 8 种 V2 新事件（SKU 普通库存、SKU 状态、起批量）并继续允许 legacy `stock_changed`；
 - 增加 nullable `collection_run_id` 外键；
 - 增加 nullable `delta_value`；
 - 增加 nullable `delta_rate`；
@@ -745,20 +791,23 @@ SQLite 约束重建必须：
 
 - 把 `stock_increase` / `stock_decrease` 纳入库存变化集合；
 - 把 `sku_sold_out` / `sku_restocked` 纳入 SKU 变化集合；
-- lifecycle、price、product stock、SKU、main image、title 继续作为不同事件领域；
+- 把商品级和 SKU 级 `price_increase` / `price_decrease` 都纳入变价竞品集合；
+- 把 `min_order_quantity_increase` / `min_order_quantity_decrease` 纳入起批量变化集合；
+- lifecycle、price、SKU stock、SKU 状态、起批量、main image、title 继续作为不同事件领域；
 - 新库存事件优先使用 `old_value` / `new_value` / `delta_*`，不重新从两个 Snapshot 推断方向；
 - 对 legacy `stock_changed` 保留旧兼容路径，不将其强行分类；
 - 现有商品一行、事件逐条计数和按 active Competitor 过滤原则保持不变；
 - 现有 `stock_changed_*` 字段如继续存在，需要明确兼容命名，不把新方向事件误报为旧类型；
-- primary 展示优先级保持“生命周期 > 价格 > 商品总库存 > SKU > 主图 > 标题”，同一领域内按检测时间和 ID 决定最近事件。
+- 商品总库存仍从相邻 Snapshot 的全部有效 SKU 库存求和得到，不把 SKU 事件 old/new 相加，也不新增 product-level stock ChangeEvent；
+- primary 展示优先级保持“生命周期 > 价格 > SKU 库存 / 状态 > 起批量 > 主图 > 标题”，同一领域内按检测时间和 ID 决定最近事件。
 
 ### 21.2 Competitor Detail
 
 Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名称回溯。V2 实现时需要：
 
 - 保持通用事件响应，不新建每种事件专用表；
-- 商品级 `stock_increase` / `stock_decrease` 不绑定 SKU 名称；
-- `sku_sold_out` / `sku_restocked` 通过 `entity_key = sku_id` 回溯名称；
+- 商品级价格和起批量事件不绑定 SKU 名称；
+- SKU 级 `price_increase` / `price_decrease`、`stock_increase` / `stock_decrease`、`sku_sold_out` / `sku_restocked`、`sku_added` / `sku_removed` 都通过 `entity_key = sku_id` 回溯名称；
 - `sku_added` / `sku_removed` 继续按事件值或 Snapshot 事实展示；
 - `product_offline` 继续允许 `snapshot_id = NULL`；
 - 详情中的最新价格仍只筛选两种价格事件；
@@ -770,7 +819,7 @@ Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名�
 
 后续实现需要：
 
-- 增加 12 种标准类型的展示映射；
+- 增加 14 种标准类型的展示映射；
 - 保留 legacy `stock_changed` 展示映射；
 - 不在前端通过 old/new 值重新判断库存方向；
 - 不把 `latest_change` 扩展成完整事件历史或筛选接口；
@@ -784,8 +833,10 @@ Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名�
 
 - 继续按 ChangeEvent 事实统计，不修改历史事件；
 - 新旧事件类型都计入“发生过变化”的统一口径；
+- 价格事件无论 `entity_key` 是否为 NULL，都计入变价竞品数；同一竞品多个 SKU 事件仍只计一个竞品；
+- Group Intelligence 使用同一套 `entity_key` 语义，不在页面层新增 SKU 价格或库存事件类型；
 - 如果未来增加按变化类型筛选，应使用 V2 领域集合，同时单独定义 legacy `stock_changed` 的处理；
-- 本 V2 不新增 Group Detail、横向分析或新的组接口。
+- Group Intelligence 的页面实现不属于本 Spec，但其组级动作统计不得把商品总库存派生投影重复计为事件。
 
 ## 22. 边界情况
 
@@ -794,8 +845,11 @@ Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名�
 - current 为验证页、登录页、网络错误或空白页：不生成 `product_offline`。
 - previous/current 价格缺失：不生成价格事件。
 - 价格区间方向不一致：不生成价格事件。
-- 商品总库存任一未知：不生成商品总库存事件。
-- 总库存为 0 是有效事实；0 → 正数可产生 `stock_increase`，正数 → 0 可产生 `stock_decrease`。
+- SKU 级价格任一侧缺失：不生成 SKU 价格事件。
+- 商品总库存任一未知：总库存投影为未知，不影响其他可靠 SKU 事件。
+- 同一 SKU 正库存变化产生 `stock_increase` / `stock_decrease`；不额外产生商品总库存事件。
+- 同一 SKU `>0 → 0` 只产生 `sku_sold_out`；`0 → >0` 只产生 `sku_restocked`。
+- 起批量任一侧缺失：不生成 `min_order_quantity_increase` / `min_order_quantity_decrease`。
 - SKU `NULL → 0`、`0 → NULL`：不生成售罄/恢复。
 - SKU 消失：只生成 `sku_removed`，不生成售罄。
 - SKU 新出现：只生成 `sku_added`，不生成恢复有货。
@@ -821,24 +875,25 @@ Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名�
 
 1. 第一次成功采集产生 0 条普通 ChangeEvent；
 2. 连续相同采集产生新 Snapshot、SKU、成功 Run，但 0 条事件；
-3. 价格统一价上涨/下降；
-4. 价格区间完整同向变化；
-5. 价格缺失、单边变化、方向不一致均不产生价格事件；
-6. 完整总库存上升/下降；
-7. 总库存相等不产生事件；
-8. 任一库存缺失、无 SKU、解析失败均跳过商品总库存事件；
-9. 0 参与总库存求和，且不被当作未知；
-10. SKU 新增、删除按 ID 独立生成；
-11. 相同 ID 改名不产生 add/remove；
-12. `>0 → 0` 产生 `sku_sold_out`；
-13. `0 → >0` 产生 `sku_restocked`；
-14. SKU 消失不同时产生售罄；
-15. SKU 新增不同时产生恢复有货；
-16. `NULL` 库存不产生售罄/恢复；
-17. 标题和主图变化符合当前标准化边界；
-18. 一次采集可以产生多条独立事件；
-19. 每条普通事件指向本次 Snapshot；
-20. 所有本次事件共享当前 Run 和 `detected_at`。
+3. 商品级统一价格上涨 / 下降；
+4. 商品级价格区间完整同向变化；
+5. 商品级价格缺失、单边变化、方向不一致均不产生价格事件；
+6. SKU 价格 `38 → 35` 产生 SKU 级 `price_decrease`；
+7. SKU 价格 `35 → 38` 产生 SKU 级 `price_increase`；
+8. SKU 价格任一侧为 NULL 不产生 SKU 价格事件；
+9. 商品级与 SKU 级价格同一 Run 同时变化时分别保存两条事件；
+10. 同一 SKU 普通库存 `500 → 400` 产生 `stock_decrease`；
+11. 同一 SKU 普通库存 `400 → 500` 产生 `stock_increase`；
+12. `>0 → 0` 只产生 `sku_sold_out`；
+13. `0 → >0` 只产生 `sku_restocked`；
+14. SKU 新增、删除不同时产生价格或库存事件；
+15. `NULL` 库存不产生方向、售罄或恢复事件；
+16. 起批量 `5 → 1` / `1 → 5` 分别产生方向事件，NULL 不产生事件；
+17. 商品总库存可以从完整 Snapshot 正确计算，但不生成 product-level stock ChangeEvent；
+18. 标题和主图变化符合当前标准化边界；
+19. 一次采集可以产生多条独立事件；
+20. 每条普通事件指向本次 Snapshot；
+21. 所有本次事件共享当前 Run 和 `detected_at`。
 
 ### 23.2 生命周期与失败隔离
 
@@ -859,7 +914,7 @@ Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名�
 
 覆盖：
 
-- 12 种 V2 类型可写入；
+- 14 种 V2 类型可写入；
 - legacy `stock_changed` 仍可读；
 - 不支持的类型仍被拒绝；
 - `product_offline` 允许 NULL Snapshot，其他事件拒绝 NULL Snapshot；
@@ -876,7 +931,7 @@ Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名�
 
 - Dashboard 同一竞品仍只显示一行，但事件数逐条统计；
 - Dashboard 同时识别新库存方向事件、SKU 售罄/恢复和 legacy `stock_changed`；
-- Detail 正确返回商品级库存事件、SKU 级售罄/恢复和 nullable Snapshot；
+- Detail 正确返回商品级 / SKU 级价格、SKU 级库存和售罄 / 恢复事件，以及 nullable Snapshot；
 - List `latest_change` 返回真实新旧事件类型，不进行前端方向推断；
 - Groups 的变化竞品数同时兼容新旧事件；
 - Asia/Shanghai 业务日边界不改变；
@@ -884,19 +939,23 @@ Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名�
 
 ## 24. Acceptance Criteria
 
-1. 数据库和业务规则冻结 12 种 V2 标准事件。
-2. 新库存事件按商品总库存方向生成，`stock_changed` 不再作为新写入类型。
-3. SKU 售罄和恢复只对两侧都存在且库存分别发生 `>0 → 0`、`0 → >0` 的同一 `sku_id` 生成。
-4. 第一次有效采集只建立 baseline。
-5. 恢复上架首轮只生成 `product_online`。
-6. 明确下架以外的失败、验证、空白和解析异常不生成 `product_offline`。
-7. 缺失库存不参与总库存比较，不被当作 0。
-8. 每条新 V2 事件可追溯到发现它的 CollectionRun；历史事件不强行回填。
-9. `delta_value` / `delta_rate` 只用于有可靠数值语义的价格或库存事件。
-10. 非数值事件不保存无意义差值。
-11. 历史数据不删除、不伪造、不默认重命名。
-12. 现有 Dashboard、Detail、List、Groups 的消费边界在实现阶段同步兼容。
-13. 实现阶段通过纯规则、采集服务、migration 和消费者回归测试。
+1. 数据库和业务规则冻结 14 种 V2 标准事件。
+2. `price_increase` / `price_decrease` 同时支持商品级和 SKU 级，分别由 `entity_key = NULL` / `entity_key = sku_id` 区分。
+3. 不新增 `sku_price_increase` / `sku_price_decrease` 或 `subject_type` / `scope_type`。
+4. `stock_increase` / `stock_decrease` 是同一 SKU 的普通正库存方向事件。
+5. 商品总库存变化不额外生成 ChangeEvent，而由相邻 Snapshot 派生。
+6. SKU 售罄和恢复只对同一 `sku_id` 的 `>0 → 0`、`0 → >0` 生成，且不重复生成普通库存方向事件。
+7. SKU 新增 / 删除不同时产生价格或库存事件。
+8. 起批量使用 `min_order_quantity_increase` / `min_order_quantity_decrease` 两种商品级方向事件。
+9. 第一次有效采集只建立 baseline。
+10. 恢复上架首轮只生成 `product_online`。
+11. 明确下架以外的失败、验证、空白和解析异常不生成 `product_offline`。
+12. 缺失 SKU 库存不参与总库存投影或方向判断，不被当作 0。
+13. 每条新 V2 事件可追溯到发现它的 CollectionRun；历史事件不强行回填。
+14. `delta_value` / `delta_rate` 只用于有可靠数值语义的价格、SKU 库存、售罄 / 恢复和起批量事件。
+15. legacy `stock_changed` 历史数据保留可读，不删除、不伪造、不默认重命名；新采集不再生成。
+16. 现有 Dashboard、Detail、List、Groups 和 Group Intelligence 的消费者边界在实现阶段同步兼容商品级 / SKU 级事件语义。
+17. 实现阶段通过纯规则、采集服务、migration 和消费者回归测试。
 
 ## 25. Out of Scope
 
@@ -908,10 +967,10 @@ Detail 当前返回通用 `recent_changes`，并对 `stock_changed` 做 SKU 名�
 
 理由：
 
-- 12 种标准事件及库存/SKU/生命周期语义已由本轮需求明确；
+- 14 种标准事件及价格 / 库存 / SKU / 起批量 / 生命周期语义已由本轮需求明确；
 - 恢复首轮只记录 `product_online` 已按倾向方案冻结；
-- 当前代码和文档足以确定 SKU 身份、总库存完整性和下架证据边界；
-- 历史 `stock_changed` 采用保留 legacy、未来新写方向事件的兼容策略，不需要额外产品语义选择。
+- 当前代码和文档足以确定 SKU 身份、SKU 库存比较、总库存派生和下架证据边界；
+- 历史 `stock_changed` 采用保留 legacy、未来新写 SKU 方向事件的兼容策略，不需要额外产品语义选择。
 
 ## 27. Further Notes
 
