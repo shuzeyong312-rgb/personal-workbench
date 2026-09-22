@@ -403,7 +403,7 @@ Y35：1 家商品下架，2 家调整价格
 - 7 / 30 天事件按当前组成员聚合，并按事件条数和类型保留客观事实；
 - 同一竞品多事件不重复计算竞品数量，但事件总数不丢失；
 - 我方事件与竞品事件在角色统计中分开；
-- 起批量、SKU 价格和普通 SKU 库存事件只有在后续事件 Spec 冻结后才纳入测试；
+- 起批量、SKU 价格和普通 SKU 库存事件规则已经由 `docs/specs/detect-competitor-changes.md` 正式冻结；后续实现应直接按正式 ChangeEvent V2 contract 测试和消费，不允许页面自行重新判断事件语义；
 - 历史 legacy 事件可读，不由消费者猜测方向；
 - 没有事件时返回真实空集合或 NULL，不填充虚假变化。
 
@@ -427,10 +427,10 @@ Y35：1 家商品下架，2 家调整价格
 12. 7 / 30 天动作按真实 ChangeEvent 统计，能够表达事件总数和按领域的分布。
 13. “动作最多”仅表示客观事件数量最多，不输出竞争力、风险或建议。
 14. 明确价格低于、高于、重叠和未知的边界已冻结，不对区间重叠作强结论。
-15. 起批量变化被确认是 Group Intelligence 所需的后续正式 ChangeEvent 基础事实。
-16. SKU 单独价格变化被确认是当前 ChangeEvent 会遗漏且值得补充的竞争动作。
-17. 同一商品 SKU 普通库存的非零变化被确认是当前总库存事件无法覆盖、但支持组级分析的基础事实；其事件类型须在后续事件 Spec 中冻结。
-18. 本 Spec 不修改 ChangeEvent V2 Spec；实现前必须先完成事件扩展的显式设计与兼容策略。
+15. 起批量变化使用已冻结的 `min_order_quantity_increase` / `min_order_quantity_decrease` 正式 ChangeEvent。
+16. SKU 价格变化使用已冻结的 `price_increase` / `price_decrease`，并以 `entity_key = sku_id` 表示 SKU 层级。
+17. 同一商品 SKU 普通库存的非零变化使用已冻结的 `stock_increase` / `stock_decrease`，并以 `entity_key = sku_id` 表示；`>0 → 0` 只使用 `sku_sold_out`，`0 → >0` 只使用 `sku_restocked`，SKU 新增 / 删除不同时生成普通库存事件。
+18. Group Intelligence 后续实现直接依赖已经冻结的 ChangeEvent V2 Spec，不再重新定义事件模型。
 19. Dashboard、Groups、List、Detail 和 Group Detail 的长期职责边界明确，当前 Dashboard 不因本 Spec 直接重做。
 20. 实现完成前不修改长期产品文档；实现和真实运行验证后再同步“当前已实现”内容。
 
@@ -455,7 +455,7 @@ Y35：1 家商品下架，2 家调整价格
 
 ### 推荐的后续实施顺序
 
-1. **先冻结事件扩展规则**：按本 Spec 确认 `min_order_quantity_increase` / `min_order_quantity_decrease`、统一价格事件和 SKU 库存方向事件的边界、历史兼容和消费者 contract；不让 Group Detail 在前端自行推断。
+1. **直接复用已冻结事件规则**：按 `docs/specs/detect-competitor-changes.md` 的 ChangeEvent V2 contract 消费 `min_order_quantity_increase` / `min_order_quantity_decrease`、统一价格事件和 SKU 库存方向事件；不让 Group Detail 在前端自行推断。
 2. **实现最小角色绑定**：在现有商品与组关系上增加组内我方 / 竞品角色，默认兼容旧数据为直接竞品，保证一组最多一个我方基准。
 3. **复用采集和事实链路**：让我方商品继续走现有 collection service，保存到现有 Snapshot / SKU Snapshot，并验证字段缺失、库存未知、上下架和失败隔离语义。
 4. **实现事件扩展与回归**：先完成起批量、SKU 价格、SKU 普通库存的统一事件检测和 legacy 兼容，再验证 Dashboard / Detail / List 的现有消费者不被破坏。
