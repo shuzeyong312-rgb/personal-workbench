@@ -353,7 +353,7 @@ latest_snapshot 可以为 null。
 
 Parser fixture 只能使用最小、脱敏的 HTML / embedded JSON 数据。禁止提交完整真实 1688 HTML、Cookie、Token、请求头、登录数据或浏览器 Profile。
 
-验证 offerId、标题、店铺、主图、商品价格、SKU 名称、canBookCount → stock、缺失价格为 null、不可靠 SKU 价格为 null、必要字段缺失错误和不依赖插件历史字段。
+验证 offerId、标题、店铺、主图、商品价格、SKU 名称、canBookCount → stock、缺失价格为 null、不可靠 SKU 价格为 null、必要字段缺失错误和不依赖插件历史字段。主图只读取 `gallery.fields.offerImgList[0]`，fallback 仅限 `gallery.fields.mainImage[0]` 和 `dataJson.images[0].fullPathImageURI`；不扫描 HTML 图片、不使用 DOM fallback。
 
 ### Collection Service
 
@@ -454,12 +454,19 @@ Parser fixture 只能使用最小、脱敏的 HTML / embedded JSON 数据。禁�
 - 采集请求为同步 HTTP 请求，不引入后台任务。
 - 标题、店铺名称和 offerId 是成功保存所需的最小核心字段。
 - 主图或商品价格缺失时可以保存 null，不伪造数据。
+- 主图正式接入链路为 `gallery.fields.offerImgList[0]` → `ProductData.main_image_url` → `ProductSnapshot` / `Competitor`；主图缺失不使商品采集失败。
 - SKU 没有可靠独立价格时仍可保存 SKU，但 price = null。
 - 当前不实现商品下架判定，未来实现时必须基于明确页面证据。
 - 失败 CollectionRun 只保存脱敏错误摘要。
 - 前端成功后始终重新获取列表。
 - Playwright 可以写入 Backend 正式依赖文件。
 - 测试只依赖最小脱敏 fixture，不依赖真实登录会话。
+
+## 20. 商品图库扩展
+
+`ProductData.image_urls` 是可选的有序商品图库，只读取明确结构化的 `gallery.fields.offerImgList`。每个 URL 使用窄 normalization，非法项跳过，按 normalized 完整 URL exact 去重并保留顺序；`main_image_url` 仍严格按 index 0 及既有 fallback 判定，不能因 index 0 无效而提升 index 1。
+
+成功事务将 `image_urls` 保存到 `ProductSnapshot.image_urls`（nullable JSON）；旧 Snapshot 保持 NULL，`Competitor` 不增加图库字段，列表 API 不返回图库。详情 API 的 `latest_snapshot.image_urls` 返回最新 Snapshot 图库，前端在详情页显示不超过大图宽度的缩略图条，点击只改变本地预览；旧 NULL 仅回退到当前 Competitor 首图，空数组显示占位。该扩展不包含 `main_image_changed`、ChangeEvent 或其他变化检测。
 
 ## 19. Unknowns
 

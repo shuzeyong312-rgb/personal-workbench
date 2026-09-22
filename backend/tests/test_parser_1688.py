@@ -10,6 +10,7 @@ from app.collection.parser_1688 import (
     OfferIdMismatchError,
     _min_order_quantity,
     _parse_sku_price,
+    normalize_main_image_url,
     parse_1688_html,
 )
 
@@ -27,6 +28,212 @@ def embedded_page(payload: dict) -> str:
         + json.dumps(payload, ensure_ascii=False)
         + "</script>"
     )
+
+
+def image_page(**payload: object) -> str:
+    return embedded_page(
+        {
+            "offerId": "123",
+            "subject": "标题",
+            "shopName": "店铺",
+            **payload,
+        }
+    )
+
+
+def test_primary_main_image_uses_only_offer_img_list_index_zero() -> None:
+    result = parse_1688_html(
+        image_page(
+            gallery={
+                "fields": {
+                    "offerImgList": [
+                        "https://cbu01.alicdn.com/main.jpg",
+                        "https://cbu01.alicdn.com/detail2.jpg",
+                        "https://cbu01.alicdn.com/detail3.jpg",
+                    ]
+                }
+            }
+        )
+    )
+
+    assert result.main_image_url == "https://cbu01.alicdn.com/main.jpg"
+    assert result.image_urls == [
+        "https://cbu01.alicdn.com/main.jpg",
+        "https://cbu01.alicdn.com/detail2.jpg",
+        "https://cbu01.alicdn.com/detail3.jpg",
+    ]
+
+
+def test_gallery_image_urls_deduplicate_normalized_urls_and_skip_invalid_items() -> None:
+    result = parse_1688_html(
+        image_page(
+            gallery={
+                "fields": {
+                    "offerImgList": [
+                        "https://cbu01.alicdn.com/a.jpg#fragment",
+                        "data:image/jpeg;base64,invalid",
+                        "https://cbu01.alicdn.com/a.jpg",
+                        "//cbu01.alicdn.com/b.jpg",
+                    ]
+                }
+            }
+        )
+    )
+
+    assert result.main_image_url == "https://cbu01.alicdn.com/a.jpg"
+    assert result.image_urls == [
+        "https://cbu01.alicdn.com/a.jpg",
+        "https://cbu01.alicdn.com/b.jpg",
+    ]
+
+
+def test_main_image_url_normalizes_protocol_relative_and_fragment() -> None:
+    assert normalize_main_image_url(" //cbu01.alicdn.com/img/a.jpg ") == (
+        "https://cbu01.alicdn.com/img/a.jpg"
+    )
+    assert normalize_main_image_url("https://cbu01.alicdn.com/img/a.jpg?x=1#abc") == (
+        "https://cbu01.alicdn.com/img/a.jpg?x=1"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_url",
+    [
+        "data:image/jpeg;base64,abc",
+        "blob:https://example.com/id",
+        "javascript:alert(1)",
+        "ftp://cbu01.alicdn.com/img/a.jpg",
+    ],
+)
+def test_main_image_url_rejects_non_http_schemes(raw_url: str) -> None:
+    assert normalize_main_image_url(raw_url) is None
+    result = parse_1688_html(
+        image_page(gallery={"fields": {"offerImgList": [raw_url]}})
+    )
+    assert result.main_image_url is None
+
+
+def test_main_image_uses_main_image_as_limited_gallery_fallback() -> None:
+    result = parse_1688_html(
+        image_page(
+            gallery={
+                "fields": {
+                    "mainImage": ["https://cbu01.alicdn.com/fallback.jpg"]
+                }
+            }
+        )
+    )
+
+    assert result.main_image_url == "https://cbu01.alicdn.com/fallback.jpg"
+    assert result.image_urls == ["https://cbu01.alicdn.com/fallback.jpg"]
+
+
+def test_main_image_uses_explicit_data_json_images_fallback() -> None:
+    result = parse_1688_html(
+        image_page(
+            Root={
+                "fields": {
+                    "dataJson": {
+                        "images": [
+                            {
+                                "fullPathImageURI": "https://cbu01.alicdn.com/data-json.jpg"
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+    )
+
+    assert result.main_image_url == "https://cbu01.alicdn.com/data-json.jpg"
+    assert result.image_urls == ["https://cbu01.alicdn.com/data-json.jpg"]
+
+
+def test_main_image_reads_json_string_only_from_root_data_json_path() -> None:
+    result = parse_1688_html(
+        image_page(
+            Root={
+                "fields": {
+                    "dataJson": json.dumps(
+                        {"images": [{"fullPathImageURI": "https://cbu01.alicdn.com/data-json-string.jpg"}]}
+                    )
+                }
+            }
+        )
+    )
+
+    assert result.main_image_url == "https://cbu01.alicdn.com/data-json-string.jpg"
+
+
+def test_main_image_does_not_scan_unrelated_data_json_images() -> None:
+    result = parse_1688_html(
+        image_page(
+            dataJson={"images": [{"fullPathImageURI": "https://example.com/recommendation.jpg"}]},
+            Root={
+                "fields": {
+                    "recommendations": {
+                        "dataJson": {"images": [{"fullPathImageURI": "https://example.com/other.jpg"}]}
+                    }
+                }
+            },
+        )
+    )
+
+    assert result.main_image_url is None
+    assert result.image_urls == []
+
+
+def test_invalid_primary_does_not_use_second_offer_image() -> None:
+    result = parse_1688_html(
+        image_page(
+            gallery={
+                "fields": {
+                    "offerImgList": [
+                        "data:image/jpeg;base64,invalid",
+                        "https://cbu01.alicdn.com/second.jpg",
+                    ]
+                }
+            }
+        )
+    )
+
+    assert result.main_image_url is None
+    assert result.image_urls == ["https://cbu01.alicdn.com/second.jpg"]
+
+
+def test_invalid_primary_uses_only_allowed_fallback() -> None:
+    result = parse_1688_html(
+        image_page(
+            gallery={
+                "fields": {
+                    "offerImgList": [
+                        "data:image/jpeg;base64,invalid",
+                        "https://cbu01.alicdn.com/second.jpg",
+                    ],
+                    "mainImage": ["https://cbu01.alicdn.com/fallback.jpg"],
+                }
+            }
+        )
+    )
+
+    assert result.main_image_url == "https://cbu01.alicdn.com/fallback.jpg"
+    assert result.image_urls == [
+        "https://cbu01.alicdn.com/fallback.jpg",
+        "https://cbu01.alicdn.com/second.jpg",
+    ]
+
+
+def test_unrelated_page_images_are_not_guessed_as_main_image() -> None:
+    result = parse_1688_html(
+        image_page(
+            logo="https://example.com/logo.png",
+            recommendations={"images": ["https://example.com/recommendation.jpg"]},
+            videoCover="https://example.com/video-cover.jpg",
+        )
+    )
+
+    assert result.main_image_url is None
+    assert result.image_urls == []
 
 
 def test_parses_verified_product_and_sku_fields() -> None:
@@ -198,6 +405,7 @@ def test_missing_optional_values_are_none() -> None:
     result = parse_1688_html(fixture("minimal_product.html"))
 
     assert result.main_image_url is None
+    assert result.image_urls == []
     assert result.price_min is None
     assert result.price_max is None
     assert result.skus[0].stock is None

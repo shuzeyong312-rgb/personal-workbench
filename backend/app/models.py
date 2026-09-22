@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -62,6 +62,7 @@ class ProductSnapshot(Base):
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     shop_name: Mapped[str] = mapped_column(String(255), nullable=False)
     main_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    image_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     price_min: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     price_max: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     min_order_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)

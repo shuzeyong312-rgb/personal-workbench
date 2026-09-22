@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -723,6 +723,7 @@ const detailData: CompetitorDetail = {
     captured_at: "2026-09-20T10:00:00Z",
     price_min: "40.00",
     price_max: "45.00",
+    image_urls: null,
     product_status: "unknown",
     sku_count: 2,
     total_stock: null,
@@ -981,9 +982,16 @@ test("7-day and 30-day trend scales are computed from their current data", () =>
 });
 
 test("detail renders the overview, three trend cards, shared selector, placeholder and bottom facts", () => {
-  const withImage = { ...detailData, competitor: { ...detailData.competitor, main_image_url: "https://img.example.com/item.jpg", group_id: 1 }, latest_snapshot: { ...detailData.latest_snapshot!, total_stock: 9998 } };
+  const withImage = { ...detailData, competitor: { ...detailData.competitor, main_image_url: "https://img.example.com/item.jpg", group_id: 1 }, latest_snapshot: { ...detailData.latest_snapshot!, image_urls: ["https://img.example.com/item.jpg", "https://img.example.com/item-2.jpg", "https://img.example.com/item-3.jpg"], total_stock: 9998 } };
   const html = renderToStaticMarkup(<DetailPage {...detailProps} data={withImage} status="ready" error={null} />);
   expect(html).toContain("https://img.example.com/item.jpg");
+  expect(html).toContain('referrerPolicy="no-referrer"');
+  expect(html).toContain('class="detail-gallery-thumbnails"');
+  expect(html).toContain('class="detail-gallery-viewport"');
+  expect(html).toContain('class="detail-gallery-strip"');
+  expect((html.match(/class="detail-gallery-thumbnail"/g) || []).length).toBe(3);
+  expect(html).toContain('class="detail-gallery-thumbnail-button detail-gallery-thumbnail-selected"');
+  expect(html).not.toContain("向右滚动商品图库");
   expect(html).toContain("detail-group-badge");
   expect(html).toContain("当前库存");
   expect(html).toContain(">9998<");
@@ -1000,6 +1008,53 @@ test("detail renders the overview, three trend cards, shared selector, placehold
   expect(html).toContain("最近变化");
   expect(html).toContain("最近采集记录");
   expect(html).not.toContain("saleQuantityList");
+});
+
+test("detail gallery shows only the right scroll arrow when thumbnails overflow", () => {
+  const imageUrls = Array.from({ length: 5 }, (_, index) => `https://img.example.com/item-${index + 1}.jpg`);
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, main_image_url: imageUrls[0] }, latest_snapshot: { ...detailData.latest_snapshot!, image_urls: imageUrls } }} status="ready" error={null} />);
+  expect(html).toContain('aria-label="向右滚动商品图库"');
+  expect(html).not.toContain('aria-label="向左滚动商品图库"');
+  expect(html).toContain('width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"');
+  expect(html).not.toContain("‹");
+  expect(html).not.toContain("›");
+});
+
+test("detail gallery keeps the 44px scroll step and handles overflow boundaries with tolerance", () => {
+  expect(DETAIL_GALLERY_SCROLL_STEP).toBe(44);
+  expect(getGalleryScrollState(0, 172, 172)).toEqual({ canScrollLeft: false, canScrollRight: false });
+  expect(getGalleryScrollState(0, 272, 172)).toEqual({ canScrollLeft: false, canScrollRight: true });
+  expect(getGalleryScrollState(1, 272, 172)).toEqual({ canScrollLeft: false, canScrollRight: true });
+  expect(getGalleryScrollState(2, 272, 172)).toEqual({ canScrollLeft: true, canScrollRight: true });
+  expect(getGalleryScrollState(99, 272, 172)).toEqual({ canScrollLeft: true, canScrollRight: false });
+});
+
+test("detail gallery arrows scroll 44px and thumbnail failure refreshes after hiding the image", () => {
+  const scrollBy = vi.fn();
+  scrollDetailGallery({ scrollBy }, 1);
+  expect(scrollBy).toHaveBeenCalledWith({ left: 44, behavior: "smooth" });
+
+  const setAttribute = vi.fn();
+  const updateScrollState = vi.fn();
+  const scheduleFrame = vi.fn((callback: () => void) => {
+    callback();
+    return 1;
+  });
+  const image = { parentElement: { setAttribute } } as unknown as HTMLImageElement;
+  hideDetailGalleryThumbnail({ currentTarget: image }, updateScrollState, scheduleFrame);
+  expect(setAttribute).toHaveBeenCalledWith("hidden", "true");
+  expect(scheduleFrame).toHaveBeenCalledOnce();
+  expect(updateScrollState).toHaveBeenCalledOnce();
+});
+
+test("detail gallery resets its rendered preview when the detail data changes", () => {
+  const firstImage = "https://img.example.com/first.jpg";
+  const secondImage = "https://img.example.com/second.jpg";
+  const first = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, id: 1, main_image_url: firstImage }, latest_snapshot: { ...detailData.latest_snapshot!, id: 9, image_urls: [firstImage] } }} status="ready" error={null} />);
+  const second = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, id: 2, main_image_url: secondImage }, latest_snapshot: { ...detailData.latest_snapshot!, id: 10, image_urls: [secondImage] } }} status="ready" error={null} />);
+  expect(first).toContain(firstImage);
+  expect(second).toContain(secondImage);
+  expect(second).not.toContain(firstImage);
 });
 
 test.each([1, 2])("detail renders product minimum order quantity %s", (quantity) => {
@@ -1040,6 +1095,14 @@ test("detail uses placeholders for missing image and stock", () => {
   expect(html).toContain("暂无主图");
   expect(html).toContain("当前库存");
   expect(html).toContain(">—<");
+});
+
+test("detail gallery uses legacy main image only for a null snapshot gallery", () => {
+  expect(getDetailGallery(null, "https://img.example.com/item.jpg")).toEqual(["https://img.example.com/item.jpg"]);
+  expect(getDetailGallery([], "https://img.example.com/item.jpg")).toEqual([]);
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, main_image_url: "https://img.example.com/item.jpg" }, latest_snapshot: { ...detailData.latest_snapshot!, image_urls: null } }} status="ready" error={null} />);
+  expect(html).toContain("https://img.example.com/item.jpg");
+  expect(html).toContain('class="detail-gallery-thumbnails"');
 });
 
 test("detail keeps 30 daily points and does not render null stock as zero", () => {

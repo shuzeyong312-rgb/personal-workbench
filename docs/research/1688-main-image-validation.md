@@ -113,6 +113,25 @@ normalize_main_image_url(raw: str) -> str | None
 
 如果未来达到 READY，最小 parser fixture 应覆盖：valid structured main image、protocol-relative URL、invalid scheme、missing main image、multiple image candidates、canonical-equivalent URL。
 
+## 10.1 正式接入状态 / implementation decision
+
+2026-09-22，基于上述已验证的结构化来源，正式 Parser 已采用窄规则接入主图 URL：
+
+```text
+gallery.fields.offerImgList[0]
+  → ProductData.main_image_url
+  → ProductSnapshot.main_image_url / Competitor.main_image_url
+```
+
+当 primary 缺失或无效时，fallback 依次限制为 `gallery.fields.mainImage[0]`、
+`dataJson.images[0].fullPathImageURI`。只接受非空 `http` / `https` URL，补齐
+protocol-relative URL，要求 hostname 和非空 path，删除 fragment，保留 query、hostname
+及原始 path/CDN 后缀；不扫描页面图片，也不使用 DOM、网络请求或图片下载。
+
+`offerImgList` 只使用 index 0，index 1 及之后的图片不会因为更易解析而被选为主图。
+所有来源无有效 URL 时保存 NULL，商品其他核心字段正常时采集仍成功。本 Feature 不包含
+`main_image_changed`、ChangeEvent 或历史主图回填；本节不改写前述 POC 的历史结论。
+
 ## 11. Remaining Unknowns
 
 - 当前 2 个未确认 URL 是否为数据库中的占位/失效商品，不能由本次 POC 代替业务修复；

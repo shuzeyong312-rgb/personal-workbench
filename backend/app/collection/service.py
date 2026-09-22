@@ -20,7 +20,11 @@ from app.collection.collector_1688 import (
     _close_quietly,
     _launch_context,
 )
-from app.collection.parser_1688 import CollectionParseError, OfferIdMismatchError
+from app.collection.parser_1688 import (
+    CollectionParseError,
+    OfferIdMismatchError,
+    normalize_main_image_url,
+)
 from app.collection.types import ProductData, SkuData
 from app.changes import detect_changes
 from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
@@ -296,15 +300,22 @@ def _normalize_product(product: ProductData, expected_offer_id: str) -> ProductD
             )
         )
 
+    normalized_main_image_url = normalize_main_image_url(product.main_image_url)
+    image_urls: list[str] = []
+    if normalized_main_image_url is not None:
+        image_urls.append(normalized_main_image_url)
+    if isinstance(product.image_urls, list):
+        for raw_image_url in product.image_urls:
+            image_url = normalize_main_image_url(raw_image_url)
+            if image_url is not None and image_url not in image_urls:
+                image_urls.append(image_url)
+
     return ProductData(
         offer_id=expected_offer_id,
         title=title,
         shop_name=shop_name,
-        main_image_url=(
-            product.main_image_url.strip()
-            if isinstance(product.main_image_url, str) and product.main_image_url.strip()
-            else None
-        ),
+        main_image_url=normalized_main_image_url,
+        image_urls=image_urls,
         price_min=price_min,
         price_max=price_max,
         product_status=(
@@ -399,6 +410,7 @@ def collect_competitor(
                 title=product.title,
                 shop_name=product.shop_name,
                 main_image_url=product.main_image_url,
+                image_urls=product.image_urls,
                 price_min=product.price_min,
                 price_max=product.price_max,
                 min_order_quantity=product.min_order_quantity,

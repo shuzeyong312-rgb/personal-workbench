@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 from app.collection.types import ProductData, SkuData
 
@@ -76,6 +77,101 @@ def _first_dict(values: list[Any]) -> dict[str, Any] | None:
         if isinstance(value, dict):
             return value
     return None
+
+
+def _json_object(value: object) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value, parse_float=Decimal)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def normalize_main_image_url(raw: object) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if value.startswith("//"):
+        value = f"https:{value}"
+    try:
+        parsed = urlparse(value)
+        hostname = parsed.hostname
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not hostname or not parsed.path:
+        return None
+    return parsed._replace(fragment="").geturl()
+
+
+def _gallery_image_url(html: str, field: str) -> str | None:
+    for gallery in _embedded_values(html, "gallery"):
+        if not isinstance(gallery, dict):
+            continue
+        fields = gallery.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        images = fields.get(field)
+        if not isinstance(images, list) or not images:
+            continue
+        image_url = normalize_main_image_url(images[0])
+        if image_url is not None:
+            return image_url
+    return None
+
+
+def _data_json_image_url(html: str) -> str | None:
+    for root in _embedded_values(html, "Root"):
+        root_object = _json_object(root)
+        if root_object is None:
+            continue
+        fields = root_object.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        data_json = _json_object(fields.get("dataJson"))
+        if data_json is None:
+            continue
+        images = data_json.get("images")
+        if not isinstance(images, list) or not images:
+            continue
+        first_image = images[0]
+        if not isinstance(first_image, dict):
+            continue
+        image_url = normalize_main_image_url(first_image.get("fullPathImageURI"))
+        if image_url is not None:
+            return image_url
+    return None
+
+
+def _main_image_url(html: str) -> str | None:
+    return (
+        _gallery_image_url(html, "offerImgList")
+        or _gallery_image_url(html, "mainImage")
+        or _data_json_image_url(html)
+    )
+
+
+def _gallery_image_urls(html: str) -> list[str]:
+    image_urls: list[str] = []
+    for gallery in _embedded_values(html, "gallery"):
+        if not isinstance(gallery, dict):
+            continue
+        fields = gallery.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        images = fields.get("offerImgList")
+        if not isinstance(images, list):
+            continue
+        for raw_image in images:
+            image_url = normalize_main_image_url(raw_image)
+            if image_url is not None and image_url not in image_urls:
+                image_urls.append(image_url)
+    return image_urls
 
 
 def _parse_price(value: Any) -> tuple[Decimal, Decimal] | None:
@@ -205,11 +301,19 @@ def parse_1688_html(html: str, expected_offer_id: str | None = None) -> ProductD
         values = {value for value in min_order_values if value is not None}
         if len(values) == 1:
             min_order_quantity = values.pop()
+    main_image_url = _main_image_url(html)
+    image_urls: list[str] = []
+    if main_image_url is not None:
+        image_urls.append(main_image_url)
+    for image_url in _gallery_image_urls(html):
+        if image_url not in image_urls:
+            image_urls.append(image_url)
     return ProductData(
         offer_id=offer_id,
         title=title,
         shop_name=shop_name,
-        main_image_url=None,
+        main_image_url=main_image_url,
+        image_urls=image_urls,
         price_min=price[0] if price else None,
         price_max=price[1] if price else None,
         product_status="unknown",

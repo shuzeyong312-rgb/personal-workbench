@@ -73,7 +73,8 @@ last_collected_at
 - group_id 可为 NULL，或引用 competitor_groups.id；NULL 表示未分组；
 - 竞品详情页的分组更新只修改当前 Competitor.group_id，可在已有组之间移动或设为 NULL，不改写任何历史快照、SKU、变化事件或采集记录；
 - title、shop_name、main_image_url 保存最近一次成功采集得到的当前信息；
-- main_image_url 当前允许为 NULL，尚未成为可靠的图片变化事实来源；
+- main_image_url 当前优先来自 `gallery.fields.offerImgList[0]`，缺失或无效时仅使用已验证的结构化 fallback；字段仍允许为 NULL，且不作为主图变化事实来源；
+- Competitor 只保存当前 `main_image_url`，不保存完整商品图库；
 - last_collected_at 只在成功采集后更新；
 - is_active 表示是否继续监控。
 
@@ -102,6 +103,7 @@ captured_at
 title
 shop_name
 main_image_url
+image_urls
 price_min
 price_max
 min_order_quantity
@@ -112,6 +114,7 @@ collection_source
 说明：
 
 - 每次成功采集新增一条快照，不覆盖历史快照；
+- `image_urls` 是本次历史快照的 nullable JSON ordered list，来自 `gallery.fields.offerImgList` 的有效 URL，按 normalization 后的原始顺序 exact 去重；Fallback 主图只在必要时作为首项加入；旧 Snapshot 为 NULL；
 - 当前手动“立即采集”也会生成快照；
 - Backend 运行期间存在每日自动调度：每小时进行 due-check，最近一条 CollectionRun.started_at 距当前 UTC 时间达到 24 小时才自动尝试；failed 尝试同样计入该窗口；
 - price_min / price_max 使用 Numeric(18, 2)，用于保存商品级价格区间；
@@ -341,7 +344,7 @@ Competitor
 |---|---|
 | sales_increase | 当前 ProductSnapshot 没有销量字段 |
 | product_offline | 当前 Parser 没有可靠下架判定 |
-| main_image_changed | 当前 main_image_url 尚未稳定真实采集 |
+| main_image_changed | 本轮不实现主图变化检测，需独立 Feature |
 
 SKU price change 当前也不支持，且不属于当前 change_type 集合。
 

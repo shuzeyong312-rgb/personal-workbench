@@ -38,7 +38,7 @@
 - 核心商品采集：9/9。
 - `actual offerId`：9/9 与 expected offerId 匹配。
 - 标题、店铺、价格区间、SKU 数量、SKU ID、SKU 名称、stock：3 个商品在 3 轮中均成功返回；同一商品的业务字段保持一致。
-- 主图研究逻辑：9/9 得到结构化候选；这不改变正式 `ProductData.main_image_url` 当前仍为 `NULL` 的事实。
+- 主图研究逻辑：9/9 得到结构化候选；在本次历史验证时正式 `ProductData.main_image_url` 仍为 `NULL`，后续正式接入状态以 `docs/research/1688-main-image-validation.md` 的 implementation decision 为准。
 - network 目标接口：0/9 捕获。本次启动参数严格保持正式 collector 的参数，没有额外为扩展删除 Chromium 的 `--disable-extensions` 默认参数；因此不能把本次 network 缺失解释为销量为 0。
 
 ### 4.2 Headless

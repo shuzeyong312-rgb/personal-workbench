@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
@@ -23,4 +23,5 @@ class ProductData:
     collection_source: str
     captured_at: datetime
     skus: list[SkuData]
+    image_urls: list[str] = field(default_factory=list)
     min_order_quantity: int | None = None

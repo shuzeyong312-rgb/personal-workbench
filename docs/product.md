@@ -53,6 +53,13 @@ V1 完成并稳定运行之前，不扩展其他业务模块。
 
 每天采集一次，并保存为历史快照。
 
+当前 1688 正式采集已保存商品主图 URL：优先读取结构化
+`gallery.fields.offerImgList[0]`，缺失或无效时仅使用已验证的
+`gallery.fields.mainImage[0]`、`dataJson.images[0].fullPathImageURI` fallback。
+主图缺失仍允许本次商品采集成功；本轮不实现主图变化识别。
+成功采集同时按原顺序保存 `gallery.fields.offerImgList` 的有效 URL 到
+`ProductSnapshot.image_urls`；详情页可在不改变正式首图语义的前提下预览这些图片，列表仍只展示 `Competitor.main_image_url`。
+
 ### 3.3 变化识别
 
 系统需要识别：
@@ -74,7 +81,7 @@ V1 完成并稳定运行之前，不扩展其他业务模块。
 
 长期趋势以本系统每天保存的快照为准，不依赖外部平台长期保存历史数据。
 
-竞品详情页当前将状态、趋势和事实明细分为三段：顶部展示当前价格、最近真实变价、SKU 数量、当前库存、最近采集时间和监控状态；商品概览左侧在 offerId 与竞品组之间展示商品级起批量；趋势区展示价格趋势、库存趋势及销量能力占位；底部保留 SKU、最近变化和采集记录。SKU 当前页面展示价格使用已验证的 `skuInfoMap[item].discountPrice`；`skuInfoMap[item].priceAmount` 虽然来自 SKU item，但按真实样本验证作为整个 Offer 的起批数量，只有所有 SKU 都有相同合法值时才保存。该映射不宣称 `discountPrice` 是所有促销体系下的最终成交价。库存不完整时保持未知，不把未知库存当作 0。销量仍未正式接入，详情页只显示“销量数据待接入”。
+竞品详情页当前将状态、趋势和事实明细分为三段：顶部展示当前价格、最近真实变价、SKU 数量、当前库存、最近采集时间和监控状态；商品概览左侧展示正式首图及同一 Snapshot 的商品图库缩略图，点击缩略图只改变本地预览；商品概览信息区展示商品级起批量；趋势区展示价格趋势、库存趋势及销量能力占位；底部保留 SKU、最近变化和采集记录。SKU 当前页面展示价格使用已验证的 `skuInfoMap[item].discountPrice`；`skuInfoMap[item].priceAmount` 虽然来自 SKU item，但按真实样本验证作为整个 Offer 的起批数量，只有所有 SKU 都有相同合法值时才保存。该映射不宣称 `discountPrice` 是所有促销体系下的最终成交价。库存不完整时保持未知，不把未知库存当作 0。销量仍未正式接入，详情页只显示“销量数据待接入”。
 
 工作台使用固定 viewport 的 shell：左侧导航保持可访问且不随右侧内容移动，右侧 main content 独立滚动。详情底部三张事实卡采用受控高度并在卡片内部滚动；Dashboard 今日变化列表使用 `max-height`，数据少时自然收缩，数据多时不无限撑高页面。
 

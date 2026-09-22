@@ -37,6 +37,7 @@ class LatestSnapshotDetailResponse(BaseModel):
     captured_at: datetime
     price_min: str | None
     price_max: str | None
+    image_urls: list[str] | None
     min_order_quantity: int | None
     product_status: str
     sku_count: int
@@ -295,6 +296,7 @@ def get_competitor_detail(
                 "captured_at": latest_snapshot.captured_at,
                 "price_min": _price_text(latest_snapshot.price_min),
                 "price_max": _price_text(latest_snapshot.price_max),
+                "image_urls": latest_snapshot.image_urls,
                 "min_order_quantity": latest_snapshot.min_order_quantity,
                 "product_status": latest_snapshot.product_status,
                 "sku_count": len(latest_skus),

@@ -394,7 +394,7 @@ detected_at DESC, id DESC
 
 - `sales_increase`；当前 Snapshot 没有销量字段；
 - `product_offline`；当前 Parser 没有可靠下架判定；
-- `main_image_changed`；当前 `main_image_url` 没有真实采集值；
+- `main_image_changed`；当前虽已保存结构化主图 URL，但本 Feature 仍不实现主图变化检测；
 - SKU 独立价格变化；当前 SKU 价格不可靠；
 - Daily scheduler；
 - 7 天 / 30 天趋势；

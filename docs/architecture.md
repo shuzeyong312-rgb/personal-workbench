@@ -155,6 +155,8 @@ Playwright 主要负责：
 
 当前真实样本已验证的映射为：`skuInfoMap[item].discountPrice → SkuData.price → SkuSnapshot.price`，表示 SKU 当前页面展示价格；`skuInfoMap[item].priceAmount` 虽然来自 SKU item，但表达整个 Offer 的起批条件，聚合后写入 `ProductData.min_order_quantity → ProductSnapshot.min_order_quantity`。只有所有 SKU 都存在相同合法值时才保存，否则为 NULL。`skuPriceScale` 只用于商品级价格或商品级价格区间，不写入 SKU price。`discountPrice` 不被描述为所有促销体系下的最终成交价。
 
+主图与图库保持两个层级：`gallery.fields.offerImgList[0] → ProductData.main_image_url` 仍是正式首图；同一列表的有效 URL 按原顺序写入 `ProductData.image_urls → ProductSnapshot.image_urls`。`Competitor` 只保留当前 `main_image_url`，详情 API 读取最新 Snapshot 的图库，列表不传输图库。
+
 禁止业务代码到处直接依赖：
 
 ```text
@@ -174,6 +176,8 @@ mtop.1688...
 竞品详情趋势继续复用现有 `GET /api/competitors/{id}/detail?days=7|30`。Backend 使用 dashboard 的 Asia/Shanghai business-day helper，将日期范围转换为 UTC 半开区间，按 `captured_at DESC, id DESC` 选择每日最终 `ProductSnapshot`，再一次性批量读取所选快照的 `SkuSnapshot`，避免按日期逐个查询 SKU 的 N+1。`daily_trend` 同时承载每日价格和库存事实；销量不进入该 contract，仅保留前端占位。
 
 详情 API 的 `recent_changes[].sku_name` 是展示投影，不是数据库字段。Backend 对最多 20 条近期变化批量收集 `snapshot_id` / `entity_key`，一次查询精确快照映射，再一次查询同一竞品历史 SKU 映射；名称通过 `html.unescape` 和 trim 后返回，找不到则为 `null`。Frontend 只负责显示名称、SKU ID 回退和既有变化文案。
+
+详情页图库只做本地预览：缩略图点击不更新 API、Competitor 或 Snapshot；所有 CDN 图片使用 `referrerPolicy="no-referrer"`。旧 Snapshot 的 `image_urls = NULL` 时，前端仅回退到当前 `Competitor.main_image_url`。
 
 Frontend 的 AppShell 使用固定 viewport 高度：Sidebar 自身允许滚动，`.main-content` 承担右侧主纵向滚动；Detail 历史卡和 Dashboard 今日变化表格使用 scoped 内部滚动、sticky 表头与 `overscroll-behavior-y: contain`，不增加 wheel handler 或新的状态层。
 

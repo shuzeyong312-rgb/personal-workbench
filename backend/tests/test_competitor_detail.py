@@ -68,6 +68,7 @@ def add_snapshot(
     price_min: Decimal | None = Decimal("40.00"),
     price_max: Decimal | None = Decimal("45.00"),
     skus: list[tuple[str, int | None]] | None = None,
+    image_urls: list[str] | None = None,
 ) -> ProductSnapshot:
     snapshot = ProductSnapshot(
         competitor_id=competitor_id,
@@ -76,6 +77,7 @@ def add_snapshot(
         shop_name="快照店铺",
         price_min=price_min,
         price_max=price_max,
+        image_urls=image_urls,
         product_status="unknown",
         collection_source="html",
     )
@@ -139,6 +141,37 @@ def test_no_snapshot_returns_continuous_empty_daily_trend(
     assert len(body["daily_trend"]) == 7
     assert [item["date"] for item in body["daily_trend"]] == sorted(item["date"] for item in body["daily_trend"])
     assert all(item["snapshot_id"] is None for item in body["daily_trend"])
+
+
+def test_detail_returns_snapshot_gallery_and_legacy_null_gallery(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        snapshot = add_snapshot(
+            session,
+            competitor.id,
+            utc_for_business_day(business_day_bounds()[0]),
+            image_urls=[
+                "https://example.com/main.jpg",
+                "https://example.com/detail-2.jpg",
+            ],
+        )
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+    assert body["latest_snapshot"]["image_urls"] == [
+        "https://example.com/main.jpg",
+        "https://example.com/detail-2.jpg",
+    ]
+
+    with client[1]() as session:
+        current = session.get(ProductSnapshot, snapshot.id)
+        assert current is not None
+        current.image_urls = None
+        session.commit()
+
+    assert client[0].get(f"/api/competitors/{competitor.id}/detail").json()["latest_snapshot"]["image_urls"] is None
 
 
 def test_daily_trend_returns_continuous_seven_and_thirty_business_days(

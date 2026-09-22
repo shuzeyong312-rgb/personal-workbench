@@ -75,6 +75,7 @@ def product(offer_id: str = "1081895898799", captured_at: datetime | None = None
         title="新商品标题",
         shop_name="新店铺",
         main_image_url="https://example.com/product.jpg",
+        image_urls=["https://example.com/product.jpg"],
         price_min=Decimal("40.00"),
         price_max=Decimal("42.00"),
         product_status="unknown",
@@ -126,6 +127,11 @@ def test_success_persists_run_snapshot_skus_and_competitor(
     collected = replace(
         product(),
         min_order_quantity=1,
+        image_urls=[
+            "https://example.com/product.jpg",
+            "https://example.com/detail-2.jpg",
+            "https://example.com/detail-3.jpg",
+        ],
         skus=[
             SkuData("sku-1", "红色", 3, Decimal("79.00")),
             SkuData("sku-2", "蓝色", None, Decimal("89.00")),
@@ -140,6 +146,7 @@ def test_success_persists_run_snapshot_skus_and_competitor(
         "https://detail.1688.com/offer/1081895898799.html", "1081895898799"
     )
     body = response.json()
+    assert body["snapshot"]["main_image_url"] == "https://example.com/product.jpg"
     assert body["snapshot"]["price_min"] == "40.00"
     assert body["snapshot"]["price_max"] == "42.00"
     assert body["snapshot"]["product_status"] == "active"
@@ -152,10 +159,18 @@ def test_success_persists_run_snapshot_skus_and_competitor(
         assert saved_competitor is not None
         assert saved_competitor.title == "新商品标题"
         assert saved_competitor.shop_name == "新店铺"
+        assert saved_competitor.main_image_url == "https://example.com/product.jpg"
         assert saved_competitor.status == "active"
         assert saved_competitor.last_collected_at == collected.captured_at.replace(tzinfo=None)
         snapshot = session.scalar(select(ProductSnapshot))
         assert snapshot is not None
+        assert snapshot.main_image_url == "https://example.com/product.jpg"
+        assert snapshot.image_urls == [
+            "https://example.com/product.jpg",
+            "https://example.com/detail-2.jpg",
+            "https://example.com/detail-3.jpg",
+        ]
+        assert not hasattr(saved_competitor, "image_urls")
         assert snapshot.product_status == "active"
         assert snapshot.min_order_quantity == 1
         saved_skus = session.scalars(select(SkuSnapshot).order_by(SkuSnapshot.id)).all()
@@ -167,6 +182,43 @@ def test_success_persists_run_snapshot_skus_and_competitor(
         assert run.status == "success"
         assert run.error_type is None
         assert run.error_message is None
+
+
+def test_collection_normalizes_main_image_and_does_not_promote_gallery_image(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1])
+    normalized = replace(
+        product(),
+        main_image_url="  //example.com/main.jpg?x=1#fragment  ",
+        image_urls=[
+            " //example.com/main.jpg?x=1#fragment ",
+            "https://example.com/detail.jpg#fragment",
+        ],
+    )
+    invalid_main = replace(
+        product(captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc)),
+        main_image_url="ftp://example.com/not-an-image.jpg",
+        image_urls=["https://example.com/detail-only.jpg"],
+    )
+
+    with patch("app.collection.service.collect_1688_product", side_effect=[normalized, invalid_main]):
+        assert client[0].post(f"/api/competitors/{competitor_id}/collect").status_code == 200
+        assert client[0].post(f"/api/competitors/{competitor_id}/collect").status_code == 200
+
+    with client[1]() as session:
+        snapshots = session.scalars(select(ProductSnapshot).order_by(ProductSnapshot.id)).all()
+        assert snapshots[0].main_image_url == "https://example.com/main.jpg?x=1"
+        assert snapshots[0].image_urls == [
+            "https://example.com/main.jpg?x=1",
+            "https://example.com/detail.jpg",
+        ]
+        assert snapshots[0].image_urls[0] == snapshots[0].main_image_url
+        assert snapshots[1].main_image_url is None
+        assert snapshots[1].image_urls == ["https://example.com/detail-only.jpg"]
+        saved_competitor = session.get(Competitor, competitor_id)
+        assert saved_competitor is not None
+        assert saved_competitor.main_image_url is None
 
 
 def test_collection_response_and_persistence_keep_competitor_group(
@@ -194,7 +246,11 @@ def test_repeated_collection_adds_snapshot_and_latest_listing_projection(
 ) -> None:
     competitor_id = add_competitor(client[1])
     first = product(captured_at=datetime(2026, 9, 19, 1, tzinfo=timezone.utc))
-    second = product(captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc))
+    second = replace(
+        product(captured_at=datetime(2026, 9, 19, 2, tzinfo=timezone.utc)),
+        main_image_url="https://example.com/product-updated.jpg",
+        image_urls=["https://example.com/product-updated.jpg", "https://example.com/updated-2.jpg"],
+    )
     with patch("app.collection.service.collect_1688_product", side_effect=[first, second]):
         assert client[0].post(f"/api/competitors/{competitor_id}/collect").status_code == 200
         assert client[0].post(f"/api/competitors/{competitor_id}/collect").status_code == 200
@@ -208,7 +264,21 @@ def test_repeated_collection_adds_snapshot_and_latest_listing_projection(
     assert body[0]["latest_change"] is None
     assert "latest_collection_run" not in body[0]
     with client[1]() as session:
-        assert session.query(ProductSnapshot).count() == 2
+        snapshots = session.scalars(
+            select(ProductSnapshot).order_by(ProductSnapshot.id)
+        ).all()
+        assert len(snapshots) == 2
+        assert [snapshot.main_image_url for snapshot in snapshots] == [
+            "https://example.com/product.jpg",
+            "https://example.com/product-updated.jpg",
+        ]
+        assert [snapshot.image_urls for snapshot in snapshots] == [
+            ["https://example.com/product.jpg"],
+            ["https://example.com/product-updated.jpg", "https://example.com/updated-2.jpg"],
+        ]
+        saved_competitor = session.get(Competitor, competitor_id)
+        assert saved_competitor is not None
+        assert saved_competitor.main_image_url == "https://example.com/product-updated.jpg"
         assert session.query(SkuSnapshot).count() == 6
         assert session.query(ChangeEvent).count() == 0
 

@@ -96,8 +96,24 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 @media (max-width: 680px) { .detail-trends-header { align-items: flex-start; flex-direction: column; }.detail-trend-grid { grid-template-columns: 1fr; }.detail-trend-card:last-child { grid-column: auto; }.detail-chart-tooltip { transform: none; } }
 
 /* Detail refinement: keep the overview compact while preserving the existing information architecture. */
-.detail-overview { grid-template-columns: 160px minmax(0, 1fr) minmax(320px, 400px); gap: 18px; padding: 14px; }
-.detail-overview-image .product-image { width: 160px; height: 160px; flex-basis: 160px; }
+.detail-overview { grid-template-columns: 220px minmax(0, 1fr) minmax(320px, 400px); gap: 18px; padding: 14px; }
+.detail-overview-image .product-image { width: 220px; height: 220px; flex-basis: 220px; }
+.detail-overview-image { width: 220px; min-width: 0; }
+.detail-gallery-main { width: 220px; height: 220px; }
+.detail-overview-image .detail-gallery-main-image { display: grid; width: 220px; height: 220px; flex-basis: 220px; place-items: center; }
+.detail-gallery-strip { display: grid; width: 220px; max-width: 220px; grid-template-columns: 20px minmax(0, 1fr) 20px; align-items: center; column-gap: 4px; }
+.detail-gallery-arrow-slot { display: grid; width: 20px; height: 20px; place-items: center; }
+.detail-gallery-viewport { min-width: 0; margin-top: 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; }
+.detail-gallery-viewport::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.detail-gallery-thumbnails { display: flex; width: max-content; max-width: none; gap: 6px; padding: 1px 0 3px; }
+.detail-gallery-arrow { display: grid; width: 20px; height: 20px; place-items: center; padding: 0; border: 1px solid rgba(211, 225, 245, .95); border-radius: 50%; color: #46658f; background: rgba(255, 255, 255, .86); box-shadow: 0 2px 7px rgba(44, 73, 122, .15); }
+.detail-gallery-arrow:hover { color: #236fd4; background: rgba(255, 255, 255, .98); }
+.detail-gallery-arrow:focus-visible { outline: 2px solid #8db9f5; outline-offset: 2px; }
+.detail-gallery-thumbnail-button { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; padding: 1px; border: 1px solid #e0e8f5; border-radius: 6px; background: #fff; }
+.detail-gallery-thumbnail-button:hover { border-color: #abc9f4; }
+.detail-gallery-thumbnail-button:focus-visible { outline: 2px solid #8db9f5; outline-offset: 2px; }
+.detail-gallery-thumbnail-selected { border-color: #5e9cf1; box-shadow: 0 0 0 1px rgba(94, 156, 241, .2); }
+.detail-overview-image .detail-gallery-thumbnail { width: 34px; height: 34px; flex: 0 0 34px; border: 0; border-radius: 4px; object-fit: cover; }
 .detail-overview-main { padding: 2px 0; }
 .detail-overview-main h2 { margin-bottom: 12px; }
 .detail-facts { gap: 8px; }
@@ -134,8 +150,8 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .detail-sales-placeholder-body { min-height: 160px; }
 
 @media (max-width: 1100px) {
-  .detail-overview { grid-template-columns: 160px minmax(0, 1fr); gap: 12px; }
-  .detail-overview-image .product-image { width: 160px; height: 160px; flex-basis: 160px; }
+  .detail-overview { grid-template-columns: 220px minmax(0, 1fr); gap: 12px; }
+  .detail-overview-image .product-image { width: 220px; height: 220px; flex-basis: 220px; }
   .detail-overview-main h2 { font-size: 20px; line-height: 1.2; }
   .detail-facts { gap: 5px; }
   .detail-facts div { gap: 8px; }
@@ -143,7 +159,11 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 
 @media (max-width: 680px) {
   .detail-overview { gap: 12px; padding: 12px; }
-  .detail-overview-image .product-image { width: 100%; height: 160px; flex-basis: 160px; }
+  .detail-overview-image { width: min(220px, 100%); }
+  .detail-overview-image .product-image { width: 100%; height: 220px; flex-basis: 220px; }
+  .detail-gallery-strip, .detail-gallery-main { width: min(220px, 100%); max-width: 100%; }
+  .detail-gallery-viewport { width: 100%; }
+  .detail-overview-image .detail-gallery-main-image { width: 100%; height: 220px; flex-basis: 220px; }
   .detail-overview-stats { grid-template-columns: 1fr; }
   .detail-price-stat, .detail-latest-price-change, .detail-stat-grid { grid-column: auto; }
   .detail-stat-grid { grid-template-columns: 1fr; grid-template-areas: "status" "stock" "sku" "collection" "monitoring"; }

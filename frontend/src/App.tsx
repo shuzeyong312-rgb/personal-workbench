@@ -1,4 +1,4 @@
-import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import "./App.css";
 
@@ -246,6 +246,7 @@ export type CompetitorDetail = {
     captured_at: string;
     price_min: string | null;
     price_max: string | null;
+    image_urls: string[] | null;
     product_status: "unknown" | "active" | "offline";
     sku_count: number;
     total_stock: number | null;
@@ -729,7 +730,105 @@ function formatDate(value: string | null): string {
 function ProductImage({ competitor }: { competitor: Pick<Competitor, "main_image_url"> }) {
   const [failed, setFailed] = useState(false);
   if (!competitor.main_image_url || failed) return <span className="product-image product-image-placeholder">暂无主图</span>;
-  return <img className="product-image" src={competitor.main_image_url} alt="" onError={() => setFailed(true)} />;
+  return <img className="product-image" src={competitor.main_image_url} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
+}
+
+export function getDetailGallery(imageUrls: string[] | null, mainImageUrl: string | null): string[] {
+  if (imageUrls !== null) return imageUrls.filter((url): url is string => typeof url === "string" && url.trim().length > 0);
+  return mainImageUrl ? [mainImageUrl] : [];
+}
+
+export const DETAIL_GALLERY_SCROLL_STEP = 44;
+
+export function getGalleryScrollState(scrollLeft: number, scrollWidth: number, clientWidth: number): { canScrollLeft: boolean; canScrollRight: boolean } {
+  const maxScrollLeft = Math.max(0, scrollWidth - clientWidth);
+  return { canScrollLeft: scrollLeft > 1, canScrollRight: scrollLeft < maxScrollLeft - 1 };
+}
+
+export function scrollDetailGallery(element: Pick<HTMLElement, "scrollBy">, direction: -1 | 1): void {
+  element.scrollBy({ left: direction * DETAIL_GALLERY_SCROLL_STEP, behavior: "smooth" });
+}
+
+export function hideDetailGalleryThumbnail(
+  event: { currentTarget: HTMLImageElement },
+  updateScrollState: () => void,
+  scheduleFrame: (callback: () => void) => number = (callback) => requestAnimationFrame(callback),
+): void {
+  event.currentTarget.parentElement?.setAttribute("hidden", "true");
+  scheduleFrame(updateScrollState);
+}
+
+function DetailGallery({ imageUrls }: { imageUrls: string[] }) {
+  const [selectedImage, setSelectedImage] = useState<string | null>(imageUrls[0] ?? null);
+  const [failedImage, setFailedImage] = useState<string | null>(null);
+  const thumbnailsRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(imageUrls.length > 4);
+
+  const updateScrollState = useCallback(() => {
+    const thumbnails = thumbnailsRef.current;
+    if (!thumbnails) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+    const maxScrollLeft = Math.max(0, thumbnails.scrollWidth - thumbnails.clientWidth);
+    if (thumbnails.scrollLeft > maxScrollLeft) thumbnails.scrollLeft = maxScrollLeft;
+    const scrollState = getGalleryScrollState(thumbnails.scrollLeft, thumbnails.scrollWidth, thumbnails.clientWidth);
+    setCanScrollLeft(scrollState.canScrollLeft);
+    setCanScrollRight(scrollState.canScrollRight);
+  }, []);
+
+  useEffect(() => {
+    setSelectedImage(imageUrls[0] ?? null);
+    setFailedImage(null);
+  }, [imageUrls]);
+
+  useEffect(() => {
+    const thumbnails = thumbnailsRef.current;
+    if (!thumbnails) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+    thumbnails.scrollLeft = 0;
+    updateScrollState();
+    window.addEventListener("resize", updateScrollState);
+    return () => window.removeEventListener("resize", updateScrollState);
+  }, [imageUrls, updateScrollState]);
+
+  const selectImage = (imageUrl: string) => {
+    setSelectedImage(imageUrl);
+    setFailedImage(null);
+  };
+
+  const scrollGallery = (direction: -1 | 1) => {
+    if (thumbnailsRef.current) scrollDetailGallery(thumbnailsRef.current, direction);
+  };
+
+  return <div className="detail-overview-image">
+    <div className="detail-gallery-main">
+      {selectedImage && selectedImage !== failedImage
+        ? <img className="product-image detail-gallery-main-image" src={selectedImage} alt="" referrerPolicy="no-referrer" onError={() => setFailedImage(selectedImage)} />
+        : <span className="product-image product-image-placeholder detail-gallery-main-image">暂无主图</span>}
+    </div>
+    {imageUrls.length > 0 && <div className="detail-gallery-strip">
+      <span className="detail-gallery-arrow-slot">{canScrollLeft && <button type="button" className="detail-gallery-arrow" aria-label="向左滚动商品图库" onClick={() => scrollGallery(-1)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg></button>}</span>
+      <div ref={thumbnailsRef} className="detail-gallery-viewport" onScroll={updateScrollState}>
+        <div className="detail-gallery-thumbnails" role="list" aria-label="商品图库">
+          {imageUrls.map((imageUrl, index) => <button
+            key={imageUrl}
+            type="button"
+            className={selectedImage === imageUrl ? "detail-gallery-thumbnail-button detail-gallery-thumbnail-selected" : "detail-gallery-thumbnail-button"}
+            aria-label={`查看第 ${index + 1} 张商品图`}
+            aria-pressed={selectedImage === imageUrl}
+            onClick={() => selectImage(imageUrl)}
+          ><img className="detail-gallery-thumbnail" src={imageUrl} alt="" referrerPolicy="no-referrer" onError={(event: SyntheticEvent<HTMLImageElement>) => hideDetailGalleryThumbnail(event, updateScrollState)} /></button>)}
+        </div>
+      </div>
+      <span className="detail-gallery-arrow-slot">{canScrollRight && <button type="button" className="detail-gallery-arrow" aria-label="向右滚动商品图库" onClick={() => scrollGallery(1)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg></button>}</span>
+    </div>}
+  </div>;
 }
 
 export function StatusBadge({ status }: { status: Competitor["status"] }) {
@@ -1140,8 +1239,12 @@ function DetailTrendChart({ kind, trend }: { kind: "price" | "stock"; trend: Dai
 function DetailOverview({ data, groups, onChangeGroup }: { data: CompetitorDetail; groups: CompetitorGroup[]; onChangeGroup?: () => void }) {
   const competitor = data.competitor;
   const latestSnapshot = data.latest_snapshot;
+  const gallery = useMemo(
+    () => getDetailGallery(latestSnapshot?.image_urls ?? null, competitor.main_image_url),
+    [competitor.main_image_url, latestSnapshot?.image_urls],
+  );
   return <section className="detail-overview table-card">
-    <div className="detail-overview-image"><ProductImage competitor={competitor} /></div>
+    <DetailGallery key={`${competitor.id}:${latestSnapshot?.id ?? "none"}`} imageUrls={gallery} />
     <div className="detail-overview-main">
       <h2>{competitor.title || "未采集"}</h2>
       <dl className="detail-facts">
