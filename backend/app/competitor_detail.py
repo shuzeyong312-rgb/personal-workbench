@@ -62,7 +62,7 @@ class DailyTrendResponse(BaseModel):
 
 class DetailChangeResponse(BaseModel):
     id: int
-    snapshot_id: int
+    snapshot_id: int | None
     change_type: str
     entity_key: str | None
     old_value: str | None
@@ -118,7 +118,7 @@ def _change_sku_names(
     if not stock_changes:
         return {}
 
-    snapshot_ids = {change.snapshot_id for change in stock_changes}
+    snapshot_ids = {change.snapshot_id for change in stock_changes if change.snapshot_id is not None}
     sku_ids = {change.entity_key for change in stock_changes if change.entity_key is not None}
     exact_names: dict[tuple[int, str], str] = {}
     exact_rows = db.execute(
@@ -169,7 +169,7 @@ def _change_response(
     sku_names: dict[tuple[int, str], str | None],
 ) -> dict[str, object]:
     sku_name = None
-    if change.change_type == "stock_changed" and change.entity_key:
+    if change.change_type == "stock_changed" and change.entity_key and change.snapshot_id is not None:
         sku_name = sku_names.get((change.snapshot_id, change.entity_key))
     return {
         "id": change.id,

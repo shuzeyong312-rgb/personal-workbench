@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -258,6 +258,11 @@ test.each([
   expect(html).not.toContain("未采集");
 });
 
+test("renders product status badges as one-line labels", () => {
+  const html = renderToStaticMarkup(<StatusBadge status="offline" />);
+  expect(html).toBe('<span class="status-badge status-offline">已下架</span>');
+});
+
 test("list keeps lifecycle actions out of the row", () => {
   const inactive = { ...competitor, is_active: false, title: "已停止商品" };
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[inactive]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
@@ -353,6 +358,32 @@ test("formats stock changes with SKU identity and keeps the legacy fallback", ()
   expect(formatChange({ ...latestChange({ change_type: "stock_changed", entity_key: "6298697170559", old_value: "998", new_value: "994" }), sku_name: "粉色>A19" })).toBe("粉色>A19 · 库存 998 → 994");
   expect(formatChange({ ...latestChange({ change_type: "stock_changed", entity_key: "6298697170559", old_value: "998", new_value: "994" }) })).toBe("SKU 6298697170559 · 库存 998 → 994");
   expect(formatChange(latestChange({ change_type: "stock_changed", old_value: "998", new_value: "994" }))).toBe("库存变化 998 → 994");
+});
+
+test.each([
+  ["39996", "39995", "↓ <0.1%"],
+  ["13325", "13323", "↓ <0.1%"],
+  ["2995", "2993", "↓ 0.1%"],
+] as const)("formats small price changes without displaying a misleading zero: %s → %s", (oldValue, newValue, expected) => {
+  expect(formatChangeMagnitude(latestChange({ change_type: "price_decrease", old_value: oldValue, new_value: newValue }))).toBe(expected);
+});
+
+test("keeps zero and normal percentage magnitudes unchanged", () => {
+  expect(formatChangeMagnitude(latestChange({ change_type: "price_decrease", old_value: "100", new_value: "100" }))).toBe("↑ 0.0%");
+  expect(formatChangeMagnitude(latestChange({ change_type: "price_increase", old_value: "100", new_value: "100.2" }))).toBe("↑ 0.2%");
+});
+
+test("formats lifecycle changes for list, detail, and dashboard", () => {
+  expect(formatChange(latestChange({ change_type: "product_offline", snapshot_id: null }))).toBe("商品已下架");
+  expect(formatChange(latestChange({ change_type: "product_online", snapshot_id: 4 }))).toBe("商品恢复上架");
+  expect(getChangeTypeLabel("product_offline")).toBe("商品下架");
+  expect(getChangeTypeLabel("product_online")).toBe("恢复上架");
+});
+
+test("formats backend UTC timestamps in Asia/Shanghai without double conversion", () => {
+  expect(formatDate("2026-09-22T09:04:00Z")).toContain("2026年9月22日 17:04");
+  expect(formatDate("2026-09-22T09:04:00")).toContain("2026年9月22日 17:04");
+  expect(formatDate("2026-09-22T17:04:00+08:00")).toContain("2026年9月22日 17:04");
 });
 
 test("renders the real latest change in the recent change column", () => {
@@ -528,8 +559,11 @@ test("renders dashboard stats, mapped group and aggregated change item", () => {
   expect(html).toContain("¥45.00");
   expect(html).toContain("变价");
   expect(html).toContain("标题变化");
+  expect(html).toContain("检测时间");
+  expect(html).toContain('class="change-type-badge-list"');
+  expect(html).not.toContain("变化时间");
   expect(html).toContain("今日 1 个竞品 · 2 条变化");
-  expect((html.match(/class="change-type-badge/g) || []).length).toBe(2);
+  expect((html.match(/class="change-type-badge [^"]+/g) || []).length).toBe(2);
   expect(html).not.toContain("最近变化列表");
   const unknownGroup = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [{ ...dashboardData.items[0], group_id: 99 }] }} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
   expect(unknownGroup).toContain(">—</td>");
@@ -620,6 +654,8 @@ test("renders batch state and quick action semantics", () => {
   const verification = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[]} status="ready" error={null} batchState={{ ...idleBatchState, status: "verification_required", total: 9, completed: 3 }} onRetry={noop} onNavigate={noop} />);
   expect(verification).toContain("需要人工验证");
   const empty = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, stats: { ...dashboardData.stats, monitored_competitors: 0 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  expect(empty).toContain("当前无采集任务");
+  expect(empty).toContain("今日采集统计仍会保留");
   expect(empty).toContain('disabled=""');
 });
 
@@ -786,6 +822,26 @@ test("renders detail overview, mapped group, inactive status and latest sku null
   expect(html).toContain("蓝色");
   expect(html).toContain("¥41.00");
   expect(html).toContain("—");
+});
+
+test("renders monitored offline notice and lifecycle recent change", () => {
+  const html = renderToStaticMarkup(
+    <DetailPage
+      {...detailProps}
+      data={{
+        ...detailData,
+        competitor: { ...detailData.competitor, is_active: true },
+        recent_changes: [latestChange({ change_type: "product_offline", snapshot_id: null })],
+      }}
+      status="ready"
+      error={null}
+    />,
+  );
+
+  expect(html).toContain("已下架");
+  expect(html).toContain("该商品已下架，目前仍在监控。");
+  expect(html).toContain("商品已下架");
+  expect(html).toContain("检测时间");
 });
 
 test("keeps detail history cards and their scoped scroll containers", () => {

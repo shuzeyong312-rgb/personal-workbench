@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.collection.collector_1688 import (
     CollectionTimeoutError,
     LoginRequiredError,
+    OfflineProductDetected,
     PageUnavailableError,
     VerificationRequiredError,
 )
@@ -46,7 +47,10 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
 
 
 def add_competitor(
-    session_factory: sessionmaker[Session], offer_id: str = "1081895898799", group_id: int | None = None
+    session_factory: sessionmaker[Session],
+    offer_id: str = "1081895898799",
+    group_id: int | None = None,
+    status: str = "active",
 ) -> int:
     now = datetime(2026, 9, 19, tzinfo=timezone.utc)
     with session_factory() as session:
@@ -58,7 +62,7 @@ def add_competitor(
             title="旧标题",
             shop_name="旧店铺",
             main_image_url="https://example.com/old.jpg",
-            status="active",
+            status=status,
             is_active=True,
             created_at=now,
             updated_at=now,
@@ -182,6 +186,147 @@ def test_success_persists_run_snapshot_skus_and_competitor(
         assert run.status == "success"
         assert run.error_type is None
         assert run.error_message is None
+
+
+def test_offline_collection_succeeds_without_snapshot_and_records_transition(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1])
+    with client[1]() as session:
+        session.add(
+            ProductSnapshot(
+                competitor_id=competitor_id,
+                captured_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
+                title="最后有效标题",
+                shop_name="最后有效店铺",
+                main_image_url="https://example.com/last.jpg",
+                image_urls=["https://example.com/last.jpg"],
+                price_min=Decimal("10.00"),
+                price_max=Decimal("12.00"),
+                product_status="active",
+                collection_source="html",
+            )
+        )
+        session.commit()
+
+    with patch(
+        "app.collection.service.collect_1688_product",
+        side_effect=OfflineProductDetected("offline"),
+    ):
+        response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["outcome"] == "offline"
+    assert body["snapshot"] is None
+    assert body["collection_run"]["status"] == "success"
+    with client[1]() as session:
+        saved = session.get(Competitor, competitor_id)
+        assert saved is not None
+        assert saved.status == "offline"
+        assert saved.is_active is True
+        assert saved.title == "旧标题"
+        assert saved.shop_name == "旧店铺"
+        assert saved.main_image_url == "https://example.com/old.jpg"
+        assert saved.last_collected_at is not None
+        assert session.query(ProductSnapshot).count() == 1
+        events = session.scalars(select(ChangeEvent)).all()
+        assert len(events) == 1
+        assert events[0].change_type == "product_offline"
+        assert events[0].old_value == "active"
+        assert events[0].new_value == "offline"
+        assert events[0].entity_key is None
+        assert events[0].snapshot_id is None
+
+
+def test_unknown_offline_collection_establishes_status_without_event(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], status="unknown")
+
+    with patch(
+        "app.collection.service.collect_1688_product",
+        side_effect=OfflineProductDetected("offline"),
+    ):
+        response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "offline"
+    with client[1]() as session:
+        saved = session.get(Competitor, competitor_id)
+        assert saved is not None and saved.status == "offline"
+        assert session.scalar(select(ChangeEvent)) is None
+
+
+def test_offline_collection_does_not_repeat_lifecycle_event(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], status="offline")
+
+    with patch(
+        "app.collection.service.collect_1688_product",
+        side_effect=OfflineProductDetected("offline"),
+    ):
+        first = client[0].post(f"/api/competitors/{competitor_id}/collect")
+        second = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert first.status_code == 200 and second.status_code == 200
+    with client[1]() as session:
+        assert session.scalar(select(ChangeEvent)) is None
+        assert session.query(CollectionRun).count() == 2
+
+
+def test_offline_to_active_creates_online_event_and_new_baseline(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], status="offline")
+    with client[1]() as session:
+        session.add(
+            ProductSnapshot(
+                competitor_id=competitor_id,
+                captured_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
+                title="下架前标题",
+                shop_name="旧店铺",
+                main_image_url="https://example.com/before.jpg",
+                price_min=Decimal("10.00"),
+                price_max=Decimal("10.00"),
+                product_status="active",
+                collection_source="html",
+            )
+        )
+        session.commit()
+
+    with patch("app.collection.service.collect_1688_product", return_value=product()):
+        response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["outcome"] == "active"
+    assert body["snapshot"] is not None
+    with client[1]() as session:
+        saved = session.get(Competitor, competitor_id)
+        assert saved is not None and saved.status == "active"
+        snapshots = session.scalars(select(ProductSnapshot).order_by(ProductSnapshot.id)).all()
+        assert len(snapshots) == 2
+        events = session.scalars(select(ChangeEvent)).all()
+        assert [(event.change_type, event.snapshot_id) for event in events] == [
+            ("product_online", snapshots[1].id)
+        ]
+
+
+def test_unknown_to_active_creates_baseline_without_online_event(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], status="unknown")
+
+    with patch("app.collection.service.collect_1688_product", return_value=product()):
+        response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 200
+    with client[1]() as session:
+        saved = session.get(Competitor, competitor_id)
+        assert saved is not None and saved.status == "active"
+        assert session.scalar(select(ChangeEvent)) is None
 
 
 def test_collection_normalizes_main_image_and_does_not_promote_gallery_image(
@@ -545,6 +690,26 @@ def test_collection_failures_keep_previous_data_and_map_stable_errors(
         assert run.status == "failed"
         assert run.error_type == code
         assert run.error_message != str(exception)
+
+
+@pytest.mark.parametrize("initial_status", ["unknown", "active", "offline"])
+def test_verification_keeps_every_existing_product_status(
+    client: tuple[TestClient, sessionmaker[Session]], initial_status: str
+) -> None:
+    competitor_id = add_competitor(client[1], status=initial_status)
+    with patch(
+        "app.collection.service.collect_1688_product",
+        side_effect=VerificationRequiredError("private"),
+    ):
+        response = client[0].post(f"/api/competitors/{competitor_id}/collect")
+
+    assert response.status_code == 403
+    with client[1]() as session:
+        saved = session.get(Competitor, competitor_id)
+        assert saved is not None
+        assert saved.status == initial_status
+        assert session.scalar(select(ProductSnapshot)) is None
+        assert session.scalar(select(ChangeEvent)) is None
 
 
 def test_unknown_collection_failure_is_sanitized_and_keeps_previous_snapshot(

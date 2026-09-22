@@ -125,6 +125,7 @@ _CHANGE_PRIORITY = {
     "main_image_changed": 3,
     "title_changed": 4,
 }
+_LIFECYCLE_CHANGE_TYPES = frozenset({"product_offline", "product_online"})
 
 
 def _sku_names(
@@ -233,10 +234,21 @@ def _stock_total_changes(
 
 
 def _primary_event(events: list[ChangeEvent]) -> ChangeEvent:
+    lifecycle_events = [event for event in events if event.change_type in _LIFECYCLE_CHANGE_TYPES]
+    if lifecycle_events:
+        return max(lifecycle_events, key=lambda event: (event.detected_at, event.id))
     return min(
         enumerate(events),
         key=lambda pair: (_CHANGE_PRIORITY[pair[1].change_type], pair[0]),
     )[1]
+
+
+def _change_type_display_key(change_type: str) -> tuple[int, int]:
+    if change_type == "product_offline":
+        return (0, 0)
+    if change_type == "product_online":
+        return (0, 1)
+    return (1, _CHANGE_PRIORITY[change_type])
 
 
 @router.get("/today", response_model=DashboardResponse)
@@ -308,7 +320,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
         for event in events:
             if event.change_type not in event_types:
                 event_types.append(event.change_type)
-        event_types.sort(key=lambda change_type: _CHANGE_PRIORITY[change_type])
+        event_types.sort(key=_change_type_display_key)
         primary_sku_name = None
         if primary.change_type == "stock_changed" and primary.entity_key is not None:
             primary_sku_name = exact_sku_names.get(

@@ -5,7 +5,7 @@ import zoneinfo
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -695,6 +695,96 @@ def test_primary_priority_and_counts_preserve_all_change_types(
     assert item["change_count"] == 5
     assert item["change_types"] == ["price_decrease", "stock_changed", "sku_added", "main_image_changed", "title_changed"]
     assert item["primary_change"]["id"] == price.id
+
+
+def test_lifecycle_changes_have_frozen_dashboard_priority(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        offline = ChangeEvent(
+            competitor_id=competitor.id,
+            snapshot_id=None,
+            change_type="product_offline",
+            old_value="active",
+            new_value="offline",
+            detected_at=datetime(2026, 9, 20, 3),
+        )
+        session.add(offline)
+        session.flush()
+        add_event(session, competitor, datetime(2026, 9, 20, 6), "price_decrease")
+        online = add_event(session, competitor, datetime(2026, 9, 20, 5), "product_online")
+        session.commit()
+
+    item = client[0].get("/api/dashboard/today").json()["items"][0]
+
+    assert item["change_types"] == ["product_offline", "product_online", "price_decrease"]
+    assert item["primary_change"]["change_type"] == "product_online"
+    assert item["primary_change"]["id"] == online.id
+    assert online.id > offline.id
+
+
+def test_newer_offline_event_wins_over_older_online_event(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(
+            session,
+            competitor,
+            datetime(2026, 9, 20, 3),
+            "product_online",
+            old_value="offline",
+            new_value="active",
+        )
+        session.add(
+            ChangeEvent(
+                competitor_id=competitor.id,
+                snapshot_id=None,
+                change_type="product_offline",
+                old_value="active",
+                new_value="offline",
+                detected_at=datetime(2026, 9, 20, 5),
+            )
+        )
+        session.commit()
+
+    primary = client[0].get("/api/dashboard/today").json()["items"][0]["primary_change"]
+
+    assert primary["change_type"] == "product_offline"
+
+
+def test_same_timestamp_lifecycle_events_use_id_desc(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    timestamp = datetime(2026, 9, 20, 5)
+    with client[1]() as session:
+        competitor = add_competitor(session, 1)
+        add_event(
+            session,
+            competitor,
+            timestamp,
+            "product_online",
+            old_value="offline",
+            new_value="active",
+        )
+        session.add(
+            ChangeEvent(
+                competitor_id=competitor.id,
+                snapshot_id=None,
+                change_type="product_offline",
+                old_value="active",
+                new_value="offline",
+                detected_at=timestamp,
+            )
+        )
+        session.commit()
+        events = session.scalars(select(ChangeEvent).order_by(ChangeEvent.id)).all()
+
+    primary = client[0].get("/api/dashboard/today").json()["items"][0]["primary_change"]
+
+    assert primary["id"] == events[1].id
+    assert primary["change_type"] == "product_offline"
 
 
 def test_main_image_primary_is_above_title_and_keeps_one_competitor_row(

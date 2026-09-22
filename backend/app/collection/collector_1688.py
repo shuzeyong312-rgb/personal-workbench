@@ -21,6 +21,10 @@ class VerificationRequiredError(CollectorError):
     """1688 requires a verification or risk-control step."""
 
 
+class OfflineProductDetected(CollectorError):
+    """1688 returned a page with the confirmed offline-product signal."""
+
+
 class PageUnavailableError(CollectorError):
     """The target page could not be accessed."""
 
@@ -62,6 +66,8 @@ _BAXIA_VERIFICATION_TEXTS = (
     "通过验证以确保正常访问",
 )
 _VERIFICATION_RECHECK_DELAY_MS = 300
+_OFFLINE_SELECTOR = "h3.mod-detail-offline-title"
+_OFFLINE_TEXT = "商品已下架"
 
 
 def _project_root() -> Path:
@@ -115,6 +121,19 @@ def _is_verification_page(page: object, page_url: str, title: str) -> bool:
     return False
 
 
+def _is_offline_page(page: object) -> bool:
+    locator_factory = getattr(page, "locator", None)
+    if not callable(locator_factory):
+        return False
+    try:
+        locator = locator_factory(_OFFLINE_SELECTOR)
+        if not locator.count() or not locator.first.is_visible():
+            return False
+        return " ".join(locator.first.inner_text().split()) == _OFFLINE_TEXT
+    except Exception:
+        return False
+
+
 def _page_title(page: object) -> str:
     title = getattr(page, "title", None)
     if not callable(title):
@@ -133,12 +152,13 @@ def _check_page_access(page: object, status: int | None) -> None:
         raise VerificationRequiredError("1688 verification is required")
     if _is_login_page(page_url, title):
         raise LoginRequiredError("1688 login is required")
-    if status is not None and status >= 400:
-        raise PageUnavailableError("1688 page returned an unavailable status")
-
     hostname = (urlparse(page_url).hostname or "").casefold()
     if hostname and not hostname.endswith(".1688.com") and hostname != "1688.com":
         raise PageUnavailableError("1688 redirected to an unavailable page")
+    if _is_offline_page(page):
+        raise OfflineProductDetected("1688 product is offline")
+    if status is not None and status >= 400:
+        raise PageUnavailableError("1688 page returned an unavailable status")
 
 
 def _close_quietly(resource: object | None) -> None:

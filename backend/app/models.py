@@ -113,8 +113,13 @@ class ChangeEvent(Base):
     __tablename__ = "change_events"
     __table_args__ = (
         CheckConstraint(
-            "change_type IN ('price_increase', 'price_decrease', 'sku_added', 'sku_removed', 'stock_changed', 'title_changed', 'main_image_changed')",
+            "change_type IN ('price_increase', 'price_decrease', 'sku_added', 'sku_removed', 'stock_changed', 'title_changed', 'main_image_changed', 'product_offline', 'product_online')",
             name="ck_change_events_change_type",
+        ),
+        CheckConstraint(
+            "(change_type = 'product_offline' AND snapshot_id IS NULL) OR "
+            "(change_type != 'product_offline' AND snapshot_id IS NOT NULL)",
+            name="ck_change_events_snapshot_by_type",
         ),
         Index(
             "ix_change_events_competitor_detected_at_id",
@@ -126,7 +131,7 @@ class ChangeEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     competitor_id: Mapped[int] = mapped_column(ForeignKey("competitors.id"), nullable=False)
-    snapshot_id: Mapped[int] = mapped_column(ForeignKey("product_snapshots.id"), nullable=False)
+    snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("product_snapshots.id"), nullable=True)
     change_type: Mapped[str] = mapped_column(String(64), nullable=False)
     entity_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     old_value: Mapped[str | None] = mapped_column(String(512), nullable=True)

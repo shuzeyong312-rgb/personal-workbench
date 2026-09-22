@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.collection.collector_1688 import (
     CollectionTimeoutError,
     LoginRequiredError,
+    OfflineProductDetected,
     PageUnavailableError,
     VerificationRequiredError,
     collect_1688_product,
@@ -39,6 +40,7 @@ class BatchItemResult:
     status: str
     error_code: str | None = None
     message: str | None = None
+    outcome: str | None = None
 
 
 class BatchRuntime:
@@ -168,6 +170,7 @@ class BatchRuntime:
                         "status": item.status,
                         "error_code": item.error_code,
                         "message": item.message,
+                        "outcome": item.outcome,
                     }
                     for item in self.items
                 ],
@@ -199,9 +202,10 @@ class CollectionError(RuntimeError):
 @dataclass(frozen=True)
 class CollectionResult:
     competitor: Competitor
-    snapshot: ProductSnapshot
+    snapshot: ProductSnapshot | None
     collection_run: CollectionRun
     sku_count: int
+    outcome: str
 
 
 def collection_failure_details(exc: BaseException) -> tuple[str, str]:
@@ -390,6 +394,39 @@ def collect_competitor(
                     context=browser_context,
                 )
             product = _normalize_product(product, competitor_offer_id)
+        except OfflineProductDetected:
+            try:
+                now = datetime.now(timezone.utc)
+                if competitor.status == "active":
+                    db.add(
+                        ChangeEvent(
+                            competitor_id=competitor_id_value,
+                            snapshot_id=None,
+                            change_type="product_offline",
+                            entity_key=None,
+                            old_value="active",
+                            new_value="offline",
+                            detected_at=now,
+                        )
+                    )
+                competitor.status = "offline"
+                competitor.last_collected_at = now
+                competitor.updated_at = now
+                run.status = "success"
+                run.finished_at = now
+                run.error_type = None
+                run.error_message = None
+                db.commit()
+            except Exception as exc:
+                _mark_failed(db, run_id, "collection_save_failed", "采集结果保存失败")
+                raise CollectionError("collection_save_failed", "采集结果保存失败") from exc
+            return CollectionResult(
+                competitor=competitor,
+                snapshot=None,
+                collection_run=run,
+                sku_count=0,
+                outcome="offline",
+            )
         except Exception as exc:
             error_type, error_message = collection_failure_details(exc)
             _mark_failed(db, run_id, error_type, error_message)
@@ -403,7 +440,8 @@ def collect_competitor(
                 .order_by(ProductSnapshot.captured_at.desc(), ProductSnapshot.id.desc())
                 .limit(1)
             )
-            drafts = detect_changes(previous, product)
+            previous_status = competitor.status
+            drafts = detect_changes(previous, product) if previous_status == "active" else []
             snapshot = ProductSnapshot(
                 competitor_id=competitor_id_value,
                 captured_at=product.captured_at,
@@ -444,6 +482,18 @@ def collect_competitor(
                     for draft in drafts
                 ]
             )
+            if previous_status == "offline":
+                db.add(
+                    ChangeEvent(
+                        competitor_id=competitor_id_value,
+                        snapshot_id=snapshot.id,
+                        change_type="product_online",
+                        entity_key=None,
+                        old_value="offline",
+                        new_value="active",
+                        detected_at=detected_at,
+                    )
+                )
 
             now = datetime.now(timezone.utc)
             competitor.title = product.title
@@ -467,6 +517,7 @@ def collect_competitor(
             snapshot=snapshot,
             collection_run=run,
             sku_count=len(product.skus),
+            outcome="active",
         )
     finally:
         COLLECTION_LOCK.release()
@@ -544,7 +595,7 @@ def run_batch_collection(
                 runtime.set_current(competitor_id)
                 try:
                     with session_factory() as db:
-                        collect_competitor(
+                        collection_result = collect_competitor(
                             db,
                             competitor_id,
                             browser_context=context,
@@ -583,7 +634,13 @@ def run_batch_collection(
                     runtime.finish("collect_failed")
                     break
                 else:
-                    runtime.record(BatchItemResult(competitor_id, "success"))
+                    runtime.record(
+                        BatchItemResult(
+                            competitor_id,
+                            "success",
+                            outcome=getattr(collection_result, "outcome", None),
+                        )
+                    )
                 finally:
                     runtime.set_current(None)
 

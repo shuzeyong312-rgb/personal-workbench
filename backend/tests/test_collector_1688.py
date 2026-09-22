@@ -9,6 +9,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from app.collection.collector_1688 import (
     CollectionTimeoutError,
     LoginRequiredError,
+    OfflineProductDetected,
     PageUnavailableError,
     VerificationRequiredError,
     _is_verification_page,
@@ -233,6 +234,44 @@ def test_visible_nc_wrapper_is_detected_before_content_read() -> None:
         collect_1688_product_in_context(context, PRODUCT_URL, "1081895898799")
 
     assert page.wait_for_timeout_calls == []
+
+
+def test_visible_offline_signal_is_detected_before_parser() -> None:
+    page = SelectorPage(
+        selector_states={
+            "h3.mod-detail-offline-title": (True, " 商品已下架 "),
+        },
+    )
+    page.content_error = PlaywrightError("content should not be read")
+    context = FakeContext(page)
+
+    with pytest.raises(OfflineProductDetected):
+        collect_1688_product_in_context(context, PRODUCT_URL, "1081895898799")
+
+    assert page.wait_for_timeout_calls == []
+
+
+@pytest.mark.parametrize(
+    "selector_state",
+    [
+        (False, "商品已下架"),
+        (True, "商品已售罄"),
+    ],
+)
+def test_incomplete_offline_signal_continues_to_parser(selector_state) -> None:
+    page = SelectorPage(
+        (FIXTURES / "normal_product.html").read_text(encoding="utf-8"),
+        selector_states={"h3.mod-detail-offline-title": selector_state},
+    )
+    context = FakeContext(page)
+
+    with patch(
+        "app.collection.collector_1688.parse_1688_html",
+        return_value=SimpleNamespace(offer_id="1081895898799"),
+    ):
+        result = collect_1688_product_in_context(context, PRODUCT_URL, "1081895898799")
+
+    assert result.offer_id == "1081895898799"
 
 
 @pytest.mark.parametrize(

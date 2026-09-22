@@ -310,8 +310,7 @@ Dashboard `/api/dashboard/today` 继续保持一个竞品一行，并纳入 acti
 primary priority 冻结为：
 
 ```text
-product_offline
-product_online
+最新生命周期事件（product_offline 或 product_online）
 price_increase / price_decrease
 stock_changed
 sku_added / sku_removed
@@ -319,14 +318,16 @@ main_image_changed
 title_changed
 ```
 
-其中 `product_offline` 优先于 `product_online`。同一竞品当天同时有多个事件时，按上述 priority 选择 primary，`change_types` 仍保留所有真实事件类型。
+生命周期事件整体优先于普通变化，但 `product_offline` 与 `product_online` 之间不设固定优先级。同一竞品当天同时存在两种生命周期事件时，按 `detected_at DESC`、再按 `id DESC` 选择最新事件作为 primary；`change_types` 仍保留所有真实事件类型。
 
 Dashboard 展示要求：
 
 - 增加“商品下架” Badge；
 - 增加“恢复上架” Badge；
+- 同一竞品的多个变化类型 Badge 横向排列，单个 Badge 使用 inline-flex 且禁止文字换行；
 - 摘要显示“商品已下架”或“商品恢复上架”；
-- 检测时间使用 `detected_at`；
+- 检测时间使用 `detected_at`，不得将其描述为商品真实发生变化的时间；
+- 后端继续按统一 UTC 策略保存时间；Frontend 展示统一使用 `Asia/Shanghai`（UTC+8）。无 offset 的后端时间按 UTC 解析，已有 offset 的时间按原 offset 解析，不重复加时区偏移；
 - 不新增上下架 KPI 卡；
 - 不新增 7 天上下架趋势序列；
 - 现有 `change_events` 总数和 changed competitors 统计包含生命周期事件；
@@ -345,7 +346,7 @@ Detail 继续使用现有状态字段和最近变化列表：
 - `is_active = false` 仍独立显示“已停止监控”；
 - 允许同时出现“已下架”和“监控中”；
 - `recent_changes` 支持 `product_offline` 与 `product_online`；
-- 生命周期事件显示事件名称和 `detected_at`；
+- 生命周期事件显示事件名称和“检测时间”（`detected_at`），不得显示为“变化时间”或商品真实下架/上架时间；
 - `latest_snapshot` 在下架期间继续返回下架前最后一个正常 Snapshot；
 - 下架期间不生成空 Snapshot，因此价格、SKU 和库存仍代表最后一次正常采集事实；
 - 不新增复杂生命周期时间轴；
@@ -359,6 +360,8 @@ Detail change response 的 `snapshot_id` 必须改为 nullable，因为 `product
 
 - 商品状态：状态未知 / 在售 / 已下架；
 - 监控状态：监控中 / 已停止。
+
+商品状态 Badge 使用 inline-flex、水平/垂直居中、足够的最小宽度和 `white-space: nowrap`，保证“已下架”“在售”“状态未知”始终单行显示，不明显扩大整个状态列。
 
 允许显示：
 
@@ -500,8 +503,8 @@ Detail change response 的 `snapshot_id` 必须改为 nullable，因为 `product
 ### Dashboard、Detail、List 和 Frontend
 
 - 一个竞品当天多个变化仍只显示一行；
-- product_offline 优先于 product_online、价格、库存、SKU、主图和标题；
-- product_online 优先于普通属性变化；
+- 最新生命周期事件优先于价格、库存、SKU、主图和标题；
+- product_offline 与 product_online 按 `detected_at DESC`、`id DESC` 选择 primary，不使用固定相互优先级；
 - 两种生命周期 Badge 和摘要文案正确；
 - Dashboard 不新增 KPI 和 7 天生命周期趋势；
 - failed collections 不包含成功 offline；

@@ -59,7 +59,7 @@ class LatestSnapshotResponse(BaseModel):
 
 class ChangeEventSummary(BaseModel):
     id: int
-    snapshot_id: int
+    snapshot_id: int | None
     change_type: str
     entity_key: str | None
     old_value: str | None
@@ -110,7 +110,8 @@ class CollectionRunResponse(BaseModel):
 
 class CollectCompetitorResponse(BaseModel):
     competitor: CompetitorListResponse
-    snapshot: SnapshotResponse
+    outcome: Literal["active", "offline"]
+    snapshot: SnapshotResponse | None
     collection_run: CollectionRunResponse
 
 
@@ -124,6 +125,7 @@ class BatchItemResponse(BaseModel):
     status: Literal["success", "failed", "verification_required"]
     error_code: str | None
     message: str | None
+    outcome: Literal["active", "offline"] | None
 
 
 class BatchStatusResponse(BaseModel):
@@ -259,7 +261,7 @@ def _latest_changes(db: Session, competitor_ids: list[int]) -> dict[int, ChangeE
     return {
         int(row.competitor_id): ChangeEventSummary(
             id=int(row.id),
-            snapshot_id=int(row.snapshot_id),
+            snapshot_id=int(row.snapshot_id) if row.snapshot_id is not None else None,
             change_type=row.change_type,
             entity_key=row.entity_key,
             old_value=row.old_value,
@@ -293,8 +295,10 @@ def _competitor_payload(
     }
 
 
-def _snapshot_payload(result: CollectionResult) -> dict[str, object]:
+def _snapshot_payload(result: CollectionResult) -> dict[str, object] | None:
     snapshot = result.snapshot
+    if snapshot is None:
+        return None
     return {
         "id": snapshot.id,
         "competitor_id": snapshot.competitor_id,
@@ -625,14 +629,19 @@ def collect_competitor_now(
             _COLLECTION_STATUS_CODES.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR),
         ) from exc
 
-    latest_snapshot = LatestSnapshotResponse(
-        price_min=_price_text(result.snapshot.price_min),
-        price_max=_price_text(result.snapshot.price_max),
-        sku_count=result.sku_count,
+    latest_snapshot = (
+        LatestSnapshotResponse(
+            price_min=_price_text(result.snapshot.price_min),
+            price_max=_price_text(result.snapshot.price_max),
+            sku_count=result.sku_count,
+        )
+        if result.snapshot is not None
+        else None
     )
     latest_change = _latest_changes(db, [result.competitor.id]).get(result.competitor.id)
     return {
         "competitor": _competitor_payload(result.competitor, latest_snapshot, latest_change),
+        "outcome": result.outcome,
         "snapshot": _snapshot_payload(result),
         "collection_run": _collection_run_payload(result),
     }

@@ -5,6 +5,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 import app.database as database
 
@@ -67,7 +68,7 @@ def insert_fixture(database_url: str) -> None:
     engine.dispose()
 
 
-def insert_change(database_url: str, change_type: str) -> None:
+def insert_change(database_url: str, change_type: str, snapshot_id: int | None = 1) -> None:
     engine = create_engine(database_url)
     with engine.begin() as connection:
         connection.execute(
@@ -76,10 +77,11 @@ def insert_change(database_url: str, change_type: str) -> None:
                 INSERT INTO change_events (
                     competitor_id, snapshot_id, change_type, entity_key,
                     old_value, new_value, detected_at
-                ) VALUES (1, 1, :change_type, NULL, :old_value, :new_value, :detected_at)
+                ) VALUES (1, :snapshot_id, :change_type, NULL, :old_value, :new_value, :detected_at)
                 """
             ),
             {
+                "snapshot_id": snapshot_id,
                 "change_type": change_type,
                 "old_value": "https://img.example.com/a.jpg",
                 "new_value": "https://img.example.com/b.jpg",
@@ -94,6 +96,29 @@ def delete_main_image_changes(database_url: str) -> None:
     with engine.begin() as connection:
         connection.execute(
             text("DELETE FROM change_events WHERE change_type = 'main_image_changed'")
+        )
+    engine.dispose()
+
+
+def insert_lifecycle_change(database_url: str, change_type: str, snapshot_id: int | None) -> None:
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO change_events (
+                    competitor_id, snapshot_id, change_type, entity_key,
+                    old_value, new_value, detected_at
+                ) VALUES (1, :snapshot_id, :change_type, NULL, :old_value, :new_value, :detected_at)
+                """
+            ),
+            {
+                "snapshot_id": snapshot_id,
+                "change_type": change_type,
+                "old_value": "active" if change_type == "product_offline" else "offline",
+                "new_value": "offline" if change_type == "product_offline" else "active",
+                "detected_at": "2026-09-22 00:00:00",
+            },
         )
     engine.dispose()
 
@@ -159,4 +184,122 @@ def test_main_image_change_migration_round_trip_preserves_rows() -> None:
         with engine.begin() as connection:
             assert connection.execute(text("SELECT COUNT(*) FROM product_snapshots")).scalar_one() == 1
             assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 2
+        engine.dispose()
+
+
+def test_product_lifecycle_migration_allows_nullable_snapshot_and_new_events() -> None:
+    with TemporaryDirectory() as temporary_directory:
+        database_url = f"sqlite:///{(Path(temporary_directory) / 'migration.db').as_posix()}"
+        run_migration(database_url, "20260922_07")
+        insert_fixture(database_url)
+        run_migration(database_url, "20260922_08")
+
+        insert_lifecycle_change(database_url, "product_offline", None)
+        insert_lifecycle_change(database_url, "product_online", 1)
+
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            assert connection.execute(
+                text("SELECT snapshot_id, change_type FROM change_events ORDER BY id")
+            ).all() == [(None, "product_offline"), (1, "product_online")]
+        engine.dispose()
+
+
+def test_product_lifecycle_downgrade_refuses_lifecycle_rows_without_mutation() -> None:
+    with TemporaryDirectory() as temporary_directory:
+        database_url = f"sqlite:///{(Path(temporary_directory) / 'migration.db').as_posix()}"
+        run_migration(database_url, "20260922_07")
+        insert_fixture(database_url)
+        run_migration(database_url, "20260922_08")
+        insert_lifecycle_change(database_url, "product_offline", None)
+
+        with pytest.raises(RuntimeError, match="product lifecycle events or NULL snapshot_id"):
+            run_downgrade(database_url, "20260922_07")
+
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            assert "change_events" in tables
+            assert "_alembic_tmp_change_events" not in tables
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260922_08"
+            assert connection.execute(
+                text("SELECT snapshot_id, change_type FROM change_events")
+            ).all() == [(None, "product_offline")]
+        engine.dispose()
+
+
+def test_product_lifecycle_migration_round_trip_preserves_existing_rows() -> None:
+    with TemporaryDirectory() as temporary_directory:
+        database_url = f"sqlite:///{(Path(temporary_directory) / 'migration.db').as_posix()}"
+        run_migration(database_url, "20260922_07")
+        insert_fixture(database_url)
+        insert_change(database_url, "title_changed")
+        run_migration(database_url, "20260922_08")
+        run_downgrade(database_url, "20260922_07")
+        run_migration(database_url, "20260922_08")
+
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            assert connection.execute(text("SELECT COUNT(*) FROM product_snapshots")).scalar_one() == 1
+            assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 1
+        engine.dispose()
+
+
+def test_product_lifecycle_snapshot_constraint_round_trip_and_rejects_invalid_rows() -> None:
+    with TemporaryDirectory() as temporary_directory:
+        database_url = f"sqlite:///{(Path(temporary_directory) / 'migration.db').as_posix()}"
+        run_migration(database_url, "20260922_07")
+        insert_fixture(database_url)
+        insert_change(database_url, "title_changed")
+        run_migration(database_url, "20260922_08")
+        insert_lifecycle_change(database_url, "product_offline", None)
+        run_migration(database_url, "20260922_09")
+
+        insert_lifecycle_change(database_url, "product_online", 1)
+        insert_change(database_url, "price_increase")
+
+        with pytest.raises(IntegrityError):
+            insert_lifecycle_change(database_url, "product_offline", 1)
+        with pytest.raises(IntegrityError):
+            insert_lifecycle_change(database_url, "product_online", None)
+        with pytest.raises(IntegrityError):
+            insert_change(database_url, "title_changed", None)
+
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260922_09"
+            assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 4
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            assert "_alembic_tmp_change_events" not in tables
+        engine.dispose()
+
+        run_downgrade(database_url, "20260922_08")
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260922_08"
+            assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 4
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            assert "_alembic_tmp_change_events" not in tables
+        engine.dispose()
+
+        run_migration(database_url, "20260922_09")
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260922_09"
+            assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 4
         engine.dispose()

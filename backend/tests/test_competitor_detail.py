@@ -579,3 +579,31 @@ def test_inactive_competitor_remains_viewable_and_invalid_days_are_rejected(
     assert detail.json()["competitor"]["is_active"] is False
     assert detail.json()["competitor"]["status"] == "offline"
     assert invalid.status_code == 422
+
+
+def test_detail_returns_offline_event_without_snapshot_for_monitored_competitor(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        competitor.status = "offline"
+        snapshot = add_snapshot(session, competitor.id, datetime.now(timezone.utc))
+        session.add(
+            ChangeEvent(
+                competitor_id=competitor.id,
+                snapshot_id=None,
+                change_type="product_offline",
+                old_value="active",
+                new_value="offline",
+                detected_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert body["competitor"]["status"] == "offline"
+    assert body["competitor"]["is_active"] is True
+    assert body["latest_snapshot"]["id"] == snapshot.id
+    assert body["recent_changes"][0]["change_type"] == "product_offline"
+    assert body["recent_changes"][0]["snapshot_id"] is None
