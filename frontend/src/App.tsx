@@ -249,6 +249,7 @@ export type CompetitorDetail = {
     product_status: "unknown" | "active" | "offline";
     sku_count: number;
     total_stock: number | null;
+    min_order_quantity: number | null;
   } | null;
   latest_skus: { sku_id: string; sku_name: string | null; stock: number | null; price: string | null }[];
   latest_price_change: Change | null;
@@ -1052,6 +1053,7 @@ function DetailOverview({ data, groups, onChangeGroup }: { data: CompetitorDetai
         <div><dt>店铺名称</dt><dd>{competitor.shop_name || "未采集"}</dd></div>
         <div><dt>商品链接</dt><dd><a href={competitor.url} target="_blank" rel="noreferrer">{competitor.url}</a></dd></div>
         <div><dt>offerId</dt><dd>{competitor.offer_id}</dd></div>
+        <div><dt>起批量</dt><dd>{latestSnapshot?.min_order_quantity == null ? "—" : `${latestSnapshot.min_order_quantity}件起批`}</dd></div>
         <div><dt>所属竞品组</dt><dd className="detail-group-value"><span className="detail-group-badge">{getCompetitorGroupLabel(competitor.group_id, groups)}</span><button type="button" className="detail-group-edit" onClick={onChangeGroup}>修改</button></dd></div>
       </dl>
     </div>

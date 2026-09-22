@@ -142,6 +142,42 @@ def test_foreign_keys_are_enforced_and_sku_rows_cascade(
         assert session.scalar(select(SkuSnapshot).where(SkuSnapshot.sku_id == "sku-1")) is None
 
 
+def test_product_min_order_quantity_allows_null_or_positive_integer_and_rejects_zero(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with session_factory() as session:
+        item = competitor()
+        session.add(item)
+        session.flush()
+        snapshot = ProductSnapshot(
+            competitor_id=item.id,
+            captured_at=datetime.now(timezone.utc),
+            title="商品标题",
+            shop_name="店铺",
+            min_order_quantity=1,
+            product_status="unknown",
+            collection_source="html",
+        )
+        session.add(snapshot)
+        session.commit()
+        assert snapshot.min_order_quantity == 1
+        assert not hasattr(SkuSnapshot, "min_order_quantity")
+
+        session.add(
+            ProductSnapshot(
+                competitor_id=item.id,
+                captured_at=datetime.now(timezone.utc),
+                title="非法",
+                shop_name="店铺",
+                min_order_quantity=0,
+                product_status="unknown",
+                collection_source="html",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
 @pytest.mark.parametrize(
     ("model", "field", "value"),
     [

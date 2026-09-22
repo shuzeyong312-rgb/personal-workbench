@@ -8,6 +8,8 @@ import pytest
 from app.collection.parser_1688 import (
     CollectionParseError,
     OfferIdMismatchError,
+    _min_order_quantity,
+    _parse_sku_price,
     parse_1688_html,
 )
 
@@ -46,6 +48,152 @@ def test_parses_verified_product_and_sku_fields() -> None:
     assert all(sku.price is None for sku in result.skus)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("38.00", Decimal("38.00")),
+        (79, Decimal("79")),
+        ("¥38.00", Decimal("38.00")),
+        ("￥38.00", Decimal("38.00")),
+        (None, None),
+        (True, None),
+        ("invalid", None),
+        ("79.00-89.00", None),
+        ([], None),
+    ],
+)
+def test_parse_sku_price_is_strict_and_never_uses_product_price(
+    value: object, expected: Decimal | None
+) -> None:
+    assert _parse_sku_price(value) == expected
+
+    result = parse_1688_html(
+        embedded_page(
+            {
+                "offerId": "123",
+                "subject": "标题",
+                "shopName": "店铺",
+                "priceText": "79.00",
+                "skuInfoMap": {
+                    "map-key": {"skuId": "sku-1", "price": "88.00"}
+                },
+            }
+        )
+    )
+    assert result.skus[0].price is None
+
+
+def test_sku_discount_prices_stay_on_their_skus_and_offer_quantity_is_common() -> None:
+    result = parse_1688_html(
+        embedded_page(
+            {
+                "offerId": "123",
+                "subject": "标题",
+                "shopName": "店铺",
+                "skuInfoMap": {
+                    "first": {
+                        "skuId": "sku-79",
+                        "specAttrs": "普通",
+                        "discountPrice": 79,
+                        "priceAmount": 1,
+                    },
+                    "second": {
+                        "skuId": "sku-89",
+                        "specAttrs": "加量",
+                        "discountPrice": 89,
+                        "priceAmount": 1,
+                    },
+                },
+            }
+        )
+    )
+
+    assert [(sku.sku_id, sku.price) for sku in result.skus] == [
+        ("sku-79", Decimal("79")),
+        ("sku-89", Decimal("89")),
+    ]
+    assert result.min_order_quantity == 1
+    assert not hasattr(result.skus[0], "min_order_quantity")
+
+
+@pytest.mark.parametrize(
+    ("price_amounts", "expected"),
+    [
+        ([1, 1], 1),
+        (["2", "2"], 2),
+        ([1, None], None),
+        ([1, "invalid"], None),
+        ([1, 2], None),
+        ([], None),
+        ([True], None),
+        ([0], None),
+        ([-1], None),
+    ],
+)
+def test_product_min_order_quantity_requires_all_sku_values_to_match(
+    price_amounts: list[object], expected: int | None
+) -> None:
+    result = parse_1688_html(
+        embedded_page(
+            {
+                "offerId": "123",
+                "subject": "标题",
+                "shopName": "店铺",
+                "skuInfoMap": {
+                    str(index): {
+                        "skuId": f"sku-{index}",
+                        "priceAmount": value,
+                    }
+                    for index, value in enumerate(price_amounts)
+                },
+            }
+        )
+    )
+    assert result.min_order_quantity == expected
+    assert all(not hasattr(sku, "min_order_quantity") for sku in result.skus)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1, 1),
+        ("2", 2),
+        (0, None),
+        (-1, None),
+        (True, None),
+        ("1.5", None),
+        (None, None),
+        ("invalid", None),
+        ({}, None),
+    ],
+)
+def test_min_order_quantity_accepts_only_positive_integers(
+    value: object, expected: int | None
+) -> None:
+    assert _min_order_quantity(value) == expected
+
+
+def test_overlong_price_amount_keeps_product_parse_successful() -> None:
+    result = parse_1688_html(
+        embedded_page(
+            {
+                "offerId": "123",
+                "subject": "标题",
+                "shopName": "店铺",
+                "skuInfoMap": {
+                    "sku": {
+                        "skuId": "sku-1",
+                        "priceAmount": "9" * 5000,
+                    }
+                },
+            }
+        )
+    )
+
+    assert result.min_order_quantity is None
+    assert [sku.sku_id for sku in result.skus] == ["sku-1"]
+
+
 def test_missing_optional_values_are_none() -> None:
     result = parse_1688_html(fixture("minimal_product.html"))
 
@@ -54,6 +202,7 @@ def test_missing_optional_values_are_none() -> None:
     assert result.price_max is None
     assert result.skus[0].stock is None
     assert result.skus[0].price is None
+    assert result.min_order_quantity is None
 
 
 def test_expected_offer_id_mismatch_is_stable_error() -> None:

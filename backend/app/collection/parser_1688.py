@@ -19,6 +19,7 @@ _INTEGER = re.compile(r"^\d+$")
 _PRICE = re.compile(
     r"^\s*[¥￥]?\s*(\d+(?:\.\d+)?)\s*(?:[-~至到]\s*[¥￥]?\s*(\d+(?:\.\d+)?))?\s*$"
 )
+_SKU_PRICE = re.compile(r"^\s*[¥￥]?\s*(\d+(?:\.\d+)?)\s*$")
 
 
 def _embedded_values(html: str, key: str) -> list[Any]:
@@ -123,6 +124,33 @@ def _stock(value: Any) -> int | None:
     return None
 
 
+def _parse_sku_price(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
+        return None
+    match = _SKU_PRICE.fullmatch(str(value))
+    if not match:
+        return None
+    try:
+        price = Decimal(match.group(1))
+    except InvalidOperation:
+        return None
+    return price if price.is_finite() and price >= 0 else None
+
+
+def _min_order_quantity(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 1 else None
+    if isinstance(value, str) and _INTEGER.fullmatch(value.strip()):
+        try:
+            quantity = int(value)
+        except (ValueError, OverflowError):
+            return None
+        return quantity if quantity >= 1 else None
+    return None
+
+
 def _sku_id(value: Any) -> str | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -155,21 +183,28 @@ def parse_1688_html(html: str, expected_offer_id: str | None = None) -> ProductD
 
     sku_info_map = _first_dict(_embedded_values(html, "skuInfoMap")) or {}
     skus = []
+    min_order_values: list[int | None] = []
     for sku in sku_info_map.values():
         if not isinstance(sku, dict):
             continue
         sku_id = _sku_id(sku.get("skuId"))
         if sku_id is None:
             raise CollectionParseError("missing or invalid sku_id")
+        min_order_values.append(_min_order_quantity(sku.get("priceAmount")))
         skus.append(
             SkuData(
                 sku_id=sku_id,
                 sku_name=_sku_name(sku),
                 stock=_stock(sku.get("canBookCount")),
-                price=None,
+                price=_parse_sku_price(sku.get("discountPrice")),
             )
         )
     price = _product_price(html)
+    min_order_quantity = None
+    if skus and all(value is not None for value in min_order_values):
+        values = {value for value in min_order_values if value is not None}
+        if len(values) == 1:
+            min_order_quantity = values.pop()
     return ProductData(
         offer_id=offer_id,
         title=title,
@@ -181,4 +216,5 @@ def parse_1688_html(html: str, expected_offer_id: str | None = None) -> ProductD
         collection_source="html",
         captured_at=datetime.now(timezone.utc),
         skus=skus,
+        min_order_quantity=min_order_quantity,
     )

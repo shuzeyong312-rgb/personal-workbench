@@ -247,6 +247,17 @@ def _normalize_product(product: ProductData, expected_offer_id: str) -> ProductD
         raise CollectionPartialDataError("invalid collection source")
     if not isinstance(product.captured_at, datetime):
         raise CollectionPartialDataError("invalid captured_at")
+    if (
+        isinstance(product.min_order_quantity, bool)
+        or (
+            product.min_order_quantity is not None
+            and (
+                not isinstance(product.min_order_quantity, int)
+                or product.min_order_quantity < 1
+            )
+        )
+    ):
+        raise CollectionPartialDataError("invalid min order quantity")
 
     try:
         price_min = _decimal(product.price_min)
@@ -302,6 +313,7 @@ def _normalize_product(product: ProductData, expected_offer_id: str) -> ProductD
         collection_source=product.collection_source,
         captured_at=product.captured_at,
         skus=skus,
+        min_order_quantity=product.min_order_quantity,
     )
 
 
@@ -389,6 +401,7 @@ def collect_competitor(
                 main_image_url=product.main_image_url,
                 price_min=product.price_min,
                 price_max=product.price_max,
+                min_order_quantity=product.min_order_quantity,
                 product_status=product.product_status,
                 collection_source=product.collection_source,
                 skus=[

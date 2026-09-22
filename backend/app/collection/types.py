@@ -23,3 +23,4 @@ class ProductData:
     collection_source: str
     captured_at: datetime
     skus: list[SkuData]
+    min_order_quantity: int | None = None

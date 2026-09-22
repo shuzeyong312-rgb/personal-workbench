@@ -21,6 +21,7 @@ const competitor: Competitor = {
 };
 
 const noop = () => undefined;
+const mainClassTokens = (html: string) => html.match(/<main\b[^>]*\bclass="([^"]*)"/)?.[1].split(/\s+/).filter(Boolean) ?? [];
 const listProps = { groups: [] as CompetitorGroup[] };
 const group: CompetitorGroup = { id: 1, name: "暖手宝", created_at: "2026-09-20T10:00:00Z" };
 const groupMetrics: CompetitorGroupMetrics = { competitor_count: 3, active_count: 2, price_min: "34.00", price_max: "40.00", changed_competitors_today: 2, last_change_at: "2026-09-21T10:35:00Z" };
@@ -514,7 +515,7 @@ test("renders dashboard stats, mapped group and aggregated change item", () => {
   const html = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
   expect(html).toContain('class="app-shell"');
   expect(html).toContain('class="sidebar"');
-  expect(html).toContain('class="main-content"');
+  expect(mainClassTokens(html)).toEqual(expect.arrayContaining(["main-content", "main-content-dashboard"]));
   expect(html).toContain("监控中 5 个竞品");
   expect(html).toContain("今日变价竞品");
   expect(html).toContain("今日库存变化竞品");
@@ -531,6 +532,18 @@ test("renders dashboard stats, mapped group and aggregated change item", () => {
   expect(html).not.toContain("最近变化列表");
   const unknownGroup = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [{ ...dashboardData.items[0], group_id: 99 }] }} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
   expect(unknownGroup).toContain(">—</td>");
+});
+
+test("non-dashboard pages keep the base main-content class", () => {
+  const pages = [
+    renderToStaticMarkup(<ListPage {...listProps} competitors={[]} status="loading" error={null} onRetry={noop} onAdd={noop} />),
+    renderToStaticMarkup(<DetailPage {...detailProps} data={null} status="loading" error={null} />),
+    renderToStaticMarkup(<GroupPage summary={null} status="loading" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />),
+  ];
+  for (const html of pages) {
+    expect(mainClassTokens(html)).toContain("main-content");
+    expect(mainClassTokens(html)).not.toContain("main-content-dashboard");
+  }
 });
 
 test("renders all competitor items without expanding event rows", () => {
@@ -698,6 +711,7 @@ const detailData: CompetitorDetail = {
     product_status: "unknown",
     sku_count: 2,
     total_stock: null,
+    min_order_quantity: 1,
   },
   latest_skus: [
     { sku_id: "sku-0", sku_name: "红色", stock: 0, price: null },
@@ -909,9 +923,44 @@ test("detail renders the overview, three trend cards, shared selector, placehold
   expect(html).toContain("当前数据源尚未达到正式采集标准");
   expect(html).toContain("近 7 天");
   expect(html).toContain("SKU 信息");
+  expect(html).toContain("SKU 价格");
+  expect(html).toContain("起批量");
   expect(html).toContain("最近变化");
   expect(html).toContain("最近采集记录");
   expect(html).not.toContain("saleQuantityList");
+});
+
+test.each([1, 2])("detail renders product minimum order quantity %s", (quantity) => {
+  const data = { ...detailData, latest_snapshot: { ...detailData.latest_snapshot!, min_order_quantity: quantity } };
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={data} status="ready" error={null} />);
+  expect(html).toContain(`起批量`);
+  expect(html).toContain(`${quantity}件起批`);
+  expect(html.indexOf("offerId")).toBeLessThan(html.indexOf("起批量"));
+  expect(html.indexOf("起批量")).toBeLessThan(html.indexOf("所属竞品组"));
+  expect(html).not.toContain("按SKU");
+});
+
+test("detail keeps SKU prices at the SKU level", () => {
+  const data = {
+    ...detailData,
+    latest_skus: [
+      { ...detailData.latest_skus[0], price: "79.00" },
+      { ...detailData.latest_skus[1], price: "89.00" },
+    ],
+  };
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={data} status="ready" error={null} />);
+  expect(html).toContain("¥79.00");
+  expect(html).toContain("¥89.00");
+});
+
+test("detail renders null product minimum order quantity as a dash and removes it from SKU table", () => {
+  const data = { ...detailData, latest_snapshot: { ...detailData.latest_snapshot!, min_order_quantity: null } };
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={data} status="ready" error={null} />);
+  expect(html).toContain("起批量");
+  expect(html).toContain("SKU 价格");
+  expect(html).not.toContain("<span>起批量</span>");
+  expect(html).not.toContain("<th>起批量</th>");
+  expect(html).not.toContain("按SKU");
 });
 
 test("detail uses placeholders for missing image and stock", () => {

@@ -123,7 +123,15 @@ def test_success_persists_run_snapshot_skus_and_competitor(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     competitor_id = add_competitor(client[1])
-    collected = product()
+    collected = replace(
+        product(),
+        min_order_quantity=1,
+        skus=[
+            SkuData("sku-1", "红色", 3, Decimal("79.00")),
+            SkuData("sku-2", "蓝色", None, Decimal("89.00")),
+            SkuData("sku-3", "绿色", 0, None),
+        ],
+    )
     with patch("app.collection.service.collect_1688_product", return_value=collected) as collector:
         response = client[0].post(f"/api/competitors/{competitor_id}/collect")
 
@@ -149,7 +157,11 @@ def test_success_persists_run_snapshot_skus_and_competitor(
         snapshot = session.scalar(select(ProductSnapshot))
         assert snapshot is not None
         assert snapshot.product_status == "active"
-        assert len(session.scalars(select(SkuSnapshot)).all()) == 3
+        assert snapshot.min_order_quantity == 1
+        saved_skus = session.scalars(select(SkuSnapshot).order_by(SkuSnapshot.id)).all()
+        assert len(saved_skus) == 3
+        assert [sku.price for sku in saved_skus] == [Decimal("79.00"), Decimal("89.00"), None]
+        assert not hasattr(saved_skus[0], "min_order_quantity")
         run = session.scalar(select(CollectionRun))
         assert run is not None
         assert run.status == "success"

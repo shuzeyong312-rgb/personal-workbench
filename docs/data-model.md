@@ -104,6 +104,7 @@ shop_name
 main_image_url
 price_min
 price_max
+min_order_quantity
 product_status
 collection_source
 ~~~
@@ -114,6 +115,7 @@ collection_source
 - 当前手动“立即采集”也会生成快照；
 - Backend 运行期间存在每日自动调度：每小时进行 due-check，最近一条 CollectionRun.started_at 距当前 UTC 时间达到 24 小时才自动尝试；failed 尝试同样计入该窗口；
 - price_min / price_max 使用 Numeric(18, 2)，用于保存商品级价格区间；
+- min_order_quantity 保存本次采集的 Offer 级最小起批数量，可为 NULL，非 NULL 时必须大于等于 1；
 - 缺失价格保存为 NULL，不转换为 0；
 - product_status 当前允许 unknown、active、offline；
 - collection_source 当前数据库允许：
@@ -147,14 +149,18 @@ price
 - sku_name 保存标准化后的规格名称；
 - stock 可以为 NULL，0 是真实库存；
 - price 可以为 NULL，当前不可靠的 SKU 独立价格不参与 ChangeEvent 检测；
+- `price` 保存 SKU 当前页面展示价格，来源为已验证的 `skuInfoMap[item].discountPrice`；缺失或非法值保存为 NULL，不使用 `price` fallback，也不使用商品级价格或价格区间填充；
 - 缺失库存或价格保存为 NULL，不保存为 0；
+- ProductSnapshot.min_order_quantity 保存商品级起批量；旧 ProductSnapshot 保持 NULL，不历史回填；
 - ProductSnapshot 删除时，所属 SkuSnapshot 使用现有 delete-orphan / ON DELETE CASCADE 语义。
 
 1688 原始字段只在采集适配层处理，例如：
 
 ~~~text
 canBookCount → stock
-skuPriceScale → price / 商品级价格
+discountPrice → SKU 当前页面展示价格 → price
+priceAmount → Offer / ProductSnapshot.min_order_quantity
+skuPriceScale → 商品级价格 / 商品级价格区间
 ~~~
 
 业务层只依赖上述内部字段。

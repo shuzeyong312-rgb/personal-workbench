@@ -52,7 +52,7 @@ CollectionRun.running 只表示执行状态，不承担锁职责；真正并发�
 
 Network/XHR 和 DOM fallback 不属于当前 Feature，不在本轮实现或 Acceptance Criteria 内。Playwright 当前只负责本地 Chrome、持久化登录目录、页面访问和 HTML 获取，不以模拟人工点击为主要采集方式。
 
-已验证 POC 能力包括：offerId、商品标题、店铺名称、商品价格、skuInfoMap、SKU 属性、skuId、canBookCount 和 skuPriceScale。
+已验证 POC 能力包括：offerId、商品标题、店铺名称、商品价格、skuInfoMap、SKU 属性、skuId、canBookCount、discountPrice、priceAmount 和 skuPriceScale。当前真实样本已正式确认 discountPrice 与 priceAmount 的以下字段映射。
 
 mtop.1688.pc.plugin.od.data.query 的历史销量、累计销量、销量历史和历史价格数据本 Feature 不接入。
 
@@ -60,7 +60,9 @@ mtop.1688.pc.plugin.od.data.query 的历史销量、累计销量、销量历史�
 
 - skuInfoMap → 内部 SKU 集合；
 - canBookCount → stock；
-- skuPriceScale → 经确认后转换为商品级或 SKU 级价格；
+- discountPrice → SKU 当前页面展示价格 price；
+- priceAmount → Offer / ProductSnapshot.min_order_quantity；
+- skuPriceScale → 商品级价格 / 商品级价格区间，不写入 SKU price；
 - mtop... → 本 Feature 不使用。
 
 ## 5. Normalized Data Contract
@@ -76,6 +78,7 @@ mtop.1688.pc.plugin.od.data.query 的历史销量、累计销量、销量历史�
     product_status: unknown | active | offline
     collection_source: html | network | mixed
     captured_at: datetime
+    min_order_quantity: integer | null
     skus: list[SkuData]
 
 ### SKU
@@ -90,7 +93,9 @@ mtop.1688.pc.plugin.od.data.query 的历史销量、累计销量、销量历史�
 - 统一商品价格同时作为 price_min 和 price_max。
 - 可靠价格区间保存真实最小值和最大值。
 - 缺失价格保存 null，不能保存为 0。
-- SKU 独立价格不可靠时保存 null，不从商品级价格猜测。
+- `discountPrice` 只有能解析为单一、非负 Decimal 时保存为 SKU price，否则保存 null；不使用 `price` fallback，不从商品级价格或价格区间猜测。
+- `priceAmount` 虽然从 SKU item 读取，但按当前真实样本验证表达整个 Offer 的起批数量；只有至少一个 SKU 且所有 SKU 都能解析为相同的大于等于 1 的正整数时，才保存为 ProductData/ProductSnapshot.min_order_quantity，否则保存 null。bool、小数、对象/list、缺失值或冲突值均为未知。
+- 上述 `discountPrice` 与 `priceAmount` 映射已通过当前真实样本验证；前者表示当前 SKU 页面展示价格，不宣称是所有促销体系下的最终成交价。
 - active 只表示页面明确显示商品正常可售。
 - 当前 MVP 不实现 offline 判定，正常商品可以返回 unknown；未来只有明确页面证据时才允许保存 offline。
 - 解析失败、登录失效、超时和结构变化不能标记为 offline。

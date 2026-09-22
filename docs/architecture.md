@@ -153,11 +153,15 @@ Playwright 主要负责：
 
 外部数据进入系统后，需要转换成内部统一模型。
 
+当前真实样本已验证的映射为：`skuInfoMap[item].discountPrice → SkuData.price → SkuSnapshot.price`，表示 SKU 当前页面展示价格；`skuInfoMap[item].priceAmount` 虽然来自 SKU item，但表达整个 Offer 的起批条件，聚合后写入 `ProductData.min_order_quantity → ProductSnapshot.min_order_quantity`。只有所有 SKU 都存在相同合法值时才保存，否则为 NULL。`skuPriceScale` 只用于商品级价格或商品级价格区间，不写入 SKU price。`discountPrice` 不被描述为所有促销体系下的最终成交价。
+
 禁止业务代码到处直接依赖：
 
 ```text
 skuInfoMap
 canBookCount
+discountPrice
+priceAmount
 saleQuantityList
 tradePriceList
 mtop.1688...

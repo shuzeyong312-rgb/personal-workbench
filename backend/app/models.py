@@ -50,6 +50,10 @@ class ProductSnapshot(Base):
             "collection_source IN ('html', 'network', 'mixed')",
             name="ck_product_snapshots_collection_source",
         ),
+        CheckConstraint(
+            "min_order_quantity IS NULL OR min_order_quantity >= 1",
+            name="ck_product_snapshots_min_order_quantity",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -60,6 +64,7 @@ class ProductSnapshot(Base):
     main_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     price_min: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     price_max: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    min_order_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     product_status: Mapped[str] = mapped_column(String(32), nullable=False)
     collection_source: Mapped[str] = mapped_column(String(32), nullable=False)
 

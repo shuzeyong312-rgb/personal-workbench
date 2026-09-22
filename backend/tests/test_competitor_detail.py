@@ -255,6 +255,62 @@ def test_detail_exposes_current_stock_and_daily_stock_with_same_rule(
     assert body["daily_trend"][-1]["total_stock"] == 30
 
 
+def test_detail_exposes_product_min_order_quantity_and_sku_price_null_semantics(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        snapshot = ProductSnapshot(
+            competitor_id=competitor.id,
+            captured_at=datetime.now(timezone.utc),
+            title="商品",
+            shop_name="店铺",
+            min_order_quantity=1,
+            product_status="unknown",
+            collection_source="html",
+            skus=[
+                SkuSnapshot(
+                    sku_id="sku-known",
+                    sku_name="普通",
+                    stock=3,
+                    price=Decimal("79.00"),
+                ),
+                SkuSnapshot(
+                    sku_id="sku-unknown",
+                    sku_name="未知",
+                    stock=None,
+                    price=None,
+                ),
+            ],
+        )
+        session.add(snapshot)
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+    assert body["latest_snapshot"]["min_order_quantity"] == 1
+    assert body["latest_skus"] == [
+        {
+            "sku_id": "sku-known",
+            "sku_name": "普通",
+            "stock": 3,
+            "price": "79.00",
+        },
+        {
+            "sku_id": "sku-unknown",
+            "sku_name": "未知",
+            "stock": None,
+            "price": None,
+        },
+    ]
+
+    with client[1]() as session:
+        current = session.get(ProductSnapshot, snapshot.id)
+        assert current is not None
+        current.min_order_quantity = None
+        session.commit()
+    assert client[0].get(f"/api/competitors/{competitor.id}/detail").json()["latest_snapshot"]["min_order_quantity"] is None
+
+
 def test_detail_decodes_latest_sku_name_and_resolves_exact_stock_change_sku(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
