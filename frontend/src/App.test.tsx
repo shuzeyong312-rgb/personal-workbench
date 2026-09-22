@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildPriceChartPoints, buildStockChartPoints } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -582,9 +582,24 @@ test("renders the seven trend labels and keeps zero-valued chart points valid", 
   expect(points).toHaveLength(7);
   expect(points.every((point) => Number.isFinite(point.y.price_changes))).toBe(true);
   const html = renderToStaticMarkup(<DashboardTrendChart trend={dashboardData.trend_7d} />);
-  expect((html.match(/class="chart-label"/g) || []).length).toBeGreaterThanOrEqual(9);
+  expect((html.match(/class="chart-label chart-y-label"/g) || []).length).toBeGreaterThanOrEqual(4);
   expect(html).toContain("09/14");
   expect(html).toContain("09/20");
+});
+
+test("dashboard trend uses a zero-based integer scale with useful intermediate ticks", () => {
+  const trend = [{ date: "2026-09-20", price_changes: 15, stock_changes: 0, sku_changes: 0, failed_collections: 0 }];
+  const scale = buildDashboardTrendScale(trend);
+  expect(scale.domain[0]).toBe(0);
+  expect(scale.ticks).toEqual([0, 5, 10, 15]);
+  expect(scale.ticks.every(Number.isInteger)).toBe(true);
+  expect(formatDashboardTrendTooltip(trend[0])).toEqual(["09/20", "变价 15", "库存变化 0", "SKU变化 0", "异常采集 0"]);
+});
+
+test("dashboard all-zero trend still has a usable integer domain", () => {
+  const scale = buildDashboardTrendScale(dashboardData.trend_7d.map((point) => ({ ...point, price_changes: 0, stock_changes: 0, sku_changes: 0, failed_collections: 0 })));
+  expect(scale.domain).toEqual([0, 4]);
+  expect(scale.ticks).toEqual([0, 1, 2, 3, 4]);
 });
 
 test("renders batch state and quick action semantics", () => {
@@ -881,6 +896,26 @@ test("price chart points preserve empty dates and keep real values", () => {
   expect(points[1].max_y).toBeNull();
 });
 
+test("detail trend hit areas cover the plot once without gaps", () => {
+  const areas = buildTrendHitAreas([{ x: 54 }, { x: 339 }, { x: 624 }], 54, 624);
+  expect(areas).toEqual([
+    { x: 54, width: 142.5, center: 54 },
+    { x: 196.5, width: 285, center: 339 },
+    { x: 481.5, width: 142.5, center: 624 },
+  ]);
+  expect(areas[0].x).toBe(54);
+  expect(areas[areas.length - 1].x + areas[areas.length - 1].width).toBe(624);
+  expect(areas.reduce((total, area) => total + area.width, 0)).toBe(570);
+});
+
+test.each([7, 30] as const)("detail trend renders one hit area per date for %s points", (length) => {
+  const dailyTrend = Array.from({ length }, (_, index) => ({ date: `2026-09-${String(index + 1).padStart(2, "0")}`, snapshot_id: index === 1 ? null : index + 1, captured_at: null, price_min: index === 1 ? null : "38.80", price_max: index === 1 ? null : "40.00", total_stock: index === 1 ? null : 1454 }));
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} days={length} data={{ ...detailData, range_days: length, daily_trend: dailyTrend }} status="ready" error={null} />);
+  expect((html.match(/class="chart-hit-area"/g) || []).length).toBe(length * 2);
+  expect(html).not.toContain("库存 0");
+  expect(html).not.toContain("价格 ¥0");
+});
+
 test("price chart centers constant prices and uses the compact viewBox", () => {
   const points = buildPriceChartPoints([
     { date: "2026-09-18", snapshot_id: 1, captured_at: "2026-09-18T10:00:00Z", price_min: "38.80", price_max: "38.80", total_stock: null },
@@ -889,11 +924,37 @@ test("price chart centers constant prices and uses the compact viewBox", () => {
   ]);
   expect(points).toHaveLength(3);
   expect(points.every((point) => Number.isFinite(point.min_y) && Number.isFinite(point.max_y))).toBe(true);
-  expect(points.every((point) => point.min_y === 78 && point.max_y === 78)).toBe(true);
+  expect(points.every((point) => point.min_y === point.max_y)).toBe(true);
 
   const html = renderToStaticMarkup(<DetailPage {...detailProps} data={detailData} status="ready" error={null} />);
   expect(html).toContain('viewBox="0 0 640 170"');
   expect(html).not.toContain('viewBox="0 0 640 220"');
+});
+
+test("price and stock scales pad their data without forcing zero", () => {
+  const price = buildPriceChartScale([
+    { date: "2026-09-19", snapshot_id: 1, captured_at: null, price_min: "38.00", price_max: "40.00", total_stock: null },
+  ])!;
+  const stock = buildStockChartScale([
+    { date: "2026-09-19", snapshot_id: 1, captured_at: null, price_min: null, price_max: null, total_stock: 1454 },
+  ])!;
+  expect(price.domain[0]).toBeGreaterThan(0);
+  expect(price.ticks.every((tick) => Number.isFinite(tick))).toBe(true);
+  expect(stock.domain[0]).toBeGreaterThan(0);
+  expect(stock.domain[0]).toBeLessThan(1454);
+  expect(stock.domain[1]).toBeGreaterThan(1454);
+  expect(stock.ticks.every(Number.isInteger)).toBe(true);
+  expect(formatPriceTick(price.ticks[1], price.step)).toMatch(/^¥\d+(\.\d+)?$/);
+});
+
+test("constant prices and inventory expand their domains", () => {
+  const trend = Array.from({ length: 3 }, (_, index) => ({ date: `2026-09-${String(index + 18).padStart(2, "0")}`, snapshot_id: index + 1, captured_at: null, price_min: "38.80", price_max: "38.80", total_stock: 1454 }));
+  const price = buildPriceChartScale(trend)!;
+  const stock = buildStockChartScale(trend)!;
+  expect(price.domain[0]).toBeLessThan(38.8);
+  expect(price.domain[1]).toBeGreaterThan(38.8);
+  expect(stock.domain[0]).toBeLessThan(1454);
+  expect(stock.domain[1]).toBeGreaterThan(1454);
 });
 
 test("detail formatters keep stock, price-change, range and tooltip semantics", () => {
@@ -904,8 +965,19 @@ test("detail formatters keep stock, price-change, range and tooltip semantics", 
   expect(formatPriceChangeMagnitude(latestChange({ old_value: "40.00~50.00", new_value: "38.00~48.00", change_type: "price_decrease" }))).toBe("—");
   expect(formatPriceChangeMagnitude(null)).toBe("—");
   expect(formatTrendTooltip({ date: "2026-09-20", snapshot_id: 1, captured_at: "2026-09-20T10:00:00Z", price_min: "38.80", price_max: "38.80", total_stock: null }, "price")).toEqual(["09/20", "价格 ¥38.80"]);
+  expect(formatTrendTooltip({ date: "2026-09-20", snapshot_id: 1, captured_at: "2026-09-20T10:00:00Z", price_min: "79", price_max: "89", total_stock: null }, "price")).toEqual(["09/20", "最低价 ¥79.00", "最高价 ¥89.00"]);
   expect(formatTrendTooltip({ date: "2026-09-20", snapshot_id: 1, captured_at: "2026-09-20T10:00:00Z", price_min: null, price_max: null, total_stock: null }, "price")).toEqual([]);
   expect(formatTrendTooltip({ date: "2026-09-20", snapshot_id: 1, captured_at: "2026-09-20T10:00:00Z", price_min: null, price_max: null, total_stock: 9998 }, "stock")).toEqual(["09/20", "库存 9,998"]);
+});
+
+test("7-day and 30-day trend scales are computed from their current data", () => {
+  const sevenDays = [
+    { date: "2026-09-14", snapshot_id: 1, captured_at: null, price_min: "38", price_max: "39", total_stock: 100 },
+    { date: "2026-09-20", snapshot_id: 2, captured_at: null, price_min: "40", price_max: "41", total_stock: 110 },
+  ];
+  const thirtyDays = [...sevenDays, { date: "2026-09-01", snapshot_id: 3, captured_at: null, price_min: "80", price_max: "90", total_stock: 900 }];
+  expect(buildPriceChartScale(sevenDays)!.domain).not.toEqual(buildPriceChartScale(thirtyDays)!.domain);
+  expect(buildStockChartScale(sevenDays)!.domain).not.toEqual(buildStockChartScale(thirtyDays)!.domain);
 });
 
 test("detail renders the overview, three trend cards, shared selector, placeholder and bottom facts", () => {

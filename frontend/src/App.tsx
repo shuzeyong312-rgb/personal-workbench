@@ -285,20 +285,86 @@ export type StockChartPoint = {
   total_stock: number | null;
 };
 
+export type ChartScale = {
+  domain: [number, number];
+  ticks: number[];
+  step: number;
+};
+
+export type TrendHitArea = { x: number; width: number; center: number };
+
+const detailChartLeft = 54;
+const detailChartRight = 16;
+
 function chartY(value: number, minValue: number, maxValue: number, top: number, plotHeight: number): number {
   return maxValue === minValue ? top + plotHeight / 2 : top + ((maxValue - value) / (maxValue - minValue)) * plotHeight;
 }
 
-export function buildPriceChartPoints(trend: readonly DailyTrendPoint[], width = 640, height = 170): PriceChartPoint[] {
+export function buildTrendHitAreas(points: readonly { x: number }[], plotLeft: number, plotRight: number): TrendHitArea[] {
+  return points.map((point, index) => {
+    const left = index === 0 ? plotLeft : (points[index - 1].x + point.x) / 2;
+    const right = index === points.length - 1 ? plotRight : (point.x + points[index + 1].x) / 2;
+    return { x: left, width: Math.max(0, right - left), center: point.x };
+  });
+}
+
+function niceStep(range: number, intervals: number, integer: boolean): number {
+  const raw = Math.max(range / intervals, integer ? 1 : Number.EPSILON);
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const normalized = raw / power;
+  const factor = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+  const step = factor * power;
+  return integer ? Math.max(1, Math.ceil(step)) : step;
+}
+
+function chartTicks(minValue: number, maxValue: number, step: number): number[] {
+  const count = Math.max(1, Math.round((maxValue - minValue) / step));
+  const decimals = step >= 1 ? 4 : Math.min(8, Math.max(2, Math.ceil(-Math.log10(step)) + 2));
+  return Array.from({ length: count + 1 }, (_, index) => Number((minValue + index * step).toFixed(decimals)));
+}
+
+function buildNumericScale(values: readonly number[], { zeroBased = false, integer = false, minimumPadding = 1 }: { zeroBased?: boolean; integer?: boolean; minimumPadding?: number } = {}): ChartScale | null {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+  if (finiteValues.length === 0 && !zeroBased) return null;
+  const dataMin = finiteValues.length > 0 ? Math.min(...finiteValues) : 0;
+  const dataMax = finiteValues.length > 0 ? Math.max(...finiteValues) : 0;
+  let minValue = zeroBased ? 0 : dataMin;
+  let maxValue = zeroBased ? Math.max(0, dataMax) : dataMax;
+  if (zeroBased && maxValue < 4) maxValue = 4;
+  else if (!zeroBased) {
+    const padding = dataMin === dataMax ? Math.max(minimumPadding, Math.abs(dataMin) * .04) : Math.max((dataMax - dataMin) * .12, minimumPadding);
+    minValue -= padding;
+    maxValue += padding;
+  }
+  const step = niceStep(maxValue - minValue, 4, integer);
+  const domainMin = zeroBased ? 0 : Math.floor(minValue / step) * step;
+  const domainMax = Math.max(domainMin + step, Math.ceil(maxValue / step) * step);
+  return { domain: [domainMin, domainMax], ticks: chartTicks(domainMin, domainMax, step), step };
+}
+
+export function buildDashboardTrendScale(trend: readonly DashboardTrendPoint[]): ChartScale {
+  const values = trend.flatMap((point) => [point.price_changes, point.stock_changes, point.sku_changes, point.failed_collections]);
+  return buildNumericScale(values, { zeroBased: true, integer: true })!;
+}
+
+export function buildPriceChartScale(trend: readonly DailyTrendPoint[]): ChartScale | null {
   const values = trend.flatMap((item) => [item.price_min, item.price_max]).flatMap((value) => {
     const number = value === null ? NaN : Number(value);
     return Number.isFinite(number) ? [number] : [];
   });
-  if (trend.length === 0 || values.length === 0) return [];
-  const minValue = Math.min(...values);
-  const maxValue = Math.max(...values);
-  const left = 44;
-  const right = 16;
+  return buildNumericScale(values, { minimumPadding: .5 });
+}
+
+export function buildStockChartScale(trend: readonly DailyTrendPoint[]): ChartScale | null {
+  return buildNumericScale(trend.map((item) => item.total_stock).filter((value): value is number => value !== null && Number.isFinite(value)), { integer: true, minimumPadding: 1 });
+}
+
+export function buildPriceChartPoints(trend: readonly DailyTrendPoint[], width = 640, height = 170): PriceChartPoint[] {
+  const scale = buildPriceChartScale(trend);
+  if (trend.length === 0 || scale === null) return [];
+  const [minValue, maxValue] = scale.domain;
+  const left = detailChartLeft;
+  const right = detailChartRight;
   const top = 16;
   const bottom = 30;
   const plotWidth = width - left - right;
@@ -317,12 +383,11 @@ export function buildPriceChartPoints(trend: readonly DailyTrendPoint[], width =
 }
 
 export function buildStockChartPoints(trend: readonly DailyTrendPoint[], width = 640, height = 170): StockChartPoint[] {
-  const values = trend.map((item) => item.total_stock).filter((value): value is number => value !== null && Number.isFinite(value));
-  if (trend.length === 0 || values.length === 0) return [];
-  const minValue = Math.min(...values);
-  const maxValue = Math.max(...values);
-  const left = 44;
-  const right = 16;
+  const scale = buildStockChartScale(trend);
+  if (trend.length === 0 || scale === null) return [];
+  const [minValue, maxValue] = scale.domain;
+  const left = detailChartLeft;
+  const right = detailChartRight;
   const top = 16;
   const bottom = 30;
   const plotWidth = width - left - right;
@@ -582,14 +647,15 @@ export type DashboardTrendChartPoint = DashboardTrendPoint & { x: number; y: Rec
 
 export function buildDashboardTrendChartPoints(trend: readonly DashboardTrendPoint[], width = 640, height = 180): DashboardTrendChartPoint[] {
   const points = trend.slice(-7);
-  const maxValue = Math.max(1, ...points.flatMap((point) => [point.price_changes, point.stock_changes, point.sku_changes, point.failed_collections]));
-  const left = 38;
+  const scale = buildDashboardTrendScale(points);
+  const [minValue, maxValue] = scale.domain;
+  const left = 52;
   const right = 14;
   const top = 14;
   const bottom = 28;
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
-  const y = (value: number) => top + ((maxValue - value) / maxValue) * plotHeight;
+  const y = (value: number) => chartY(value, minValue, maxValue, top, plotHeight);
   return points.map((point, index) => ({
     ...point,
     x: points.length === 1 ? left + plotWidth / 2 : left + (index / (points.length - 1)) * plotWidth,
@@ -600,6 +666,10 @@ export function buildDashboardTrendChartPoints(trend: readonly DashboardTrendPoi
       failed_collections: y(point.failed_collections),
     },
   }));
+}
+
+export function formatDashboardTrendTooltip(point: DashboardTrendPoint): string[] {
+  return [formatChartDate(point.date), `变价 ${Math.round(point.price_changes)}`, `库存变化 ${Math.round(point.stock_changes)}`, `SKU变化 ${Math.round(point.sku_changes)}`, `异常采集 ${Math.round(point.failed_collections)}`];
 }
 
 export function formatLatestChange(change: Competitor["latest_change"]): string {
@@ -900,6 +970,12 @@ function DashboardStatCard({ label, value, kind, tone }: { label: string; value:
 export function DashboardTrendChart({ trend }: { trend: DashboardTrendPoint[] }) {
   const width = 640;
   const height = 180;
+  const top = 14;
+  const bottom = 28;
+  const left = 52;
+  const right = 14;
+  const plotHeight = height - top - bottom;
+  const scale = buildDashboardTrendScale(trend.slice(-7));
   const points = buildDashboardTrendChartPoints(trend, width, height);
   const series = [
     ["price_changes", "变价", "dashboard-trend-price"],
@@ -908,13 +984,17 @@ export function DashboardTrendChart({ trend }: { trend: DashboardTrendPoint[] })
     ["failed_collections", "异常采集", "dashboard-trend-error"],
   ] as const;
   const line = (key: keyof DashboardTrendChartPoint["y"]) => points.map((point) => `${point.x},${point.y[key]}`).join(" ");
-  return <div className="dashboard-trend-wrap"><svg className="dashboard-trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="近 7 天竞品变化趋势">
-    {[0, 1, 2, 3].map((step) => <line key={step} className="chart-grid-line" x1="38" x2="626" y1={14 + step * 47.33} y2={14 + step * 47.33} />)}
-    {points.length > 0 && <><text className="chart-label" x="7" y="18">{Math.max(1, ...points.flatMap((point) => [point.price_changes, point.stock_changes, point.sku_changes, point.failed_collections]))}</text><text className="chart-label" x="20" y="156">0</text></>}
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const activePoint = activeIndex === null ? null : points[activeIndex];
+  const activeTooltip = activePoint ? formatDashboardTrendTooltip(activePoint) : [];
+  return <div className="dashboard-trend-wrap" onMouseLeave={() => setActiveIndex(null)}><svg className="dashboard-trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="近 7 天竞品变化趋势">
+    {scale.ticks.map((tick) => { const y = chartY(tick, scale.domain[0], scale.domain[1], top, plotHeight); return <g key={tick}><line className="chart-grid-line" x1={left} x2={width - right} y1={y} y2={y} /><text className="chart-label chart-y-label" x={left - 8} y={y + 3} textAnchor="end">{tick}</text></g>; })}
+    {activePoint && <line className="chart-hover-line" x1={activePoint.x} x2={activePoint.x} y1={top} y2={top + plotHeight} />}
     {series.map(([key, _label, className]) => <polyline key={key} className={`dashboard-trend-line ${className}`} points={line(key)} />)}
-    {series.map(([key, _label, className]) => points.map((point) => <circle key={`${key}-${point.date}`} className={`dashboard-trend-point ${className}`} cx={point.x} cy={point.y[key]} r="3" />))}
+    {series.map(([key, _label, className]) => points.map((point, index) => <circle key={`${key}-${point.date}`} className={`dashboard-trend-point ${className}${activeIndex === index ? " chart-point-active" : ""}`} cx={point.x} cy={point.y[key]} r={activeIndex === index ? 4.5 : 3} />))}
+    {points.map((point, index) => <g key={`hit-${point.date}`} onMouseEnter={() => setActiveIndex(index)}><rect className="chart-hit-area" x={point.x - (points.length === 1 ? 18 : 14)} y={top} width={points.length === 1 ? 36 : 28} height={plotHeight} /></g>)}
     {points.map((point) => <text key={point.date} className="chart-label" x={point.x} y="170" textAnchor="middle">{point.date.slice(5).replace("-", "/")}</text>)}
-  </svg><div className="chart-legend">{series.map(([key, label, className]) => <span key={key}><i className={`legend-dot ${className}`} />{label}</span>)}</div></div>;
+  </svg>{activeTooltip.length > 0 && <div className="dashboard-trend-tooltip" role="status" style={{ left: `${Math.min(91, Math.max(9, ((activeIndex ?? 0) / Math.max(1, points.length - 1)) * 100))}%` }}>{activeTooltip.map((line) => <span key={line}>{line}</span>)}</div>}<div className="chart-legend">{series.map(([key, label, className]) => <span key={key}><i className={`legend-dot ${className}`} />{label}</span>)}</div></div>;
 }
 
 function CollectionOverview({ data, batchState }: { data: DashboardData | null; batchState: BatchState }) {
@@ -997,12 +1077,22 @@ export function formatStockDisplay(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
+export function formatPriceTick(value: number, step: number): string {
+  const decimals = Number.isInteger(step) ? 0 : step * 10 % 1 === 0 ? 1 : 2;
+  return `¥${value.toFixed(decimals)}`;
+}
+
+function formatPriceTrendValue(value: string): string {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2) : value;
+}
+
 export function formatTrendTooltip(point: DailyTrendPoint, kind: "price" | "stock"): string[] {
   const date = formatChartDate(point.date);
   if (kind === "stock") return point.total_stock === null ? [] : [date, `库存 ${formatStockDisplay(point.total_stock)}`];
   if (point.price_min === null && point.price_max === null) return [];
-  if (point.price_min !== null && point.price_max !== null && point.price_min === point.price_max) return [date, `价格 ¥${point.price_min}`];
-  return [date, ...(point.price_min === null ? [] : [`最低价 ¥${point.price_min}`]), ...(point.price_max === null ? [] : [`最高价 ¥${point.price_max}`])];
+  if (point.price_min !== null && point.price_max !== null && Number(point.price_min) === Number(point.price_max)) return [date, `价格 ¥${formatPriceTrendValue(point.price_min)}`];
+  return [date, ...(point.price_min === null ? [] : [`最低价 ¥${formatPriceTrendValue(point.price_min)}`]), ...(point.price_max === null ? [] : [`最高价 ¥${formatPriceTrendValue(point.price_max)}`])];
 }
 
 function DetailTrendChart({ kind, trend }: { kind: "price" | "stock"; trend: DailyTrendPoint[] }) {
@@ -1013,26 +1103,31 @@ function DetailTrendChart({ kind, trend }: { kind: "price" | "stock"; trend: Dai
   const plotHeight = height - top - bottom;
   const pricePoints = kind === "price" ? buildPriceChartPoints(trend, width, height) : [];
   const stockPoints = kind === "stock" ? buildStockChartPoints(trend, width, height) : [];
+  const scale = kind === "price" ? buildPriceChartScale(trend) : buildStockChartScale(trend);
   const points = kind === "price" ? pricePoints : stockPoints;
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
-  if (points.length === 0) return <div className="detail-chart-empty">该时间范围暂无可用{kind === "price" ? "价格" : "库存"}数据</div>;
-  const activePoint = activeIndex === null ? null : trend[activeIndex];
-  const activeTooltip = activePoint ? formatTrendTooltip(activePoint, kind) : [];
+  if (points.length === 0 || scale === null) return <div className="detail-chart-empty">该时间范围暂无可用{kind === "price" ? "价格" : "库存"}数据</div>;
+  const hitAreas = buildTrendHitAreas(points, detailChartLeft, width - detailChartRight);
+  const activeChartPoint = activeIndex === null ? null : points[activeIndex];
+  const activeTrendPoint = activeIndex === null ? null : trend[activeIndex];
+  const activeTooltip = activeTrendPoint ? formatTrendTooltip(activeTrendPoint, kind) : [];
   return <div className="detail-chart-shell" onMouseLeave={() => setActiveIndex(null)}>
     <svg className="detail-trend-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={kind === "price" ? "价格趋势" : "库存趋势"}>
-      {[0, 1, 2, 3].map((step) => <line key={step} className="chart-grid-line" x1="44" x2="624" y1={top + step * (plotHeight / 3)} y2={top + step * (plotHeight / 3)} />)}
+      {scale.ticks.map((tick) => { const y = chartY(tick, scale.domain[0], scale.domain[1], top, plotHeight); return <g key={tick}><line className="chart-grid-line" x1={detailChartLeft} x2={width - detailChartRight} y1={y} y2={y} /><text className="chart-label chart-y-label" x={detailChartLeft - 8} y={y + 3} textAnchor="end">{kind === "price" ? formatPriceTick(tick, scale.step) : formatStockDisplay(tick)}</text></g>; })}
+      {hitAreas.map((area, index) => <rect key={`hit-${index}`} className="chart-hit-area" x={area.x} y={top} width={area.width} height={plotHeight} onMouseEnter={() => setActiveIndex(index)} />)}
+      {activeChartPoint && <line className="chart-hover-line" x1={activeChartPoint.x} x2={activeChartPoint.x} y1={top} y2={top + plotHeight} />}
       {kind === "price" ? <>
         {lineSegments(pricePoints, "min_y").map((segment, index) => <polyline key={`min-${index}`} className="chart-line chart-line-min" points={segment.join(" ")} />)}
         {lineSegments(pricePoints, "max_y").map((segment, index) => <polyline key={`max-${index}`} className="chart-line chart-line-max" points={segment.join(" ")} />)}
-        {pricePoints.map((point, index) => <g key={point.date} onMouseEnter={() => setActiveIndex(index)}>
-          {point.min_y !== null && <circle className="chart-point chart-point-min" cx={point.x} cy={point.min_y} r="4" />}
-          {point.max_y !== null && <circle className="chart-point chart-point-max" cx={point.x} cy={point.max_y} r="4" />}
+        {pricePoints.map((point, index) => <g key={point.date} className={activeIndex === index ? "chart-point-group-active" : undefined} onMouseEnter={() => setActiveIndex(index)}>
+          {point.min_y !== null && <circle className="chart-point chart-point-min" cx={point.x} cy={point.min_y} r={activeIndex === index ? 5 : 4} />}
+          {point.max_y !== null && <circle className="chart-point chart-point-max" cx={point.x} cy={point.max_y} r={activeIndex === index ? 5 : 4} />}
           {shouldShowChartLabel(index, pricePoints.length) && <text className="chart-label" x={point.x} y={height - 8} textAnchor="middle">{formatChartDate(point.date)}</text>}
         </g>)}
       </> : <>
         {lineSegments(stockPoints, "y").map((segment, index) => <polyline key={`stock-${index}`} className="chart-line chart-line-stock" points={segment.join(" ")} />)}
-        {stockPoints.map((point, index) => <g key={point.date} onMouseEnter={() => setActiveIndex(index)}>
-          {point.y !== null && <circle className="chart-point chart-point-stock" cx={point.x} cy={point.y} r="4" />}
+        {stockPoints.map((point, index) => <g key={point.date} className={activeIndex === index ? "chart-point-group-active" : undefined} onMouseEnter={() => setActiveIndex(index)}>
+          {point.y !== null && <circle className="chart-point chart-point-stock" cx={point.x} cy={point.y} r={activeIndex === index ? 5 : 4} />}
           {shouldShowChartLabel(index, stockPoints.length) && <text className="chart-label" x={point.x} y={height - 8} textAnchor="middle">{formatChartDate(point.date)}</text>}
         </g>)}
       </>}

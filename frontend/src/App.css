@@ -260,3 +260,13 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
   }
 }
 
+.dashboard-trend-wrap { position: relative; }
+.chart-y-label { font-variant-numeric: tabular-nums; }
+.chart-hover-line { stroke: rgba(73, 116, 186, .28); stroke-dasharray: 3 4; stroke-width: 1; }
+.chart-hit-area { fill: transparent; cursor: crosshair; }
+.chart-point-active { stroke-width: 2.6; }
+.chart-point-group-active .chart-point { filter: drop-shadow(0 2px 4px rgba(55, 94, 164, .2)); }
+.dashboard-trend-tooltip { position: absolute; top: 9px; z-index: 2; display: grid; max-width: calc(100% - 24px); gap: 3px; padding: 7px 9px; border: 1px solid #dbe6f5; border-radius: 7px; color: #405878; background: rgba(255, 255, 255, .96); box-shadow: 0 8px 18px rgba(48, 72, 119, .12); font-size: 11px; pointer-events: none; transform: translateX(-50%); }
+.dashboard-trend-tooltip span { white-space: nowrap; }
+.detail-trend-chart .chart-y-label { font-size: 10px; }
+
