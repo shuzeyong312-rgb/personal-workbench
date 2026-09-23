@@ -402,6 +402,7 @@ def collect_competitor(
                         ChangeEvent(
                             competitor_id=competitor_id_value,
                             snapshot_id=None,
+                            collection_run_id=run_id,
                             change_type="product_offline",
                             entity_key=None,
                             old_value="active",
@@ -473,10 +474,13 @@ def collect_competitor(
                     ChangeEvent(
                         competitor_id=competitor_id_value,
                         snapshot_id=snapshot.id,
+                        collection_run_id=run_id,
                         change_type=draft.change_type,
                         entity_key=draft.entity_key,
                         old_value=draft.old_value,
                         new_value=draft.new_value,
+                        delta_value=draft.delta_value,
+                        delta_rate=draft.delta_rate,
                         detected_at=detected_at,
                     )
                     for draft in drafts
@@ -487,6 +491,7 @@ def collect_competitor(
                     ChangeEvent(
                         competitor_id=competitor_id_value,
                         snapshot_id=snapshot.id,
+                        collection_run_id=run_id,
                         change_type="product_online",
                         entity_key=None,
                         old_value="offline",

@@ -101,6 +101,8 @@ def add_change(
     entity_key: str | None = None,
     old_value: str | None = None,
     new_value: str | None = None,
+    delta_value: Decimal | None = None,
+    delta_rate: Decimal | None = None,
 ) -> ChangeEvent:
     change = ChangeEvent(
         competitor_id=competitor_id,
@@ -109,6 +111,8 @@ def add_change(
         entity_key=entity_key,
         old_value=old_value,
         new_value=new_value,
+        delta_value=delta_value,
+        delta_rate=delta_rate,
         detected_at=detected_at,
     )
     session.add(change)
@@ -370,6 +374,33 @@ def test_detail_decodes_latest_sku_name_and_resolves_exact_stock_change_sku(
     assert body["recent_changes"][0]["sku_name"] == "粉色>A19"
 
 
+def test_detail_resolves_names_for_v2_sku_events(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+    v2_types = ["price_decrease", "stock_decrease", "sku_sold_out", "sku_restocked", "sku_added", "sku_removed"]
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        snapshot = add_snapshot(session, competitor.id, timestamp, skus=[("sku-v2", 1)])
+        for change_type in v2_types:
+            add_change(
+                session,
+                competitor.id,
+                snapshot.id,
+                change_type,
+                timestamp,
+                entity_key="sku-v2",
+                old_value="1",
+                new_value="2",
+            )
+        session.commit()
+
+    body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
+
+    assert {change["change_type"] for change in body["recent_changes"]} == set(v2_types)
+    assert {change["sku_name"] for change in body["recent_changes"]} == {"sku-v2"}
+
+
 def test_detail_stock_change_uses_historical_sku_name_fallback_and_null_when_missing(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
@@ -465,13 +496,16 @@ def test_detail_recent_changes_returns_main_image_change_payload(
     body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
 
     assert body["recent_changes"][0] == {
-        "id": change.id,
-        "snapshot_id": current.id,
-        "change_type": "main_image_changed",
+            "id": change.id,
+            "snapshot_id": current.id,
+            "collection_run_id": None,
+            "change_type": "main_image_changed",
         "entity_key": None,
         "old_value": "https://img.example.com/a.jpg",
-        "new_value": "https://img.example.com/b.jpg",
-        "detected_at": timestamp.replace(tzinfo=None).isoformat(),
+            "new_value": "https://img.example.com/b.jpg",
+            "delta_value": None,
+            "delta_rate": None,
+            "detected_at": timestamp.replace(tzinfo=None).isoformat(),
         "sku_name": None,
     }
     assert body["latest_price_change"] is None
@@ -492,6 +526,36 @@ def test_latest_price_change_supports_both_price_directions(
     body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
 
     assert body["latest_price_change"]["change_type"] == change_type
+
+
+def test_detail_change_delta_http_contract_serializes_decimal_as_string(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+    with client[1]() as session:
+        competitor = add_competitor(session)
+        snapshot = add_snapshot(session, competitor.id, timestamp)
+        add_change(
+            session,
+            competitor.id,
+            snapshot.id,
+            "price_decrease",
+            timestamp,
+            old_value="40.00",
+            new_value="35.00",
+            delta_value=Decimal("-5"),
+            delta_rate=Decimal("-12.500000"),
+        )
+        session.commit()
+
+    response = client[0].get(f"/api/competitors/{competitor.id}/detail")
+
+    assert response.status_code == 200
+    change = response.json()["recent_changes"][0]
+    assert isinstance(change["delta_value"], str)
+    assert isinstance(change["delta_rate"], str)
+    assert Decimal(change["delta_value"]) == Decimal("-5")
+    assert Decimal(change["delta_rate"]) == Decimal("-12.500000")
 
 
 def test_no_price_event_returns_null_even_with_recent_other_changes(

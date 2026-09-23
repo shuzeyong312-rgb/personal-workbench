@@ -61,15 +61,7 @@ export type Competitor = {
     price_max: string | null;
     sku_count: number;
   } | null;
-  latest_change: {
-    id: number;
-    snapshot_id: number | null;
-    change_type: string;
-    entity_key: string | null;
-    old_value: string | null;
-    new_value: string | null;
-    detected_at: string;
-  } | null;
+  latest_change: Change | null;
 };
 
 type LifecycleCompetitor = Pick<Competitor, "id" | "title" | "offer_id" | "is_active">;
@@ -175,11 +167,14 @@ export type ListNavigationIntent = {
 export type Change = {
   id: number;
   snapshot_id?: number | null;
+  collection_run_id?: number | null;
   change_type: string;
   entity_key: string | null;
   sku_name?: string | null;
   old_value: string | null;
   new_value: string | null;
+  delta_value: string | null;
+  delta_rate: string | null;
   detected_at: string;
 };
 
@@ -543,6 +538,8 @@ export function formatPriceChangeTransition(change: Change | null): string {
 
 export function formatPriceChangeMagnitude(change: Change | null): string {
   if (change === null || !["price_increase", "price_decrease"].includes(change.change_type)) return "—";
+  const deltaRate = parseNumericString(change.delta_rate);
+  if (deltaRate !== null) return formatPercentageMagnitude(deltaRate);
   const oldValue = parseSinglePrice(change.old_value);
   const newValue = parseSinglePrice(change.new_value);
   if (oldValue === null || newValue === null || oldValue === 0) return "—";
@@ -558,14 +555,40 @@ export function formatChange(change: Change): string {
   switch (change.change_type) {
     case "product_offline": return "商品已下架";
     case "product_online": return "商品恢复上架";
-    case "price_increase": return `价格上涨 ${oldValue} → ${newValue}`;
-    case "price_decrease": return `价格下降 ${oldValue} → ${newValue}`;
+    case "price_increase": {
+      const prefix = change.entity_key ? "SKU 涨价" : "商品涨价";
+      const sku = change.entity_key ? `${change.sku_name?.trim() || `SKU ${change.entity_key}`} · ` : "";
+      return `${sku}${prefix} ${oldValue} → ${newValue}`;
+    }
+    case "price_decrease": {
+      const prefix = change.entity_key ? "SKU 降价" : "商品降价";
+      const sku = change.entity_key ? `${change.sku_name?.trim() || `SKU ${change.entity_key}`} · ` : "";
+      return `${sku}${prefix} ${oldValue} → ${newValue}`;
+    }
     case "sku_added": { const value = displayValue(change.new_value); return value ? `新增 SKU：${value}` : "新增 SKU"; }
     case "sku_removed": { const value = displayValue(change.old_value); return value ? `移除 SKU：${value}` : "移除 SKU"; }
     case "stock_changed": {
       const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "");
       return sku ? `${sku} · 库存 ${oldValue} → ${newValue}` : `库存变化 ${oldValue} → ${newValue}`;
     }
+    case "stock_increase": {
+      const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "SKU");
+      return `${sku} · SKU 库存增加 ${oldValue} → ${newValue}`;
+    }
+    case "stock_decrease": {
+      const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "SKU");
+      return `${sku} · SKU 库存下降 ${oldValue} → ${newValue}`;
+    }
+    case "sku_sold_out": {
+      const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "SKU");
+      return `${sku} · SKU 售罄`;
+    }
+    case "sku_restocked": {
+      const sku = change.sku_name?.trim() || (change.entity_key ? `SKU ${change.entity_key}` : "SKU");
+      return `${sku} · SKU 恢复有货`;
+    }
+    case "min_order_quantity_increase": return `起批量增加 ${oldValue} → ${newValue}`;
+    case "min_order_quantity_decrease": return `起批量降低 ${oldValue} → ${newValue}`;
     case "main_image_changed": return "主图发生变化";
     case "title_changed": return "标题已变更";
     default: return "发生变化";
@@ -576,8 +599,14 @@ export function getChangeTypeLabel(changeType: string): string {
   if (changeType === "product_offline") return "商品下架";
   if (changeType === "product_online") return "恢复上架";
   if (changeType === "price_increase" || changeType === "price_decrease") return "变价";
+  if (changeType === "stock_increase") return "库存增加";
+  if (changeType === "stock_decrease") return "库存下降";
+  if (changeType === "sku_sold_out") return "SKU 售罄";
+  if (changeType === "sku_restocked") return "SKU 恢复有货";
   if (changeType === "stock_changed") return "库存变化";
   if (changeType === "sku_added" || changeType === "sku_removed") return "SKU变化";
+  if (changeType === "min_order_quantity_increase") return "起批量增加";
+  if (changeType === "min_order_quantity_decrease") return "起批量降低";
   if (changeType === "main_image_changed") return "主图变化";
   if (changeType === "title_changed") return "标题变化";
   return "其他变化";
@@ -608,11 +637,23 @@ function formatPercentageMagnitude(percentage: number): string {
   return percentage !== 0 && magnitude === "0.0" ? `${direction} <0.1%` : `${direction} ${magnitude}%`;
 }
 
+function parseNumericString(value: string | null): number | null {
+  if (value === null || value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function formatChangeMagnitude(change: Change): string {
-  if (!["price_increase", "price_decrease", "stock_changed"].includes(change.change_type)) return "—";
-  const oldValue = Number(change.old_value);
-  const newValue = Number(change.new_value);
-  if (!Number.isFinite(oldValue) || !Number.isFinite(newValue) || oldValue === 0) return "—";
+  const numericTypes = [
+    "price_increase", "price_decrease", "stock_increase", "stock_decrease", "sku_sold_out",
+    "sku_restocked", "stock_changed", "min_order_quantity_increase", "min_order_quantity_decrease",
+  ];
+  if (!numericTypes.includes(change.change_type)) return "—";
+  const deltaRate = parseNumericString(change.delta_rate);
+  if (deltaRate !== null) return formatPercentageMagnitude(deltaRate);
+  const oldValue = parseNumericString(change.old_value);
+  const newValue = parseNumericString(change.new_value);
+  if (oldValue === null || newValue === null || oldValue === 0) return "—";
   const percentage = ((newValue - oldValue) / oldValue) * 100;
   return formatPercentageMagnitude(percentage);
 }
@@ -630,9 +671,10 @@ export function formatDashboardSummary(item: DashboardItem): string {
   if (change.change_type === "product_offline") return "商品已下架";
   if (change.change_type === "product_online") return "商品恢复上架";
   if (change.change_type === "price_increase" || change.change_type === "price_decrease") {
+    if (change.entity_key) return formatChange(change);
     return `${formatChangeValue(change, "old")} → ${formatChangeValue(change, "new")}`;
   }
-  if (change.change_type === "stock_changed") {
+  if (["stock_increase", "stock_decrease", "sku_sold_out", "sku_restocked", "stock_changed"].includes(change.change_type)) {
     const totals = item.stock_total_change;
     if (!totals || totals.old_total === null || totals.new_total === null) return "总库存发生变化";
     return `总库存 ${formatStockDisplay(totals.old_total)} → ${formatStockDisplay(totals.new_total)}`;
@@ -643,6 +685,7 @@ export function formatDashboardSummary(item: DashboardItem): string {
     if (item.sku_removed_count > 0) parts.push(`移除 ${item.sku_removed_count} 个 SKU`);
     return parts.join("，") || "SKU 发生变化";
   }
+  if (["min_order_quantity_increase", "min_order_quantity_decrease"].includes(change.change_type)) return formatChange(change);
   if (change.change_type === "main_image_changed") return "主图发生变化";
   if (change.change_type === "title_changed") return "标题已变更";
   return "发生变化";
@@ -650,7 +693,7 @@ export function formatDashboardSummary(item: DashboardItem): string {
 
 export function formatDashboardMagnitude(item: DashboardItem): string {
   if (!item.primary_change) return "—";
-  if (item.primary_change.change_type === "stock_changed") {
+  if (["stock_increase", "stock_decrease", "sku_sold_out", "sku_restocked", "stock_changed"].includes(item.primary_change.change_type)) {
     const totals = item.stock_total_change;
     if (!totals || totals.old_total === null || totals.new_total === null || totals.old_total === 0) return "—";
     const percentage = ((totals.new_total - totals.old_total) / totals.old_total) * 100;

@@ -237,6 +237,8 @@ def test_offline_collection_succeeds_without_snapshot_and_records_transition(
         assert events[0].new_value == "offline"
         assert events[0].entity_key is None
         assert events[0].snapshot_id is None
+        run = session.scalar(select(CollectionRun))
+        assert run is not None and events[0].collection_run_id == run.id
 
 
 def test_unknown_offline_collection_establishes_status_without_event(
@@ -312,6 +314,8 @@ def test_offline_to_active_creates_online_event_and_new_baseline(
         assert [(event.change_type, event.snapshot_id) for event in events] == [
             ("product_online", snapshots[1].id)
         ]
+        run = session.scalar(select(CollectionRun).order_by(CollectionRun.id.desc()))
+        assert run is not None and events[0].collection_run_id == run.id
 
 
 def test_unknown_to_active_creates_baseline_without_online_event(
@@ -626,7 +630,7 @@ def test_collection_persists_all_changes_against_latest_tied_snapshot(
         "title_changed",
         "sku_added",
         "sku_removed",
-        "stock_changed",
+            "stock_increase",
     }
     with client[1]() as session:
         saved_snapshots = session.scalars(
@@ -644,13 +648,19 @@ def test_collection_persists_all_changes_against_latest_tied_snapshot(
         ).all()
         assert [(event.change_type, event.old_value, event.new_value) for event in events] == [
             ("price_increase", "40.00~42.00", "45.00~47.00"),
-            ("title_changed", "基线标题", "新标题"),
+            ("stock_increase", "3", "8"),
             ("sku_added", None, "新增"),
             ("sku_removed", "删除", None),
-            ("stock_changed", "3", "8"),
+            ("title_changed", "基线标题", "新标题"),
         ]
         assert {event.snapshot_id for event in events} == {current_snapshot.id}
         assert {event.competitor_id for event in events} == {competitor_id}
+        assert {event.collection_run_id for event in events} == {
+            session.scalar(select(CollectionRun).order_by(CollectionRun.id.desc())).id
+        }
+        stock_event = next(event for event in events if event.change_type == "stock_increase")
+        assert stock_event.delta_value == Decimal("5")
+        assert stock_event.delta_rate == Decimal("166.666667")
         assert len({event.detected_at for event in events}) == 1
         assert session.scalar(select(CollectionRun).order_by(CollectionRun.id.desc())).status == "success"
 

@@ -63,10 +63,13 @@ class DailyTrendResponse(BaseModel):
 class DetailChangeResponse(BaseModel):
     id: int
     snapshot_id: int | None
+    collection_run_id: int | None
     change_type: str
     entity_key: str | None
     old_value: str | None
     new_value: str | None
+    delta_value: str | None
+    delta_rate: str | None
     detected_at: datetime
     sku_name: str | None = None
 
@@ -110,16 +113,16 @@ def _change_sku_names(
     competitor_id: int,
     changes: Sequence[ChangeEvent],
 ) -> dict[tuple[int, str], str | None]:
-    stock_changes = [
+    sku_changes = [
         change
         for change in changes
-        if change.change_type == "stock_changed" and change.entity_key
+        if change.entity_key
     ]
-    if not stock_changes:
+    if not sku_changes:
         return {}
 
-    snapshot_ids = {change.snapshot_id for change in stock_changes if change.snapshot_id is not None}
-    sku_ids = {change.entity_key for change in stock_changes if change.entity_key is not None}
+    snapshot_ids = {change.snapshot_id for change in sku_changes if change.snapshot_id is not None}
+    sku_ids = {change.entity_key for change in sku_changes if change.entity_key is not None}
     exact_names: dict[tuple[int, str], str] = {}
     exact_rows = db.execute(
         select(SkuSnapshot.product_snapshot_id, SkuSnapshot.sku_id, SkuSnapshot.sku_name).where(
@@ -159,7 +162,7 @@ def _change_sku_names(
             (change.snapshot_id, change.entity_key),
             historical_names.get(change.entity_key),
         )
-        for change in stock_changes
+        for change in sku_changes
         if change.entity_key is not None
     }
 
@@ -169,15 +172,18 @@ def _change_response(
     sku_names: dict[tuple[int, str], str | None],
 ) -> dict[str, object]:
     sku_name = None
-    if change.change_type == "stock_changed" and change.entity_key and change.snapshot_id is not None:
+    if change.entity_key:
         sku_name = sku_names.get((change.snapshot_id, change.entity_key))
     return {
         "id": change.id,
         "snapshot_id": change.snapshot_id,
+        "collection_run_id": change.collection_run_id,
         "change_type": change.change_type,
         "entity_key": change.entity_key,
         "old_value": change.old_value,
         "new_value": change.new_value,
+        "delta_value": str(change.delta_value) if change.delta_value is not None else None,
+        "delta_rate": str(change.delta_rate) if change.delta_rate is not None else None,
         "detected_at": change.detected_at,
         "sku_name": sku_name,
     }

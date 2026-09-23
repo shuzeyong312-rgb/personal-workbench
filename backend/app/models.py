@@ -113,7 +113,7 @@ class ChangeEvent(Base):
     __tablename__ = "change_events"
     __table_args__ = (
         CheckConstraint(
-            "change_type IN ('price_increase', 'price_decrease', 'sku_added', 'sku_removed', 'stock_changed', 'title_changed', 'main_image_changed', 'product_offline', 'product_online')",
+            "change_type IN ('price_increase', 'price_decrease', 'stock_increase', 'stock_decrease', 'sku_added', 'sku_removed', 'sku_sold_out', 'sku_restocked', 'min_order_quantity_increase', 'min_order_quantity_decrease', 'product_offline', 'product_online', 'title_changed', 'main_image_changed', 'stock_changed')",
             name="ck_change_events_change_type",
         ),
         CheckConstraint(
@@ -132,8 +132,14 @@ class ChangeEvent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     competitor_id: Mapped[int] = mapped_column(ForeignKey("competitors.id"), nullable=False)
     snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("product_snapshots.id"), nullable=True)
+    collection_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("collection_runs.id", name="fk_change_events_collection_run_id_collection_runs"),
+        nullable=True,
+    )
     change_type: Mapped[str] = mapped_column(String(64), nullable=False)
     entity_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     old_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
     new_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    delta_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    delta_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

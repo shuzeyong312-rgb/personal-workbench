@@ -455,13 +455,16 @@ def test_returns_contract_fields_without_group_name(
     }
     assert "group_name" not in item
     assert set(item["primary_change"]) == {
-        "id",
-        "change_type",
-        "entity_key",
-        "sku_name",
-        "old_value",
-        "new_value",
-        "detected_at",
+            "id",
+            "change_type",
+            "collection_run_id",
+            "entity_key",
+            "sku_name",
+            "old_value",
+            "new_value",
+            "delta_value",
+            "delta_rate",
+            "detected_at",
     }
 
 

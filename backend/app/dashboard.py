@@ -21,10 +21,13 @@ except ZoneInfoNotFoundError:
 class DashboardPrimaryChangeResponse(BaseModel):
     id: int
     change_type: str
+    collection_run_id: int | None
     entity_key: str | None
     sku_name: str | None
     old_value: str | None
     new_value: str | None
+    delta_value: str | None
+    delta_rate: str | None
     detected_at: datetime
 
 
@@ -116,14 +119,25 @@ def _average_duration_seconds(runs: list[CollectionRun]) -> float | None:
     return round(sum(durations) / len(durations), 2) if durations else None
 
 
+_PRICE_CHANGE_TYPES = frozenset({"price_increase", "price_decrease"})
+_STOCK_CHANGE_TYPES = frozenset(
+    {"stock_increase", "stock_decrease", "sku_sold_out", "sku_restocked", "stock_changed"}
+)
+_SKU_CHANGE_TYPES = frozenset({"sku_added", "sku_removed"})
 _CHANGE_PRIORITY = {
     "price_increase": 0,
     "price_decrease": 0,
+    "stock_increase": 1,
+    "stock_decrease": 1,
+    "sku_sold_out": 1,
+    "sku_restocked": 1,
     "stock_changed": 1,
     "sku_added": 2,
     "sku_removed": 2,
-    "main_image_changed": 3,
-    "title_changed": 4,
+    "min_order_quantity_increase": 3,
+    "min_order_quantity_decrease": 3,
+    "main_image_changed": 4,
+    "title_changed": 5,
 }
 _LIFECYCLE_CHANGE_TYPES = frozenset({"product_offline", "product_online"})
 
@@ -132,9 +146,7 @@ def _sku_names(
     db: Session,
     events: list[ChangeEvent],
 ) -> tuple[dict[tuple[int, str], str], dict[tuple[int, str], str]]:
-    stock_events = [
-        event for event in events if event.change_type == "stock_changed" and event.entity_key is not None
-    ]
+    stock_events = [event for event in events if event.entity_key is not None]
     if not stock_events:
         return {}, {}
     competitor_ids = {event.competitor_id for event in stock_events}
@@ -237,10 +249,18 @@ def _primary_event(events: list[ChangeEvent]) -> ChangeEvent:
     lifecycle_events = [event for event in events if event.change_type in _LIFECYCLE_CHANGE_TYPES]
     if lifecycle_events:
         return max(lifecycle_events, key=lambda event: (event.detected_at, event.id))
-    return min(
-        enumerate(events),
-        key=lambda pair: (_CHANGE_PRIORITY[pair[1].change_type], pair[0]),
-    )[1]
+    candidates = [event for event in events if event.change_type in _CHANGE_PRIORITY]
+    if not candidates:
+        return max(events, key=lambda event: (event.detected_at, event.id))
+    priority = min(_CHANGE_PRIORITY[event.change_type] for event in candidates)
+    candidates = [event for event in candidates if _CHANGE_PRIORITY[event.change_type] == priority]
+    if any(event.change_type in _PRICE_CHANGE_TYPES and event.entity_key is None for event in candidates):
+        candidates = [
+            event
+            for event in candidates
+            if event.change_type not in _PRICE_CHANGE_TYPES or event.entity_key is None
+        ]
+    return max(candidates, key=lambda event: (event.detected_at, event.id))
 
 
 def _change_type_display_key(change_type: str) -> tuple[int, int]:
@@ -248,7 +268,7 @@ def _change_type_display_key(change_type: str) -> tuple[int, int]:
         return (0, 0)
     if change_type == "product_online":
         return (0, 1)
-    return (1, _CHANGE_PRIORITY[change_type])
+    return (1, _CHANGE_PRIORITY.get(change_type, 99))
 
 
 @router.get("/today", response_model=DashboardResponse)
@@ -286,7 +306,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
             },
         )
         aggregate["events"].append(event)  # type: ignore[union-attr]
-        if event.change_type == "stock_changed":
+        if event.change_type in _STOCK_CHANGE_TYPES:
             if event.entity_key is None:
                 aggregate["stock_key_unknown"] = True
             else:
@@ -295,11 +315,11 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
             aggregate["sku_added_count"] += 1  # type: ignore[operator]
         elif event.change_type == "sku_removed":
             aggregate["sku_removed_count"] += 1  # type: ignore[operator]
-        if event.change_type in {"price_increase", "price_decrease"}:
+        if event.change_type in _PRICE_CHANGE_TYPES:
             price_changed_competitors.add(competitor.id)
-        elif event.change_type == "stock_changed":
+        elif event.change_type in _STOCK_CHANGE_TYPES:
             stock_changed_competitors.add(competitor.id)
-        elif event.change_type in {"sku_added", "sku_removed"}:
+        elif event.change_type in _SKU_CHANGE_TYPES:
             sku_changed_competitors.add(competitor.id)
 
     event_list = [event for aggregate in aggregates.values() for event in aggregate["events"]]  # type: ignore[union-attr]
@@ -308,7 +328,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
         primary
         for aggregate in aggregates.values()
         for primary in [_primary_event(aggregate["events"])]  # type: ignore[union-attr]
-        if primary.change_type == "stock_changed"
+        if primary.change_type in _STOCK_CHANGE_TYPES
     ]
     stock_total_changes = _stock_total_changes(db, primary_stock_events)
     items = []
@@ -322,7 +342,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
                 event_types.append(event.change_type)
         event_types.sort(key=_change_type_display_key)
         primary_sku_name = None
-        if primary.change_type == "stock_changed" and primary.entity_key is not None:
+        if primary.entity_key is not None:
             primary_sku_name = exact_sku_names.get(
                 (primary.snapshot_id, primary.entity_key),
                 historical_sku_names.get((competitor.id, primary.entity_key)),
@@ -342,15 +362,18 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
                 primary_change=DashboardPrimaryChangeResponse(
                     id=primary.id,
                     change_type=primary.change_type,
+                    collection_run_id=primary.collection_run_id,
                     entity_key=primary.entity_key,
                     sku_name=primary_sku_name,
                     old_value=primary.old_value,
                     new_value=primary.new_value,
+                    delta_value=str(primary.delta_value) if primary.delta_value is not None else None,
+                    delta_rate=str(primary.delta_rate) if primary.delta_rate is not None else None,
                     detected_at=primary.detected_at,
                 ),
                 stock_changed_sku_count=stock_sku_count,
                 stock_total_change=stock_total_changes.get(primary.snapshot_id)
-                if primary.change_type == "stock_changed"
+                if primary.change_type in _STOCK_CHANGE_TYPES
                 else None,
                 sku_added_count=aggregate["sku_added_count"],
                 sku_removed_count=aggregate["sku_removed_count"],
@@ -397,7 +420,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
             continue
         if change_type in {"price_increase", "price_decrease"}:
             trend_counts[day]["price_changes"] += 1
-        elif change_type == "stock_changed":
+        elif change_type in _STOCK_CHANGE_TYPES:
             trend_counts[day]["stock_changes"] += 1
         elif change_type in {"sku_added", "sku_removed"}:
             trend_counts[day]["sku_changes"] += 1

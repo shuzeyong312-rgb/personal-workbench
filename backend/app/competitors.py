@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, timezone
+from html import unescape
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -60,10 +61,14 @@ class LatestSnapshotResponse(BaseModel):
 class ChangeEventSummary(BaseModel):
     id: int
     snapshot_id: int | None
+    collection_run_id: int | None
     change_type: str
     entity_key: str | None
+    sku_name: str | None = None
     old_value: str | None
     new_value: str | None
+    delta_value: str | None
+    delta_rate: str | None
     detected_at: datetime
 
 
@@ -231,10 +236,13 @@ def _latest_changes(db: Session, competitor_ids: list[int]) -> dict[int, ChangeE
             ChangeEvent.id,
             ChangeEvent.competitor_id,
             ChangeEvent.snapshot_id,
+            ChangeEvent.collection_run_id,
             ChangeEvent.change_type,
             ChangeEvent.entity_key,
             ChangeEvent.old_value,
             ChangeEvent.new_value,
+            ChangeEvent.delta_value,
+            ChangeEvent.delta_rate,
             ChangeEvent.detected_at,
             func.row_number()
             .over(
@@ -251,21 +259,62 @@ def _latest_changes(db: Session, competitor_ids: list[int]) -> dict[int, ChangeE
             ranked.c.id,
             ranked.c.competitor_id,
             ranked.c.snapshot_id,
+            ranked.c.collection_run_id,
             ranked.c.change_type,
             ranked.c.entity_key,
             ranked.c.old_value,
             ranked.c.new_value,
+            ranked.c.delta_value,
+            ranked.c.delta_rate,
             ranked.c.detected_at,
         ).where(ranked.c.change_rank == 1)
     ).all()
+    latest_rows = [row for row in rows if row.entity_key is not None]
+    exact_names: dict[tuple[int, str], str] = {}
+    historical_names: dict[tuple[int, str], str] = {}
+    if latest_rows:
+        sku_ids = {row.entity_key for row in latest_rows}
+        name_rows = db.execute(
+            select(
+                ProductSnapshot.competitor_id,
+                ProductSnapshot.id,
+                SkuSnapshot.sku_id,
+                SkuSnapshot.sku_name,
+                ProductSnapshot.captured_at,
+                SkuSnapshot.id,
+            )
+            .join(SkuSnapshot, SkuSnapshot.product_snapshot_id == ProductSnapshot.id)
+            .where(
+                ProductSnapshot.competitor_id.in_(competitor_ids),
+                SkuSnapshot.sku_id.in_(sku_ids),
+            )
+            .order_by(ProductSnapshot.captured_at.desc(), ProductSnapshot.id.desc(), SkuSnapshot.id.desc())
+        ).all()
+        for competitor_id, snapshot_id, sku_id, sku_name, _captured_at, _sku_snapshot_id in name_rows:
+            display_name = unescape(sku_name).strip() if sku_name else ""
+            if not display_name:
+                continue
+            historical_names.setdefault((competitor_id, sku_id), display_name)
+            exact_names.setdefault((snapshot_id, sku_id), display_name)
     return {
         int(row.competitor_id): ChangeEventSummary(
             id=int(row.id),
             snapshot_id=int(row.snapshot_id) if row.snapshot_id is not None else None,
+            collection_run_id=int(row.collection_run_id) if row.collection_run_id is not None else None,
             change_type=row.change_type,
             entity_key=row.entity_key,
+            sku_name=(
+                exact_names.get((row.snapshot_id, row.entity_key))
+                if row.snapshot_id is not None and row.entity_key is not None
+                else None
+            )
+            or historical_names.get((row.competitor_id, row.entity_key))
+            if row.entity_key is not None
+            else None,
             old_value=row.old_value,
             new_value=row.new_value,
+            delta_value=str(row.delta_value) if row.delta_value is not None else None,
+            delta_rate=str(row.delta_rate) if row.delta_rate is not None else None,
             detected_at=row.detected_at,
         )
         for row in rows

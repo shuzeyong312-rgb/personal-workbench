@@ -221,13 +221,17 @@ def test_listing_returns_latest_real_change_per_competitor_with_id_tiebreak(
     body = {item["offer_id"]: item for item in test_client.get("/api/competitors").json()}
     first_change = body["111"]["latest_change"]
     assert first_change == {
-        "id": newest_first_event.id,
-        "snapshot_id": snapshots[1].id,
-        "change_type": "price_increase",
+            "id": newest_first_event.id,
+            "snapshot_id": snapshots[1].id,
+            "collection_run_id": None,
+            "change_type": "price_increase",
         "entity_key": None,
+        "sku_name": None,
         "old_value": "1.00",
-        "new_value": "2.00",
-        "detected_at": "2026-09-19T12:00:00",
+            "new_value": "2.00",
+            "delta_value": None,
+            "delta_rate": None,
+            "detected_at": "2026-09-19T12:00:00",
     }
     assert body["222"]["latest_change"]["change_type"] == "sku_added"
     assert "changes" not in body["111"]

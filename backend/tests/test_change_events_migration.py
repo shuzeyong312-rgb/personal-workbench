@@ -70,25 +70,27 @@ def insert_fixture(database_url: str) -> None:
 
 def insert_change(database_url: str, change_type: str, snapshot_id: int | None = 1) -> None:
     engine = create_engine(database_url)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                INSERT INTO change_events (
-                    competitor_id, snapshot_id, change_type, entity_key,
-                    old_value, new_value, detected_at
-                ) VALUES (1, :snapshot_id, :change_type, NULL, :old_value, :new_value, :detected_at)
-                """
-            ),
-            {
-                "snapshot_id": snapshot_id,
-                "change_type": change_type,
-                "old_value": "https://img.example.com/a.jpg",
-                "new_value": "https://img.example.com/b.jpg",
-                "detected_at": "2026-09-22 00:00:00",
-            },
-        )
-    engine.dispose()
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO change_events (
+                        competitor_id, snapshot_id, change_type, entity_key,
+                        old_value, new_value, detected_at
+                    ) VALUES (1, :snapshot_id, :change_type, NULL, :old_value, :new_value, :detected_at)
+                    """
+                ),
+                {
+                    "snapshot_id": snapshot_id,
+                    "change_type": change_type,
+                    "old_value": "https://img.example.com/a.jpg",
+                    "new_value": "https://img.example.com/b.jpg",
+                    "detected_at": "2026-09-22 00:00:00",
+                },
+            )
+    finally:
+        engine.dispose()
 
 
 def delete_main_image_changes(database_url: str) -> None:
@@ -102,22 +104,75 @@ def delete_main_image_changes(database_url: str) -> None:
 
 def insert_lifecycle_change(database_url: str, change_type: str, snapshot_id: int | None) -> None:
     engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO change_events (
+                        competitor_id, snapshot_id, change_type, entity_key,
+                        old_value, new_value, detected_at
+                    ) VALUES (1, :snapshot_id, :change_type, NULL, :old_value, :new_value, :detected_at)
+                    """
+                ),
+                {
+                    "snapshot_id": snapshot_id,
+                    "change_type": change_type,
+                    "old_value": "active" if change_type == "product_offline" else "offline",
+                    "new_value": "offline" if change_type == "product_offline" else "active",
+                    "detected_at": "2026-09-22 00:00:00",
+                },
+            )
+    finally:
+        engine.dispose()
+
+
+def insert_collection_run(database_url: str) -> int:
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        result = connection.execute(
+            text(
+                """
+                INSERT INTO collection_runs (
+                    competitor_id, started_at, finished_at, status, error_type, error_message
+                ) VALUES (1, '2026-09-22 01:00:00', '2026-09-22 01:01:00', 'success', NULL, NULL)
+                """
+            )
+        )
+        run_id = int(result.lastrowid)
+    engine.dispose()
+    return run_id
+
+
+def insert_v2_change(
+    database_url: str,
+    change_type: str,
+    run_id: int,
+    *,
+    snapshot_id: int | None = 1,
+    delta_value: str | None = None,
+    delta_rate: str | None = None,
+) -> None:
+    engine = create_engine(database_url)
     with engine.begin() as connection:
         connection.execute(
             text(
                 """
                 INSERT INTO change_events (
-                    competitor_id, snapshot_id, change_type, entity_key,
-                    old_value, new_value, detected_at
-                ) VALUES (1, :snapshot_id, :change_type, NULL, :old_value, :new_value, :detected_at)
+                    competitor_id, snapshot_id, collection_run_id, change_type, entity_key,
+                    old_value, new_value, delta_value, delta_rate, detected_at
+                ) VALUES (
+                    1, :snapshot_id, :run_id, :change_type, 'sku-1',
+                    '10', '20', :delta_value, :delta_rate, '2026-09-22 01:01:00'
+                )
                 """
             ),
             {
                 "snapshot_id": snapshot_id,
+                "run_id": run_id,
                 "change_type": change_type,
-                "old_value": "active" if change_type == "product_offline" else "offline",
-                "new_value": "offline" if change_type == "product_offline" else "active",
-                "detected_at": "2026-09-22 00:00:00",
+                "delta_value": delta_value,
+                "delta_rate": delta_rate,
             },
         )
     engine.dispose()
@@ -290,9 +345,7 @@ def test_product_lifecycle_snapshot_constraint_round_trip_and_rejects_invalid_ro
             assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 4
             tables = {
                 row[0]
-                for row in connection.execute(
-                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
-                )
+                for row in connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
             }
             assert "_alembic_tmp_change_events" not in tables
         engine.dispose()
@@ -302,4 +355,117 @@ def test_product_lifecycle_snapshot_constraint_round_trip_and_rejects_invalid_ro
         with engine.begin() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260922_09"
             assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 4
+        engine.dispose()
+
+
+def test_change_event_v2_upgrade_preserves_legacy_and_enforces_new_contract() -> None:
+    with TemporaryDirectory() as temporary_directory:
+        database_url = f"sqlite:///{(Path(temporary_directory) / 'migration.db').as_posix()}"
+        run_migration(database_url, "20260922_09")
+        insert_fixture(database_url)
+        insert_change(database_url, "stock_changed")
+        run_migration(database_url, "20260923_10")
+        run_id = insert_collection_run(database_url)
+
+        v2_types = [
+            "price_increase",
+            "price_decrease",
+            "stock_increase",
+            "stock_decrease",
+            "sku_added",
+            "sku_removed",
+            "sku_sold_out",
+            "sku_restocked",
+            "min_order_quantity_increase",
+            "min_order_quantity_decrease",
+            "product_offline",
+            "product_online",
+            "title_changed",
+            "main_image_changed",
+        ]
+        for change_type in v2_types:
+            insert_v2_change(
+                database_url,
+                change_type,
+                run_id,
+                snapshot_id=None if change_type == "product_offline" else 1,
+                delta_value="10" if change_type == "stock_increase" else None,
+                delta_rate="100" if change_type == "stock_increase" else None,
+            )
+
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            assert connection.execute(
+                text("SELECT collection_run_id, delta_value, delta_rate FROM change_events WHERE change_type = 'stock_changed'")
+            ).one() == (None, None, None)
+            assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 15
+            with pytest.raises(IntegrityError):
+                connection.execute(
+                    text(
+                        "INSERT INTO change_events (competitor_id, snapshot_id, change_type, detected_at) "
+                        "VALUES (1, 1, 'not_supported', '2026-09-22 01:00:00')"
+                    )
+                )
+            with pytest.raises(IntegrityError):
+                connection.execute(
+                    text(
+                        "INSERT INTO change_events (competitor_id, snapshot_id, collection_run_id, change_type, detected_at) "
+                        "VALUES (1, 1, 999, 'price_increase', '2026-09-22 01:00:00')"
+                    )
+                )
+            tables = {
+                row[0]
+                for row in connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
+            }
+            assert "_alembic_tmp_change_events" not in tables
+        engine.dispose()
+
+
+@pytest.mark.parametrize("unsafe_kind", ["v2_event", "delta_value"])
+def test_change_event_v2_downgrade_refuses_unsafe_data_without_mutation(unsafe_kind: str) -> None:
+    with TemporaryDirectory() as temporary_directory:
+        database_url = f"sqlite:///{(Path(temporary_directory) / 'migration.db').as_posix()}"
+        run_migration(database_url, "20260922_09")
+        insert_fixture(database_url)
+        run_migration(database_url, "20260923_10")
+        run_id = insert_collection_run(database_url)
+        if unsafe_kind == "v2_event":
+            insert_v2_change(database_url, "stock_increase", run_id, delta_value="10", delta_rate="100")
+        else:
+            insert_v2_change(database_url, "stock_changed", run_id, delta_value="10")
+
+        with pytest.raises(RuntimeError, match="contains V2 event data"):
+            run_downgrade(database_url, "20260922_09")
+
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260923_10"
+            assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 1
+            tables = {
+                row[0]
+                for row in connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
+            }
+            assert "_alembic_tmp_change_events" not in tables
+        engine.dispose()
+
+
+def test_change_event_v2_clean_downgrade_upgrade_round_trip() -> None:
+    with TemporaryDirectory() as temporary_directory:
+        database_url = f"sqlite:///{(Path(temporary_directory) / 'migration.db').as_posix()}"
+        run_migration(database_url, "20260922_09")
+        insert_fixture(database_url)
+        insert_change(database_url, "stock_changed")
+        run_migration(database_url, "20260923_10")
+        run_downgrade(database_url, "20260922_09")
+        run_migration(database_url, "20260923_10")
+
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            assert connection.execute(text("SELECT COUNT(*) FROM change_events")).scalar_one() == 1
+            assert connection.execute(text("PRAGMA table_info(change_events)")).all()
+            tables = {
+                row[0]
+                for row in connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
+            }
+            assert "_alembic_tmp_change_events" not in tables
         engine.dispose()

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -26,13 +26,17 @@ const listProps = { groups: [] as CompetitorGroup[] };
 const group: CompetitorGroup = { id: 1, name: "暖手宝", created_at: "2026-09-20T10:00:00Z" };
 const groupMetrics: CompetitorGroupMetrics = { competitor_count: 3, active_count: 2, price_min: "34.00", price_max: "40.00", changed_competitors_today: 2, last_change_at: "2026-09-21T10:35:00Z" };
 const groupSummary: CompetitorGroupSummary = { ...group, ...groupMetrics };
-const latestChange = (overrides: Partial<NonNullable<Competitor["latest_change"]>> = {}): NonNullable<Competitor["latest_change"]> => ({
+const latestChange = (overrides: Partial<Change> = {}): Change => ({
   id: 1,
   snapshot_id: 2,
+  collection_run_id: null,
   change_type: "title_changed",
   entity_key: null,
+  sku_name: null,
   old_value: null,
   new_value: null,
+  delta_value: null,
+  delta_rate: null,
   detected_at: "2026-09-20T10:00:00Z",
   ...overrides,
 });
@@ -333,12 +337,18 @@ test("renders real snapshot price and SKU values", () => {
 });
 
 test.each([
-  [latestChange({ change_type: "price_increase", old_value: "40.00", new_value: "45.00" }), "价格上涨 40.00 → 45.00"],
-  [latestChange({ change_type: "price_decrease", old_value: "45.00", new_value: "40.00" }), "价格下降 45.00 → 40.00"],
+  [latestChange({ change_type: "price_increase", old_value: "40.00", new_value: "45.00" }), "商品涨价 40.00 → 45.00"],
+  [latestChange({ change_type: "price_decrease", old_value: "45.00", new_value: "40.00" }), "商品降价 45.00 → 40.00"],
+  [latestChange({ change_type: "price_decrease", entity_key: "sku-1", sku_name: "红色", old_value: "38.00", new_value: "35.00" }), "红色 · SKU 降价 38.00 → 35.00"],
   [latestChange({ change_type: "sku_added", new_value: "红色" }), "新增 SKU：红色"],
   [latestChange({ change_type: "sku_removed", old_value: "蓝色" }), "移除 SKU：蓝色"],
   [latestChange({ change_type: "stock_changed", old_value: "10", new_value: "20" }), "库存变化 10 → 20"],
   [latestChange({ change_type: "stock_changed", old_value: "10", new_value: "0" }), "库存变化 10 → 0"],
+  [latestChange({ change_type: "stock_increase", entity_key: "sku-1", sku_name: "红色", old_value: "10", new_value: "20" }), "红色 · SKU 库存增加 10 → 20"],
+  [latestChange({ change_type: "stock_decrease", entity_key: "sku-1", sku_name: "红色", old_value: "20", new_value: "10" }), "红色 · SKU 库存下降 20 → 10"],
+  [latestChange({ change_type: "sku_sold_out", entity_key: "sku-1", sku_name: "红色", old_value: "10", new_value: "0" }), "红色 · SKU 售罄"],
+  [latestChange({ change_type: "sku_restocked", entity_key: "sku-1", sku_name: "红色", old_value: "0", new_value: "10" }), "红色 · SKU 恢复有货"],
+  [latestChange({ change_type: "min_order_quantity_decrease", old_value: "5", new_value: "1" }), "起批量降低 5 → 1"],
   [latestChange({ change_type: "main_image_changed" }), "主图发生变化"],
   [latestChange({ change_type: "title_changed" }), "标题已变更"],
   [latestChange({ change_type: "new_change_type" }), "发生变化"],
@@ -373,6 +383,31 @@ test("keeps zero and normal percentage magnitudes unchanged", () => {
   expect(formatChangeMagnitude(latestChange({ change_type: "price_increase", old_value: "100", new_value: "100.2" }))).toBe("↑ 0.2%");
 });
 
+test.each([
+  ["0", "↑ 0.0%"],
+  ["0.000000", "↑ 0.0%"],
+  ["16.666667", "↑ 16.7%"],
+  ["-16.666667", "↓ 16.7%"],
+] as const)("formats numeric-string delta_rate %s", (delta_rate, expected) => {
+  const change = latestChange({
+    change_type: "price_decrease",
+    old_value: "40.00",
+    new_value: "35.00",
+    delta_value: "-5.000000",
+    delta_rate,
+  });
+  expect(formatPriceChangeMagnitude(change)).toBe(expected);
+  expect(formatChangeMagnitude(change)).toBe(expected);
+});
+
+test("treats null, empty, and invalid delta_rate as unknown without rendering NaN", () => {
+  const unknown = latestChange({ change_type: "price_decrease", delta_rate: null, old_value: null, new_value: null });
+  expect(formatPriceChangeMagnitude(unknown)).toBe("—");
+  expect(formatChangeMagnitude(unknown)).toBe("—");
+  expect(formatChangeMagnitude(latestChange({ delta_rate: "", old_value: null, new_value: null }))).toBe("—");
+  expect(formatChangeMagnitude(latestChange({ delta_rate: "not-a-number", old_value: null, new_value: null }))).toBe("—");
+});
+
 test("formats lifecycle changes for list, detail, and dashboard", () => {
   expect(formatChange(latestChange({ change_type: "product_offline", snapshot_id: null }))).toBe("商品已下架");
   expect(formatChange(latestChange({ change_type: "product_online", snapshot_id: 4 }))).toBe("商品恢复上架");
@@ -394,13 +429,16 @@ test("renders the real latest change in the recent change column", () => {
       snapshot_id: 8,
       change_type: "price_increase",
       entity_key: null,
+      sku_name: null,
       old_value: "40.00",
       new_value: "45.00",
+      delta_value: null,
+      delta_rate: null,
       detected_at: "2026-09-20T10:00:00Z",
     },
   };
   const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[changed]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
-  expect(html).toContain("价格上涨 40.00 → 45.00");
+  expect(html).toContain("商品涨价 40.00 → 45.00");
 });
 
 test("displays real batch progress and disables selection while running", () => {
@@ -527,7 +565,7 @@ const dashboardData: DashboardData = {
     change_count: 2,
     change_types: ["price_increase", "title_changed"],
     latest_change_at: "2026-09-20T10:00:00Z",
-    primary_change: { id: 2, change_type: "price_increase", entity_key: null, sku_name: null, old_value: "40.00", new_value: "45.00", detected_at: "2026-09-20T10:00:00Z" },
+    primary_change: { id: 2, snapshot_id: 3, collection_run_id: 4, change_type: "price_increase", entity_key: null, sku_name: null, old_value: "40.00", new_value: "45.00", delta_value: null, delta_rate: null, detected_at: "2026-09-20T10:00:00Z" },
     stock_changed_sku_count: 0,
     stock_total_change: null,
     sku_added_count: 0,
@@ -590,8 +628,8 @@ test("renders all competitor items without expanding event rows", () => {
 });
 
 test("formats dashboard change rows, badges, magnitudes, and collection durations", () => {
-  const price = { id: 1, change_type: "price_decrease", entity_key: null, old_value: "40", new_value: "38", detected_at: "2026-09-20T10:00:00Z" };
-  const sku = { id: 2, change_type: "sku_added", entity_key: "sku-red", old_value: null, new_value: "红色", detected_at: "2026-09-20T10:00:00Z" };
+  const price = { id: 1, change_type: "price_decrease", entity_key: null, old_value: "40", new_value: "38", delta_value: null, delta_rate: null, detected_at: "2026-09-20T10:00:00Z" };
+  const sku = { id: 2, change_type: "sku_added", entity_key: "sku-red", old_value: null, new_value: "红色", delta_value: null, delta_rate: null, detected_at: "2026-09-20T10:00:00Z" };
   expect(formatChangeValue(price, "old")).toBe("¥40");
   expect(formatChangeValue(price, "new")).toBe("¥38");
   expect(formatChangeMagnitude(price)).toBe("↓ 5.0%");
@@ -609,6 +647,8 @@ test("formats dashboard change rows, badges, magnitudes, and collection duration
   expect(formatDashboardMagnitude({ ...stockItem, stock_total_change: { old_total: 0, new_total: 10 } })).toBe("—");
   expect(formatDashboardSummary(stockItem)).not.toContain("白色款");
   expect(formatDashboardSummary(stockItem)).not.toContain("个 SKU");
+  const skuPrice = { ...price, change_type: "price_decrease", entity_key: "sku-red", sku_name: "白色款", old_value: "40", new_value: "38" };
+  expect(formatDashboardSummary({ ...dashboardData.items[0], primary_change: skuPrice })).toBe("白色款 · SKU 降价 40 → 38");
   const mainImage = { ...price, change_type: "main_image_changed", entity_key: null, sku_name: null, old_value: "https://img.example.com/a.jpg", new_value: "https://img.example.com/b.jpg" };
   const mainImageItem = { ...dashboardData.items[0], change_types: ["main_image_changed"], primary_change: mainImage, stock_total_change: null };
   expect(formatDashboardSummary(mainImageItem)).toBe("主图发生变化");
@@ -667,8 +707,8 @@ test("renders detail entry actions on dashboard and competitor list", () => {
 });
 
 test.each([
-  [latestChange({ change_type: "price_increase", old_value: "1", new_value: "2" }), "价格上涨 1 → 2"],
-  [latestChange({ change_type: "price_decrease", old_value: "2", new_value: "1" }), "价格下降 2 → 1"],
+  [latestChange({ change_type: "price_increase", old_value: "1", new_value: "2" }), "商品涨价 1 → 2"],
+  [latestChange({ change_type: "price_decrease", old_value: "2", new_value: "1" }), "商品降价 2 → 1"],
   [latestChange({ change_type: "sku_added", new_value: "红色" }), "新增 SKU：红色"],
   [latestChange({ change_type: "sku_removed", old_value: "蓝色" }), "移除 SKU：蓝色"],
   [latestChange({ change_type: "stock_changed", old_value: "1", new_value: "0" }), "库存变化 1 → 0"],
@@ -942,7 +982,7 @@ test("renders price chart data, selector state, changes and collection statuses"
   expect(html).toContain('aria-pressed="true"');
   expect(html).toContain("近 30 天");
   expect(html).toContain("价格趋势");
-  expect(html).toContain("价格上涨 38.00 → 40.00");
+  expect(html).toContain("商品涨价 38.00 → 40.00");
   expect(html).toContain("成功");
   expect(html).toContain("结束时间");
   expect(html).toContain("请求超时");
