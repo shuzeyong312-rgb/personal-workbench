@@ -1,6 +1,6 @@
 # 竞品组中心化 / Group Intelligence V1
 
-状态：正式产品方向 Spec。基础事实层、ChangeEvent V2、我方角色绑定已实现；Group Detail / 组级读取 contract 尚待实现。
+状态：正式产品方向 Spec。角色绑定、ChangeEvent V2、Group-level read contract 已实现；Group Detail V1 已实现并经过人工验收。下一阶段为 Dashboard Group Entry V1，直接实现范围见 `docs/specs/dashboard-group-entry-v1.md`。
 
 ## Problem Statement
 
@@ -451,8 +451,8 @@ Y35：1 家商品下架，2 家调整价格
 
 ### 后续实施顺序
 
-1. 实现组级读取 contract，批量聚合现有商品、最新 Snapshot、SKU 与 ChangeEvent，不新增聚合存储或事件。
-2. 实现 Group Detail 页面并消费该 contract；当前 Groups / List / Dashboard / Competitor Detail 不被误认为 Group Detail 已存在。
-3. Group Detail 稳定后再考虑 Dashboard 组级入口；本阶段不修改 Dashboard。
+1. 角色绑定与 ChangeEvent V2 已实现；Group-level read contract 已实现。
+2. Group Detail V1 已实现并经过人工验收，继续作为组级竞争分析页面。
+3. 下一阶段为 Dashboard Group Entry V1：在保留 Dashboard 竞品级总览的前提下增加进入已有 Group Detail 的自然入口。
 
-Group Detail V1 的直接实现 contract 见 `docs/specs/group-detail-v1.md`。角色、事件和基础事实层已实现；本 Spec 保留产品方向与设计背景，不代表 Group Detail 或组级读取 API 已存在。
+Group Detail V1 的实现 contract 见 `docs/specs/group-detail-v1.md`。本 Spec 保留 Group Intelligence 的长期产品方向与设计背景；Dashboard Group Entry V1 不改变页面职责边界，也不预先决定未来是否转向组级关注入口。
