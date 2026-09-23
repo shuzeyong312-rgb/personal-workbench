@@ -6,7 +6,7 @@
 
 ## Solution
 
-Group Detail 是“一个我方真实商品 + 该组直接竞品”的日常竞争分析页。它首先回答：我方商品当前是什么事实状态；我方和每个直接竞品当前差在哪里；今天该组发生了什么客观变化；最近 7 / 30 天谁动作最多、动作集中在哪些领域。用户还可以进入现有 Competitor Detail 看证据，或进入 Competitor List 继续管理。
+Group Detail 是“一个我方真实商品 + 该组直接竞品”的日常竞争分析页。页面目标是让用户在约 10 秒内识别我方当前基准、主要可比较差异和近期竞争动作。详细事实证据交给现有 Competitor Detail，避免组页重复承担单商品详情的全部展示职责。用户也可以进入 Competitor List 继续管理。
 
 它不是大型 BI 大屏、第二个 Dashboard、商品管理页、AI 决策页或自动调价页。
 
@@ -159,25 +159,30 @@ Group Detail 是独立的只读聚合能力，可由独立 group-detail query/ro
 
 ### 7. 页面信息架构与展示
 
-页面自然纵向滚动，不做第二个 Dashboard。顺序：
+页面自然纵向滚动，不做第二个 Dashboard。主结构收敛为三段：
 
 1. PageHeader；
-2. 我方商品概览；
-3. 事实差距摘要；
-4. 我方与竞品横向比较；
-5. 今日竞争变化；
-6. 近 7 / 30 天动作；
-7. 进入单个 Competitor Detail 的证据入口。
+2. 我方基准 + 关键差距；
+3. 我方 vs 竞品；
+4. 竞争动态。
+
+Competitor Detail 证据入口保留在比较行和动态项中，不作为独立大区块。
 
 Header 使用面包屑“个人工作台 / 竞品监控 / 竞品分组 / {group.name}”，标题“{group.name} 竞争分析”，说明围绕我方商品查看当前竞争位置和近期客观变化。必要入口为“查看竞品”和“返回竞品分组”；不放删除、批量采集、绑定管理或自动建议。
 
-我方概览展示主图、title、shop_name、1688 链接、status、监控状态、价格、MOQ、SKU 数、完整库存、latest snapshot captured_at、last_collected_at 和 latest change。它是事实卡，不展示评分或推荐售价。
+我方区域仍展示真实主图、title / Offer fallback、shop_name、1688 链接、status、监控状态、价格、MOQ、SKU 数、完整库存和更新时间。价格、MOQ、SKU、库存使用紧凑事实行或等价布局，不分别制作大 Stat Card；时间信息降低视觉权重，不要求 Snapshot time 与 last_collected_at 都作为独立大字段。它是事实展示，不显示评分或推荐售价。
 
-事实差距使用 Backend summary，四项显示“matched / comparable 个可比较竞品”。可比较数为 0 显示“暂无可比数据”。比较表至少含商品、角色、当前价格、起批量、SKU、完整库存、与我方比较、最近采集、最近变化；我方行固定首行并克制突出。竞品每行提供“查看详情”。比较结论使用文字（如“低于我方”“相同”“未知”），避免堆叠彩色 Badge。
+顶部 Fact Gap 只展示 Backend summary 中的 `price_lower_than_own`（明确低价竞品）、`moq_lower_than_own`（更低起批量竞品）、`sku_more_than_own`（SKU 更多竞品）。`stock_higher_than_own` 仍是 Backend contract 的 summary metric，但不作为顶部 KPI：库存高于我方是客观比较事实，不应在视觉上暗示为一级竞争优势；库存仍留在 comparison table。每项使用 `matched_count / comparable_count` 并注明可比较竞品；`comparable_count = 0` 显示“暂无可比数据”，不显示“0 / 0”。
 
-今日区域表达今天有变化的直接竞品数、竞品事件数和我方事件数，事件按时间倒序并标明“我方”或“竞品”；own 不进入变化竞品数。
+比较表列为：商品、当前价格、起批量、SKU、库存、当前差异、最近变化、详情。角色和最近采集不独立成列；我方固定第一行，以克制的“我方”小标识和可选浅色行背景突出，普通竞品行不要求重复显示“竞品” Badge。最近采集可作为商品信息下的次级文字（如“14:48 更新”）。竞品行提供“查看详情”。
 
-动作区域提供“近 7 天 / 近 30 天”切换，默认 7 天。展示每个有动作竞品的总动作数、价格/库存/SKU/起批量/生命周期/标题/主图分布、最近动作时间和详情入口。可以简洁呈现领域统计，但不得隐藏其事实含义。
+Frontend 直接消费 Backend comparison，不自行计算。当前差异只突出有意义的真实方向：price 的 lower / higher 显示“低价” / “高价”，overlap 不突出；MOQ 的 lower / higher 显示“起批更低” / “起批更高”；SKU 的 more / fewer 显示“SKU 更多” / “SKU 更少”；库存的 higher / lower 显示“库存更高” / “库存更低”，其视觉权重低于价格、MOQ 和 SKU，且不解释为竞争优势或销量。equal / overlap 不突出，unknown 不生成方向结论。若没有值得突出的可比较方向差异，显示“基本持平”；部分字段 unknown 时仍显示其他真实差异，例如“低价 · SKU 更多”，不得被单个 unknown 覆盖。没有可展示差异且有缺失时可显示“部分数据未知”。
+
+最近变化只显示紧凑的真实事实（例如“库存 994 → 987”“标题已变更”“商品降价 ¥40 → ¥38”）；没有事件时不显示“暂无变化”。完整事件证据由 Competitor Detail 提供。
+
+“竞争动态”合并 today 与 action_window，提供“今日 / 近 7 天 / 近 30 天”Tab，默认“近 7 天”。今日消费 `response.today`，可紧凑显示变化竞品、竞品事件和我方事件计数；三者均为 0 时直接显示“今日暂无变化”，有事件时按 Backend 顺序显示真实事件并区分“我方”与“竞品”。近 7 / 30 天消费 `action_window`；切换 7 与 30 天分别重新请求 `?days=7` 和 `?days=30`，不得从 30 天结果前端切片得到 7 天。range-loading 保留已有页面内容。
+
+动作列表不按“7 个领域列 × N 个竞品”铺开，使用紧凑排行 / 列表，每项展示商品、event_count、非零 domain counts、latest_change_at 和详情入口。Backend `domain_counts` 完整保留；Frontend 只展示 count > 0 的领域。主页面只展示 Backend 已排序 `action_window.competitors` 的前 5 条；Backend 仍返回完整列表。动作数只表示真实 ChangeEvent 数量，允许称“近期动作”“动作最多”或“变化较多”，不得表述为风险、威胁或竞争力判断。
 
 遵守 `docs/ui-system.md` 的浅色、蓝紫雾感、轻毛玻璃、中等圆角和桌面优先规范；不创建新 design system，不做深色 BI、高饱和数据墙、雷达图或评分仪表。
 
@@ -208,7 +213,7 @@ Backend 至少覆盖：
 - days=7/30、非法 days 422、全部 domain mapping、排序、legacy `stock_changed` 属于 stock、当前组成员范围；
 - 查询不会按商品形成明显 N+1，不以 SQL 字符串断言实现细节。
 
-Frontend 至少覆盖：Groups“组分析”入口；Group Detail loading、404/error/retry、unbound、own 概览、无竞品、partial data、比较表、unknown、comparable_count=0、today own/competitor 区分、7/30 请求切换、Competitor Detail 导航、返回 Groups、查看竞品列表和 range-loading 保留已有内容。不测试 CSS 像素。
+Frontend 至少覆盖：Groups“组分析”入口；Group Detail loading、404/error/retry、unbound、own 概览、无竞品、partial data；顶部仅显示三个主要 Fact Gap 且 stock metric 不作为顶部 KPI；比较表没有独立 role / last-collected 列、own first、差异紧凑文本、“基本持平”和“部分数据未知”；comparable_count=0；Today own/competitor 区分及 0 事件显示“今日暂无变化”；竞争动态默认近 7 天；只展示非零 domain counts 和 action Top 5；7/30 请求切换会重新请求；Competitor Detail 导航、返回 Groups、查看竞品列表和 range-loading 保留已有内容。不测试 CSS 像素。
 
 ## Out of Scope
 

@@ -8,7 +8,7 @@ type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
 export type BatchStatus = "idle" | "running" | "completed" | "verification_required";
-export type Page = "dashboard" | "competitors" | "detail" | "groups";
+export type Page = "dashboard" | "competitors" | "detail" | "groups" | "group-detail";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
 
@@ -283,6 +283,26 @@ export type StockChartPoint = {
   x: number;
   y: number | null;
   total_stock: number | null;
+};
+
+export type GroupProductFacts = Pick<Competitor, "id" | "platform" | "offer_id" | "url" | "title" | "shop_name" | "main_image_url" | "status" | "is_active" | "last_collected_at"> & {
+  role: GroupRole;
+  latest_snapshot: { id: number; captured_at: string; price_min: string | null; price_max: string | null; min_order_quantity: number | null; sku_count: number; total_stock: number | null } | null;
+  latest_change: (Change & { snapshot_id: number | null; collection_run_id: number | null; sku_name: string | null }) | null;
+};
+export type GroupComparison = { price: "lower" | "higher" | "overlap" | "unknown"; min_order_quantity: "lower" | "higher" | "equal" | "unknown"; sku_count: "more" | "fewer" | "equal" | "unknown"; total_stock: "higher" | "lower" | "equal" | "unknown" };
+export type GroupFactGapMetric = { matched_count: number; comparable_count: number };
+export type GroupActionDomainCounts = { price: number; stock: number; sku: number; min_order_quantity: number; lifecycle: number; title: number; main_image: number };
+export type GroupTodayEvent = NonNullable<GroupProductFacts["latest_change"]> & { competitor_id: number; role: GroupRole; title: string | null; offer_id: string };
+export type GroupActionItem = { competitor_id: number; title: string | null; offer_id: string; event_count: number; latest_change_at: string; domain_counts: GroupActionDomainCounts };
+export type GroupDetailData = {
+  range_days: 7 | 30;
+  group: CompetitorGroup;
+  own_product: GroupProductFacts | null;
+  summary: { direct_competitor_count: number; monitored_competitor_count: number; changed_competitors_today: number; price_lower_than_own: GroupFactGapMetric; moq_lower_than_own: GroupFactGapMetric; sku_more_than_own: GroupFactGapMetric; stock_higher_than_own: GroupFactGapMetric };
+  competitors: (GroupProductFacts & { comparison: GroupComparison })[];
+  today: { own_event_count: number; competitor_event_count: number; changed_competitor_count: number; events: GroupTodayEvent[] };
+  action_window: { days: 7 | 30; own_event_count: number; competitor_event_count: number; competitors: GroupActionItem[] };
 };
 
 export type ChartScale = {
@@ -948,7 +968,7 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
       <div className="nav-group"><div className="nav-group-title"><span className="nav-icon" aria-hidden="true">⌁</span>竞品监控<span className="nav-chevron" aria-hidden="true">⌃</span></div>
         <button className={"nav-item nav-child" + (page === "dashboard" ? " nav-active" : "")} onClick={() => onNavigate("dashboard")} aria-current={page === "dashboard" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
         <button className={"nav-item nav-child" + (page === "competitors" || page === "detail" ? " nav-active" : "")} onClick={() => onNavigate("competitors")} aria-current={page === "competitors" || page === "detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品列表</button>
-        <button className={"nav-item nav-child" + (page === "groups" ? " nav-active" : "")} onClick={() => onNavigate("groups")} aria-current={page === "groups" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品分组</button>
+        <button className={"nav-item nav-child" + (page === "groups" || page === "group-detail" ? " nav-active" : "")} onClick={() => onNavigate("groups")} aria-current={page === "groups" || page === "group-detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品分组</button>
         <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />采集记录</button>
       </div>
       <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">▣</span>自动上架</button><button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⚙</span>系统设置</button>
@@ -1002,12 +1022,12 @@ function GroupMetrics({ metrics }: { metrics: CompetitorGroupMetrics }) {
   </div>;
 }
 
-function CompetitorGroupCard({ group, onViewCompetitors, onRename, onDelete, onOwnProduct }: { group: CompetitorGroupSummary; onViewCompetitors: () => void; onRename: () => void; onDelete: () => void; onOwnProduct: (action: OwnProductAction) => void }) {
+function CompetitorGroupCard({ group, onViewCompetitors, onViewAnalysis, onRename, onDelete, onOwnProduct }: { group: CompetitorGroupSummary; onViewCompetitors: () => void; onViewAnalysis: () => void; onRename: () => void; onDelete: () => void; onOwnProduct: (action: OwnProductAction) => void }) {
   return <article className="group-card">
     <div className="group-card-header"><div><h2>{group.name}</h2><span>{group.competitor_count} 个竞品</span></div><GroupMoreMenu ownProduct={group.own_product} onRename={onRename} onDelete={onDelete} onOwnProduct={onOwnProduct} /></div>
     <div className="group-own-product"><span>我方商品</span><strong>{group.own_product ? group.own_product.title || `Offer ${group.own_product.offer_id}` : "尚未绑定"}</strong></div>
     <GroupMetrics metrics={group} />
-    <div className="group-card-actions"><button type="button" className="primary-button" onClick={onViewCompetitors}>查看竞品</button></div>
+    <div className="group-card-actions"><button type="button" className="secondary-button" onClick={onViewCompetitors}>查看竞品</button><button type="button" className="primary-button" onClick={onViewAnalysis}>组分析</button></div>
   </article>;
 }
 
@@ -1026,13 +1046,14 @@ type GroupPageProps = {
   onRetry: () => void;
   onCreate: () => void;
   onViewCompetitors: (filter: InitialGroupFilter) => void;
+  onViewAnalysis?: (groupId: number) => void;
   onRename: (group: CompetitorGroupSummary) => void;
   onDelete: (group: CompetitorGroupSummary) => void;
   onOwnProduct: (group: CompetitorGroupSummary, action: OwnProductAction) => void;
   onNavigate: (page: Page) => void;
 };
 
-export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCompetitors, onRename, onDelete, onOwnProduct, onNavigate }: GroupPageProps) {
+export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCompetitors, onViewAnalysis = noop, onRename, onDelete, onOwnProduct, onNavigate }: GroupPageProps) {
   const hasUnassigned = summary?.unassigned.competitor_count ? summary.unassigned.competitor_count > 0 : false;
   const isEmpty = status === "ready" && summary !== null && summary.groups.length === 0 && !hasUnassigned;
   return <AppShell page="groups" onNavigate={onNavigate} breadcrumb="竞品分组">
@@ -1041,10 +1062,148 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
     {status === "error" && <section className="table-card group-state-card state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品组。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></section>}
     {isEmpty && <section className="table-card group-state-card state-panel"><div className="empty-icon">＋</div><strong>还没有竞品组</strong><span>新增竞品组后，可按我方商品型号归集对应竞品进行对比监控。</span><button type="button" className="primary-button" onClick={onCreate}>新增竞品组</button></section>}
     {status === "ready" && summary && !isEmpty && <div className="group-card-grid">
-      {summary.groups.map((group) => <CompetitorGroupCard key={group.id} group={group} onViewCompetitors={() => onViewCompetitors(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} onOwnProduct={(action) => onOwnProduct(group, action)} />)}
+      {summary.groups.map((group) => <CompetitorGroupCard key={group.id} group={group} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} onOwnProduct={(action) => onOwnProduct(group, action)} />)}
       {hasUnassigned && <UnassignedGroupCard metrics={summary.unassigned} onViewCompetitors={() => onViewCompetitors("unassigned")} />}
     </div>}
   </AppShell>;
+}
+
+const comparisonLabels = {
+  price: { lower: "低于我方", higher: "高于我方", overlap: "区间重叠", unknown: "未知" },
+  min_order_quantity: { lower: "更低", higher: "更高", equal: "相同", unknown: "未知" },
+  sku_count: { more: "更多", fewer: "更少", equal: "相同", unknown: "未知" },
+  total_stock: { higher: "更高", lower: "更低", equal: "相同", unknown: "未知" },
+} as const;
+
+function groupSnapshotValue(product: GroupProductFacts, field: "price" | "moq" | "sku" | "stock"): string {
+  const snapshot = product.latest_snapshot;
+  if (!snapshot) return "未采集";
+  if (field === "price") {
+    if (!snapshot.price_min && !snapshot.price_max) return "未采集";
+    if (snapshot.price_min && snapshot.price_max && snapshot.price_min === snapshot.price_max) return `¥${snapshot.price_min}`;
+    return `¥${snapshot.price_min || snapshot.price_max}` + (snapshot.price_min && snapshot.price_max ? ` ~ ¥${snapshot.price_max}` : "");
+  }
+  if (field === "moq") return snapshot.min_order_quantity === null ? "未知" : String(snapshot.min_order_quantity);
+  if (field === "sku") return String(snapshot.sku_count);
+  return snapshot.total_stock === null ? "未知" : String(snapshot.total_stock);
+}
+
+export function formatGroupUpdateTime(value: string | null): string {
+  if (!value) return "未采集";
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" }).format(parseBackendDate(value));
+}
+
+export function formatGroupProductFreshness(product: Pick<GroupProductFacts, "status" | "last_collected_at" | "latest_snapshot">): string {
+  if (product.status === "offline") return product.latest_snapshot ? `最后快照 ${formatDate(product.latest_snapshot.captured_at)}` : "未采集";
+  return product.last_collected_at ? `${formatGroupUpdateTime(product.last_collected_at)} 更新` : "未采集";
+}
+
+export function formatGroupDetailLatestChange(change: GroupProductFacts["latest_change"]): string {
+  return change ? formatChange(change) : "—";
+}
+
+export function getGroupDifferenceLabels(comparison: GroupComparison, hasBaseline: boolean): { primary: string[]; stock: string[]; hasUnknown: boolean } {
+  if (!hasBaseline) return { primary: ["未建立基准"], stock: [], hasUnknown: false };
+  const primary: string[] = [];
+  const stock: string[] = [];
+  if (comparison.price === "lower") primary.push("低价");
+  if (comparison.price === "higher") primary.push("高价");
+  if (comparison.min_order_quantity === "lower") primary.push("起批更低");
+  if (comparison.min_order_quantity === "higher") primary.push("起批更高");
+  if (comparison.sku_count === "more") primary.push("SKU 更多");
+  if (comparison.sku_count === "fewer") primary.push("SKU 更少");
+  if (comparison.total_stock === "higher") stock.push("库存更高");
+  if (comparison.total_stock === "lower") stock.push("库存更低");
+  const hasUnknown = Object.values(comparison).some((value) => value === "unknown");
+  return { primary, stock, hasUnknown };
+}
+
+const actionDomainLabels: Record<keyof GroupActionDomainCounts, string> = {
+  price: "价格", stock: "库存", sku: "SKU", min_order_quantity: "起批量", lifecycle: "生命周期", title: "标题", main_image: "主图",
+};
+
+export function getNonzeroGroupActionDomains(counts: GroupActionDomainCounts): string[] {
+  return (Object.keys(actionDomainLabels) as (keyof GroupActionDomainCounts)[])
+    .filter((domain) => counts[domain] > 0)
+    .map((domain) => `${actionDomainLabels[domain]} ${counts[domain]}`);
+}
+
+export function GroupDetailPage({ data, status, error, days, rangeLoading, rangeError, onRetry, onRangeChange, onBack, onViewCompetitors, onOpenDetail, onNavigate }: {
+  data: GroupDetailData | null; status: DetailStatus; error: string | null; days: 7 | 30; rangeLoading: boolean; rangeError: string | null;
+  onRetry: () => void; onRangeChange: (days: 7 | 30) => void; onBack: () => void; onViewCompetitors: (groupId: number) => void; onOpenDetail: (competitorId: number) => void; onNavigate: (page: Page) => void;
+}) {
+  const [dynamicTab, setDynamicTab] = useState<"today" | 7 | 30>(7);
+  useEffect(() => { setDynamicTab(days); }, [data?.group.id, days]);
+  useEffect(() => { if (!rangeLoading && rangeError) setDynamicTab(days); }, [rangeLoading, rangeError, days]);
+  if (status === "loading") return <AppShell page="group-detail" onNavigate={onNavigate} breadcrumb="竞品分组 / 组分析"><header className="page-header"><div><h1>组竞争分析</h1><p className="page-description">围绕我方商品查看当前竞争位置和近期客观变化</p></div></header><div className="state-panel"><div className="spinner" /><strong>正在加载组分析…</strong></div></AppShell>;
+  if (!data) return <AppShell page="group-detail" onNavigate={onNavigate} breadcrumb="竞品分组 / 组分析"><header className="page-header"><div><h1>{error === "竞品组不存在" ? "竞品组不存在" : "组竞争分析"}</h1></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={onBack}>返回竞品分组</button><button type="button" className="secondary-button" onClick={onRetry}>重试</button></div></header><div className="state-panel state-error"><strong>{error === "竞品组不存在" ? "竞品组不存在" : "加载失败"}</strong><span>{error || "暂时无法获取组分析。"}</span></div></AppShell>;
+
+  const own = data.own_product;
+  const metrics = [
+    ["明确低价竞品", data.summary.price_lower_than_own],
+    ["更低起批量", data.summary.moq_lower_than_own],
+    ["SKU 更多", data.summary.sku_more_than_own],
+  ] as const;
+  const actionMode = dynamicTab === "today" ? "today" : "actions";
+  const visibleActions = data.action_window.competitors.slice(0, 5);
+  const latestEventTime = (value: string) => formatGroupUpdateTime(value);
+  const selectDynamicTab = (tab: "today" | 7 | 30) => {
+    setDynamicTab(tab);
+    if (tab !== "today" && tab !== days) onRangeChange(tab);
+  };
+  const renderProductCell = (product: GroupProductFacts, isOwn: boolean) => <div className="group-product-cell">
+    <strong title={product.title?.trim() || `Offer ${product.offer_id}`}>{product.title?.trim() || `Offer ${product.offer_id}`}</strong>
+    <span>{[product.shop_name, !isOwn ? formatGroupProductFreshness(product) : null].filter(Boolean).join(" · ")}</span>
+    {(product.status === "offline" || !product.is_active || isOwn) && <div className="group-product-status">{isOwn && <span className="group-own-label">我方</span>}{product.status === "offline" && <span>已下架</span>}{!product.is_active && <span>已停止</span>}</div>}
+  </div>;
+  return <AppShell page="group-detail" onNavigate={onNavigate} breadcrumb={`竞品分组 / ${data.group.name}`}>
+    <header className="page-header group-detail-page-header"><div><h1>{data.group.name} 竞争分析</h1><p className="page-description">围绕我方商品查看当前竞争位置和近期客观变化</p></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={() => onViewCompetitors(data.group.id)}>查看竞品</button><button type="button" className="secondary-button" onClick={onBack}>返回竞品分组</button></div></header>
+
+    <section className="table-card group-baseline-panel" aria-label="我方基准与关键差距">
+      {own ? <>
+        <div className="group-own-compact">
+          <ProductImage competitor={own} />
+          <div className="group-own-compact-main">
+            <h2 title={own.title?.trim() || `Offer ${own.offer_id}`}>{own.title?.trim() || `Offer ${own.offer_id}`}</h2>
+            <div className="group-own-compact-meta"><span>{own.shop_name || "店铺未知"}</span><a href={own.url} target="_blank" rel="noreferrer">1688 商品</a></div>
+            <div className="group-own-inline-facts"><strong>{groupSnapshotValue(own, "price")}</strong><span>起批 {groupSnapshotValue(own, "moq")}</span><span>{groupSnapshotValue(own, "sku")} SKU</span><span>库存 {groupSnapshotValue(own, "stock")}</span></div>
+            <div className="group-own-compact-status"><StatusBadge status={own.status} /><span className={own.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{own.is_active ? "监控中" : "已停止"}</span><time>{formatGroupProductFreshness(own)}</time></div>
+          </div>
+        </div>
+        <div className="group-key-gaps" aria-label="关键差距">
+          {metrics.map(([label, metric]) => <div className="group-key-gap" key={label}><span>{label}</span><strong>{metric.comparable_count ? `${metric.matched_count} / ${metric.comparable_count}` : "暂无可比数据"}</strong>{metric.comparable_count > 0 && <small>可比较竞品</small>}</div>)}
+        </div>
+      </> : <div className="group-unbound-notice"><strong>尚未绑定我方商品</strong><span>绑定后可查看价格、起批量、SKU 和库存的横向比较。</span><button type="button" className="secondary-button" onClick={onBack}>返回竞品分组</button></div>}
+    </section>
+
+    <section className="table-card group-detail-section group-compare-section">
+      <div className="table-heading"><div><h2>我方 vs 竞品</h2><span>{data.summary.direct_competitor_count} 个直接竞品 · {data.summary.monitored_competitor_count} 个监控中</span></div></div>
+      {data.competitors.length === 0 ? <div className="group-compact-empty"><strong>当前组还没有直接竞品</strong><button type="button" className="text-button" onClick={() => onViewCompetitors(data.group.id)}>查看竞品列表</button></div> : <div className="table-scroll"><table className="group-comparison-table"><thead><tr><th>商品</th><th>当前价格</th><th>起批量</th><th>SKU</th><th>库存</th><th>当前差异</th><th>最近变化</th><th>详情</th></tr></thead><tbody>
+        {own && <tr className="group-own-row"><td>{renderProductCell(own, true)}</td><td>{groupSnapshotValue(own, "price")}</td><td>{groupSnapshotValue(own, "moq")}</td><td>{groupSnapshotValue(own, "sku")}</td><td>{groupSnapshotValue(own, "stock")}</td><td>—</td><td>{formatGroupDetailLatestChange(own.latest_change)}</td><td>—</td></tr>}
+        {data.competitors.map((product) => {
+          const difference = getGroupDifferenceLabels(product.comparison, own !== null);
+          const noDifference = difference.primary.length === 0 && difference.stock.length === 0 && !difference.hasUnknown;
+          return <tr key={product.id}><td>{renderProductCell(product, false)}</td><td>{groupSnapshotValue(product, "price")}</td><td>{groupSnapshotValue(product, "moq")}</td><td>{groupSnapshotValue(product, "sku")}</td><td>{groupSnapshotValue(product, "stock")}</td><td><div className="group-difference-list">{difference.primary.map((label) => <span className="group-difference-primary" key={label}>{label}</span>)}{difference.stock.map((label) => <span className="group-difference-stock" key={label}>{label}</span>)}{noDifference && <span className="group-difference-neutral">基本持平</span>}{difference.hasUnknown && <span className="group-difference-unknown">部分数据未知</span>}</div></td><td>{formatGroupDetailLatestChange(product.latest_change)}</td><td><button type="button" className="detail-button" onClick={() => onOpenDetail(product.id)}>查看详情</button></td></tr>;
+        })}
+      </tbody></table></div>}
+    </section>
+
+    <GroupDynamics data={data} days={days} tab={dynamicTab} rangeLoading={rangeLoading} rangeError={rangeError} onSelectTab={selectDynamicTab} onOpenDetail={onOpenDetail} />
+  </AppShell>;
+}
+
+export function GroupDynamics({ data, days, tab, rangeLoading, rangeError, onSelectTab, onOpenDetail }: {
+  data: GroupDetailData; days: 7 | 30; tab: "today" | 7 | 30; rangeLoading: boolean; rangeError: string | null;
+  onSelectTab: (tab: "today" | 7 | 30) => void; onOpenDetail: (competitorId: number) => void;
+}) {
+  const todayMode = tab === "today";
+  const visibleActions = data.action_window.competitors.slice(0, 5);
+  return <section className="table-card group-detail-section group-dynamics-section">
+    <div className="table-heading group-dynamics-heading"><div><h2>竞争动态</h2><span>{todayMode ? `变化竞品 ${data.today.changed_competitor_count} · 竞品事件 ${data.today.competitor_event_count} · 我方事件 ${data.today.own_event_count}` : `竞品 ${data.action_window.competitor_event_count} 次 · 我方 ${data.action_window.own_event_count} 次`}</span></div><div className="group-dynamics-tabs" role="group" aria-label="竞争动态范围" aria-busy={rangeLoading}>{(["today", 7, 30] as const).map((range) => <button type="button" key={range} className={tab === range ? "group-dynamics-tab group-dynamics-tab-active" : "group-dynamics-tab"} aria-pressed={tab === range} disabled={rangeLoading && range !== "today"} onClick={() => onSelectTab(range)}>{range === "today" ? "今日" : `近 ${range} 天`}</button>)}</div></div>
+    {rangeLoading && !todayMode && <div className="group-range-loading" role="status">正在更新动作范围…</div>}
+    {rangeError && !todayMode && <div className="group-range-error" role="alert">{rangeError} · 可重新选择时间范围重试</div>}
+    {todayMode ? data.today.events.length === 0 ? <div className="group-compact-empty">今日暂无变化</div> : <ol className="group-dynamic-list">{data.today.events.map((event) => <li className="group-dynamic-event" key={event.id}><time title={formatDate(event.detected_at)}>{formatGroupUpdateTime(event.detected_at)}</time><span className={event.role === "own" ? "group-dynamic-role group-dynamic-role-own" : "group-dynamic-role"}>{event.role === "own" ? "我方" : "竞品"}</span><span className="group-dynamic-product" title={event.title?.trim() || `Offer ${event.offer_id}`}>{event.title?.trim() || `Offer ${event.offer_id}`}</span><strong>{formatChange(event)}</strong>{event.role === "competitor" && <button type="button" className="detail-button" onClick={() => onOpenDetail(event.competitor_id)}>详情</button>}</li>)}</ol> : visibleActions.length === 0 ? <div className="group-compact-empty">近 {days} 天暂无竞品动作</div> : <ol className="group-action-list">{visibleActions.map((item) => <li className="group-action-item" key={item.competitor_id}><div className="group-action-main"><span className="group-action-rank" aria-hidden="true" /><strong title={item.title?.trim() || `Offer ${item.offer_id}`}>{item.title?.trim() || `Offer ${item.offer_id}`}</strong><span className="group-action-count">{item.event_count} 次</span><button type="button" className="detail-button" onClick={() => onOpenDetail(item.competitor_id)}>详情</button></div><div className="group-action-meta"><span>{getNonzeroGroupActionDomains(item.domain_counts).join(" · ")}</span><time title={formatDate(item.latest_change_at)}>最近：{formatDate(item.latest_change_at)}</time></div></li>)}</ol>}
+  </section>;
 }
 
 export function GroupNameDialog({ mode, name, submitting, error, onChange, onClose, onSubmit }: { mode: "create" | "rename"; name: string; submitting: boolean; error: string | null; onChange: (name: string) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
@@ -1480,6 +1639,14 @@ function App() {
   const [detailRangeLoading, setDetailRangeLoading] = useState(false);
   const [selectedCompetitorId, setSelectedCompetitorId] = useState<number | null>(null);
   const latestDetailRequestId = useRef(0);
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
+  const [groupDetail, setGroupDetail] = useState<GroupDetailData | null>(null);
+  const [groupDetailStatus, setGroupDetailStatus] = useState<DetailStatus>("loading");
+  const [groupDetailError, setGroupDetailError] = useState<string | null>(null);
+  const [groupDetailRangeError, setGroupDetailRangeError] = useState<string | null>(null);
+  const [groupDetailDays, setGroupDetailDays] = useState<7 | 30>(7);
+  const [groupDetailRangeLoading, setGroupDetailRangeLoading] = useState(false);
+  const latestGroupDetailRequestId = useRef(0);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [groupId, setGroupId] = useState<number | null>(null);
@@ -1606,6 +1773,7 @@ function App() {
   }, [batchState.status, batchState.browser_open]);
   function navigate(nextPage: Page, initialGroupFilter: InitialGroupFilter = null) {
     if (nextPage !== "detail") { latestDetailRequestId.current += 1; setDetailRangeLoading(false); }
+    if (nextPage !== "group-detail") { latestGroupDetailRequestId.current += 1; setGroupDetailRangeLoading(false); }
     setListNavigationIntent((current) => ({ filter: nextPage === "competitors" ? initialGroupFilter : null, version: current.version + 1 }));
     setPage(nextPage);
     if (nextPage === "dashboard") void loadDashboard();
@@ -1613,6 +1781,7 @@ function App() {
     if (nextPage === "groups" && !groupLoaded) void loadGroups();
   }
   function openDetail(competitorId: number) { setSelectedCompetitorId(competitorId); setDetailDays(7); setDetailRangeLoading(false); setPage("detail"); void loadDetail(competitorId, 7); }
+  function openGroupDetail(groupId: number) { latestGroupDetailRequestId.current += 1; setSelectedGroupId(groupId); setGroupDetail(null); setGroupDetailDays(7); setGroupDetailRangeLoading(false); setGroupDetailRangeError(null); setGroupDetailStatus("loading"); setPage("group-detail"); void loadGroupDetail(groupId, 7); }
   async function changeDetailRange(days: 7 | 30) {
     if (selectedCompetitorId === null || days === detailDays || detailRangeLoading) return;
     setDetailRangeLoading(true);
@@ -1671,6 +1840,35 @@ function App() {
     } catch {
       setGroupDeleteError("竞品组删除失败，请稍后重试");
     } finally { setGroupDeleteSubmitting(false); }
+  }
+  async function changeGroupDetailRange(days: 7 | 30) {
+    if (selectedGroupId === null || days === groupDetailDays || groupDetailRangeLoading) return;
+    setGroupDetailRangeLoading(true); setGroupDetailRangeError(null);
+    const updated = await loadGroupDetail(selectedGroupId, days, true);
+    if (updated) setGroupDetailDays(days);
+    setGroupDetailRangeLoading(false);
+  }
+  async function loadGroupDetail(groupId: number, days: 7 | 30, preserveContent = false): Promise<boolean> {
+    const requestId = ++latestGroupDetailRequestId.current;
+    if (!preserveContent) { setGroupDetailStatus("loading"); setGroupDetailError(null); }
+    try {
+      const response = await fetch(`/api/competitor-groups/${groupId}/detail?days=${days}`);
+      if (!response.ok) {
+        let body: CollectionErrorBody = {};
+        try { body = await response.json() as CollectionErrorBody; } catch { /* use stable local message */ }
+        throw new Error(body.code === "competitor_group_not_found" ? "竞品组不存在" : body.message || "暂时无法获取组分析。");
+      }
+      const data = await response.json() as GroupDetailData;
+      if (requestId !== latestGroupDetailRequestId.current) return false;
+      setGroupDetail(data); setGroupDetailError(null); setGroupDetailRangeError(null); setGroupDetailStatus("ready");
+      return true;
+    } catch (error) {
+      if (requestId !== latestGroupDetailRequestId.current) return false;
+      const message = error instanceof Error ? error.message : "暂时无法获取组分析。";
+      if (preserveContent) setGroupDetailRangeError(message);
+      else { setGroupDetailError(message); setGroupDetailStatus("error"); }
+      return false;
+    }
   }
   async function openOwnProductDialog(group: CompetitorGroupSummary, mode: OwnProductAction) {
     setOwnProductDialog({ group, mode }); setOwnProductSelectedId(null); setOwnProductConfirming(false); setOwnProductError(null);
@@ -1812,7 +2010,7 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{ownProductDialog && <OwnProductDialog group={ownProductDialog.group} mode={ownProductDialog.mode} competitors={competitors} loading={ownProductLoading} selectedId={ownProductSelectedId} confirming={ownProductConfirming} submitting={ownProductSubmitting} error={ownProductError} onSelect={(id) => { setOwnProductSelectedId(id); setOwnProductConfirming(false); }} onConfirmStep={() => { setOwnProductConfirming(true); setOwnProductError(null); }} onClose={closeOwnProductDialog} onSubmit={() => void submitOwnProduct()} />}{groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
+  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} /> : page === "group-detail" ? <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{ownProductDialog && <OwnProductDialog group={ownProductDialog.group} mode={ownProductDialog.mode} competitors={competitors} loading={ownProductLoading} selectedId={ownProductSelectedId} confirming={ownProductConfirming} submitting={ownProductSubmitting} error={ownProductError} onSelect={(id) => { setOwnProductSelectedId(id); setOwnProductConfirming(false); }} onConfirmStep={() => { setOwnProductConfirming(true); setOwnProductError(null); }} onClose={closeOwnProductDialog} onSubmit={() => void submitOwnProduct()} />}{groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
 }
 
 export default App;
