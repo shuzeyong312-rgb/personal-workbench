@@ -2,6 +2,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from html import unescape
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -23,6 +24,7 @@ class DetailCompetitorResponse(BaseModel):
     offer_id: str
     url: str
     group_id: int | None
+    group_role: Literal["competitor", "own"]
     title: str | None
     shop_name: str | None
     main_image_url: str | None

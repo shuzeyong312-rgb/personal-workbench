@@ -6,7 +6,7 @@ from sqlalchemy import and_, case, distinct, func, select, union_all, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.competitors import error
+from app.competitors import CompetitorResponse, error
 from app.database import get_db
 from app.dashboard import business_day_bounds
 from app.models import ChangeEvent, Competitor, CompetitorGroup, ProductSnapshot
@@ -38,10 +38,30 @@ class CompetitorGroupMetricsResponse(BaseModel):
     last_change_at: datetime | None
 
 
+class OwnProductResponse(BaseModel):
+    id: int
+    offer_id: str
+    title: str | None
+    shop_name: str | None
+    main_image_url: str | None
+    status: str
+    is_active: bool
+
+
 class CompetitorGroupSummaryResponse(CompetitorGroupMetricsResponse):
     id: int
     name: str
     created_at: datetime
+    own_product: OwnProductResponse | None
+
+
+class BindOwnProductRequest(BaseModel):
+    competitor_id: int
+    replace_existing: bool = False
+
+
+class BindOwnProductResponse(BaseModel):
+    competitor: CompetitorResponse
 
 
 class CompetitorGroupsSummaryResponse(BaseModel):
@@ -125,6 +145,7 @@ def _summary_rows(db: Session) -> dict[int | None, dict[str, object]]:
         .outerjoin(prices, prices.c.competitor_id == Competitor.id)
         .outerjoin(ChangeEvent, ChangeEvent.competitor_id == Competitor.id)
         .group_by(Competitor.group_id)
+        .where(Competitor.group_role == "competitor")
     ).all()
     return {
         row.group_id: {
@@ -195,11 +216,29 @@ def summarize_competitor_groups(db: Session = Depends(get_db)) -> CompetitorGrou
         ).all()
     )
     summaries = _summary_rows(db)
+    own_products = {
+        competitor.group_id: OwnProductResponse(
+            id=competitor.id,
+            offer_id=competitor.offer_id,
+            title=competitor.title,
+            shop_name=competitor.shop_name,
+            main_image_url=competitor.main_image_url,
+            status=competitor.status,
+            is_active=competitor.is_active,
+        )
+        for competitor in db.scalars(
+            select(Competitor).where(
+                Competitor.group_role == "own",
+                Competitor.group_id.in_([group.id for group in groups]),
+            )
+        ).all()
+    } if groups else {}
     group_summaries = [
         CompetitorGroupSummaryResponse(
             id=group.id,
             name=group.name,
             created_at=group.created_at,
+            own_product=own_products.get(group.id),
             **summaries.get(group.id, _empty_metrics()),
         )
         for group in groups
@@ -211,6 +250,95 @@ def summarize_competitor_groups(db: Session = Depends(get_db)) -> CompetitorGrou
         groups=group_summaries,
         unassigned=CompetitorGroupMetricsResponse(**summaries.get(None, _empty_metrics())),
     )
+
+
+@router.put("/{group_id}/own-product", response_model=BindOwnProductResponse)
+def bind_own_product(
+    group_id: int,
+    payload: BindOwnProductRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Competitor]:
+    if db.get(CompetitorGroup, group_id) is None:
+        raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
+
+    competitor = db.get(Competitor, payload.competitor_id)
+    if competitor is None:
+        raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
+    if competitor.group_id != group_id:
+        raise error("competitor_not_in_group", "商品不属于该竞品组", status.HTTP_400_BAD_REQUEST)
+
+    current_own = db.scalar(
+        select(Competitor).where(
+            Competitor.group_id == group_id,
+            Competitor.group_role == "own",
+        )
+    )
+    if current_own is not None and current_own.id == competitor.id:
+        return {"competitor": competitor}
+    if current_own is not None and not payload.replace_existing:
+        raise error("own_product_already_bound", "该竞品组已绑定我方商品", status.HTTP_409_CONFLICT)
+
+    try:
+        if current_own is not None:
+            db.execute(
+                update(Competitor)
+                .where(Competitor.id == current_own.id)
+                .values(group_role="competitor", updated_at=datetime.now(timezone.utc))
+            )
+        db.execute(
+            update(Competitor)
+            .where(Competitor.id == competitor.id)
+            .values(group_role="own", updated_at=datetime.now(timezone.utc))
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        concurrent_own = db.scalar(
+            select(Competitor).where(
+                Competitor.group_id == group_id,
+                Competitor.group_role == "own",
+            )
+        )
+        if concurrent_own is not None and concurrent_own.id != competitor.id:
+            raise error(
+                "own_product_already_bound",
+                "该竞品组已绑定我方商品",
+                status.HTTP_409_CONFLICT,
+            ) from exc
+        raise error(
+            "own_product_bind_failed",
+            "我方商品绑定失败，请稍后重试",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        raise error(
+            "own_product_bind_failed",
+            "我方商品绑定失败，请稍后重试",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
+    db.refresh(competitor)
+    return {"competitor": competitor}
+
+
+@router.delete("/{group_id}/own-product", status_code=status.HTTP_204_NO_CONTENT)
+def unbind_own_product(group_id: int, db: Session = Depends(get_db)) -> None:
+    if db.get(CompetitorGroup, group_id) is None:
+        raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
+    try:
+        db.execute(
+            update(Competitor)
+            .where(Competitor.group_id == group_id, Competitor.group_role == "own")
+            .values(group_role="competitor", updated_at=datetime.now(timezone.utc))
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise error(
+            "own_product_unbind_failed",
+            "我方商品解除失败，请稍后重试",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
 
 
 @router.patch("/{group_id}", response_model=CompetitorGroupResponse)
@@ -244,7 +372,11 @@ def delete_competitor_group(group_id: int, db: Session = Depends(get_db)) -> Non
         raise error("competitor_group_not_found", "商品型号不存在", status.HTTP_404_NOT_FOUND)
 
     try:
-        db.execute(update(Competitor).where(Competitor.group_id == group_id).values(group_id=None))
+        db.execute(
+            update(Competitor)
+            .where(Competitor.group_id == group_id)
+            .values(group_id=None, group_role="competitor")
+        )
         db.delete(group)
         db.commit()
     except Exception as exc:

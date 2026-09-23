@@ -50,6 +50,7 @@ def test_adds_competitor_and_normalizes_url(client: tuple[TestClient, sessionmak
     assert response.json()["offer_id"] == "123456789"
     assert response.json()["url"] == "https://detail.1688.com/offer/123456789.html"
     assert response.json()["group_id"] is None
+    assert response.json()["group_role"] == "competitor"
     assert response.json()["status"] == "unknown"
     assert response.json()["is_active"] is True
 
@@ -117,6 +118,8 @@ def test_lists_all_competitors_in_created_at_and_id_desc_order(
         "offer_id",
         "url",
         "group_id",
+        "group_role",
+        "group_role",
         "title",
         "shop_name",
         "main_image_url",
@@ -317,6 +320,10 @@ def test_updates_competitor_group_assignment_and_preserves_history(
         "/api/competitors",
         json={"url": "https://detail.1688.com/offer/123456789.html", "group_id": first_group_id},
     ).json()["id"]
+    assert test_client.put(
+        f"/api/competitor-groups/{first_group_id}/own-product",
+        json={"competitor_id": competitor_id},
+    ).status_code == 200
     now = datetime(2026, 9, 20, tzinfo=timezone.utc)
     with session_factory() as session:
         snapshot = ProductSnapshot(
@@ -353,11 +360,13 @@ def test_updates_competitor_group_assignment_and_preserves_history(
     moved = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": second_group_id})
     assert moved.status_code == 200
     assert moved.json()["group_id"] == second_group_id
+    assert moved.json()["group_role"] == "competitor"
     assert moved.json()["is_active"] is True
 
     unassigned = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": None})
     assert unassigned.status_code == 200
     assert unassigned.json()["group_id"] is None
+    assert unassigned.json()["group_role"] == "competitor"
 
     reassigned = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": first_group_id})
     assert reassigned.status_code == 200
@@ -388,6 +397,28 @@ def test_group_assignment_rejects_missing_competitor_and_group(
     missing_group = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": 999})
     assert missing_group.status_code == 404
     assert missing_group.json()["code"] == "competitor_group_not_found"
+
+
+def test_assignment_demotes_own_without_replacing_destination_own(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client = client[0]
+    group_a = test_client.post("/api/competitor-groups", json={"name": "A19"}).json()["id"]
+    group_b = test_client.post("/api/competitor-groups", json={"name": "X6"}).json()["id"]
+    ids = [
+        test_client.post("/api/competitors", json={"url": f"https://detail.1688.com/offer/{offer}.html", "group_id": group_id}).json()["id"]
+        for offer, group_id in (("101", group_a), ("102", group_b))
+    ]
+    assert test_client.put(f"/api/competitor-groups/{group_a}/own-product", json={"competitor_id": ids[0]}).status_code == 200
+    assert test_client.put(f"/api/competitor-groups/{group_b}/own-product", json={"competitor_id": ids[1]}).status_code == 200
+
+    moved = test_client.patch(f"/api/competitors/{ids[0]}/group", json={"group_id": group_b})
+    assert moved.status_code == 200
+    assert moved.json()["group_role"] == "competitor"
+    assert test_client.patch(f"/api/competitors/{ids[0]}/group", json={"group_id": None}).json()["group_role"] == "competitor"
+    with client[1]() as session:
+        assert session.get(Competitor, ids[1]).group_role == "own"
+        assert session.get(Competitor, ids[0]).group_id is None
 
 
 def test_duplicate_offer_id_returns_409_without_new_record(
@@ -579,6 +610,7 @@ def test_delete_removes_all_competitor_history_but_not_group(
         assert session.scalar(select(ChangeEvent)) is None
         assert session.scalar(select(CollectionRun)) is None
         assert session.get(CompetitorGroup, group_id) is not None
+    assert test_client.get("/api/competitor-groups/summary").json()["groups"][0]["own_product"] is None
 
 
 def test_delete_missing_competitor_returns_stable_404(

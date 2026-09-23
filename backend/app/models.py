@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -20,12 +20,24 @@ class Competitor(Base):
     __table_args__ = (
         UniqueConstraint("platform", "offer_id", name="uq_competitors_platform_offer_id"),
         CheckConstraint("status IN ('unknown', 'active', 'offline')", name="ck_competitors_status"),
+        CheckConstraint("group_role IN ('competitor', 'own')", name="ck_competitors_group_role"),
+        CheckConstraint(
+            "group_id IS NOT NULL OR group_role = 'competitor'",
+            name="ck_competitors_own_requires_group",
+        ),
+        Index(
+            "uq_competitors_group_own",
+            "group_id",
+            unique=True,
+            sqlite_where=text("group_role = 'own'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     group_id: Mapped[int | None] = mapped_column(
         ForeignKey("competitor_groups.id", name="fk_competitors_group_id_competitor_groups"), nullable=True
     )
+    group_role: Mapped[str] = mapped_column(String(16), nullable=False, default="competitor", server_default="competitor")
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
     offer_id: Mapped[str] = mapped_column(String(64), nullable=False)
     url: Mapped[str] = mapped_column(String(512), nullable=False)

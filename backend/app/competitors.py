@@ -47,6 +47,7 @@ class CompetitorResponse(BaseModel):
     offer_id: str
     url: str
     group_id: int | None
+    group_role: Literal["competitor", "own"]
     status: str
     is_active: bool
     created_at: datetime
@@ -78,6 +79,7 @@ class CompetitorListResponse(BaseModel):
     offer_id: str
     url: str
     group_id: int | None
+    group_role: Literal["competitor", "own"]
     title: str | None
     shop_name: str | None
     main_image_url: str | None
@@ -332,6 +334,7 @@ def _competitor_payload(
         "offer_id": competitor.offer_id,
         "url": competitor.url,
         "group_id": competitor.group_id,
+        "group_role": competitor.group_role,
         "title": competitor.title,
         "shop_name": competitor.shop_name,
         "main_image_url": competitor.main_image_url,
@@ -599,6 +602,8 @@ def update_competitor_group_assignment(
     if payload.group_id is not None and db.get(CompetitorGroup, payload.group_id) is None:
         raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
 
+    if competitor.group_id != payload.group_id and competitor.group_role == "own":
+        competitor.group_role = "competitor"
     competitor.group_id = payload.group_id
     competitor.updated_at = datetime.now(timezone.utc)
     db.commit()

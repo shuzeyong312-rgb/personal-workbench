@@ -38,7 +38,8 @@ created_at
 - name 长度限制为 64 个字符；
 - CompetitorGroup 与 Competitor 为 1 → N 关系。
 - name 直接作为商品型号显示，不维护独立的我方商品实体；
-- 删除型号只将其 Competitor.group_id 置为 NULL，不删除竞品或历史监控事实；
+- 一个正式组可有 0 个或 1 个我方基准商品；旧组升级后默认未绑定，直到用户手动绑定。角色保存在 `Competitor.group_role`，不新增 `own_competitor_id`、OwnProduct 外键或 GroupMember 表；
+- 删除型号时，在同一事务内将全部成员设为 `group_id = NULL`、`group_role = competitor`，再删除 CompetitorGroup；保留 Competitor、ProductSnapshot、SkuSnapshot、CollectionRun、ChangeEvent、status 和 is_active；
 - 重命名型号只修改 name，不修改 Competitor、Snapshot、ChangeEvent 或 CollectionRun。
 
 ---
@@ -52,6 +53,7 @@ created_at
 ~~~text
 id
 group_id
+group_role
 platform
 offer_id
 url
@@ -71,7 +73,10 @@ last_collected_at
 - platform + offer_id 具有唯一约束；
 - url 保存标准化后的商品链接；
 - group_id 可为 NULL，或引用 competitor_groups.id；NULL 表示未分组；
-- 竞品详情页的分组更新只修改当前 Competitor.group_id，可在已有组之间移动或设为 NULL，不改写任何历史快照、SKU、变化事件或采集记录；
+- `group_role` 只允许 `competitor` 和 `own`，默认值为 `competitor`；旧数据经 migration 后均为 `competitor`，不根据标题、店铺或其他商品信息猜测我方商品；
+- `competitor` 表示当前组内的直接竞品；`own` 表示当前组唯一的我方基准商品。`group_role` 与 `status`、`is_active` 独立；角色不表示在线状态或是否监控；
+- 数据库通过 `CHECK (group_role IN ('competitor', 'own'))` 限制角色值，通过 `CHECK (group_id IS NOT NULL OR group_role = 'competitor')` 禁止未分组商品为 own，并通过 SQLite partial unique index `uq_competitors_group_own`（谓词 `group_role = 'own'`）保证每组最多一个 own；
+- 普通 `competitor` 转组只改变 `group_id`，角色保持 `competitor`。`own` 转组或移至未分组时，同时改变 `group_id` 并重置为 `competitor`；转组不会自动成为目标组 own，也不会覆盖目标组已有 own；以上操作不改写 ProductSnapshot、SkuSnapshot、CollectionRun 或 ChangeEvent；
 - title、shop_name、main_image_url 保存最近一次成功采集得到的当前信息；
 - main_image_url 当前优先来自 `gallery.fields.offerImgList[0]`，缺失或无效时仅使用已验证的结构化 fallback；字段仍允许为 NULL，并用于相邻快照的主图变化比较；
 - Competitor 只保存当前 `main_image_url`，不保存完整商品图库；
@@ -151,7 +156,7 @@ price
 - sku_id 是 SKU 身份依据；
 - sku_name 保存标准化后的规格名称；
 - stock 可以为 NULL，0 是真实库存；
-- price 可以为 NULL，当前不可靠的 SKU 独立价格不参与 ChangeEvent 检测；
+- price 可以为 NULL；同一 `sku_id` 的相邻有效快照两侧价格均非 NULL 且不同，会生成 SKU 级价格 ChangeEvent；
 - `price` 保存 SKU 当前页面展示价格，来源为已验证的 `skuInfoMap[item].discountPrice`；缺失或非法值保存为 NULL，不使用 `price` fallback，也不使用商品级价格或价格区间填充；
 - 缺失库存或价格保存为 NULL，不保存为 0；
 - ProductSnapshot.min_order_quantity 保存商品级起批量；旧 ProductSnapshot 保持 NULL，不历史回填；
@@ -215,48 +220,73 @@ failed
 id
 competitor_id
 snapshot_id
+collection_run_id
 change_type
 entity_key
 old_value
 new_value
+delta_value
+delta_rate
 detected_at
 ~~~
 
 字段语义：
 
 - competitor_id：发生变化的当前竞品；
-- snapshot_id：变化对应的**本次新建 ProductSnapshot**，不是 previous snapshot；
+- snapshot_id：新 V2 事件对应本次新建的 ProductSnapshot，不是 previous snapshot；`product_offline` 必须为 NULL，其他新 V2 事件必须关联本次 ProductSnapshot。数据库 CHECK 对兼容的历史 `stock_changed` 也要求非 NULL；
+- collection_run_id：nullable，以兼容历史事件；所有新 V2 事件均关联发现它的当前 CollectionRun。历史 NULL 不按时间猜测或回填；
 - entity_key：商品级变化为 NULL，SKU 级变化保存 sku_id；
 - old_value / new_value：简短、稳定、可读的字符串；
-- detected_at：本次变化检测时间。
+- delta_value / delta_rate：nullable 的 `Numeric(18, 6)`，分别表示数值差和百分比变化率；不是 API 字符串类型；
+- detected_at：系统检测到变化的时间。同一个 CollectionRun 产生的事件共享检测时间；它不表示平台上真实发生变化的时间。
 
 old_value / new_value 不保存完整 Snapshot JSON、1688 原始数据、HTML、Cookie、Token 或请求头。
 
 Dashboard 不改变 ChangeEvent 的事实级语义。Dashboard 今日变化在查询展示层按 active Competitor 聚合；`change_count` 仍统计真实事件条数，`ChangeEvent` 不因展示聚合而合并或删除。SKU 级事件的 `entity_key` 仍是 `sku_id`，名称可从关联快照的 `SkuSnapshot` 可靠恢复时用于展示，不能恢复时保留事实性 SKU ID 回退。
 
-Dashboard item 的 `stock_total_change` 是商品级展示投影，仅在 primary change 为 `stock_changed` 时计算，结构为 `{old_total, new_total}`。current 使用 primary 事件的 `snapshot_id`；previous 使用同一 competitor 中按 `(captured_at ASC, id ASC)` 严格紧邻的上一条 `ProductSnapshot`。每个快照必须至少有一个 SKU 且所有 `stock` 非 NULL 才能求和；否则对应 total 为 NULL，0 仍是有效库存。该投影不修改 ChangeEvent，也不把事件值相加。
+Dashboard item 的 `stock_total_change` 是商品级展示投影；primary event 为 `stock_increase`、`stock_decrease`、`sku_sold_out`、`sku_restocked` 或历史 `stock_changed` 时计算，结构为 `{old_total, new_total}`。current 使用 primary event 的 `snapshot_id`；previous 使用同一 competitor 中按 `(captured_at ASC, id ASC)` 紧邻的上一条 `ProductSnapshot`。总库存分别由对应快照下完整 SKU stock 求和；无 SKU 或任一 SKU stock 为 NULL 时该 total 为 NULL，0 是有效库存。不得将多条 SKU stock event 的 old/new 相加来计算商品总库存。该投影不修改 ChangeEvent。
 
-详情 API 的 `latest_skus[].sku_name` 和 `recent_changes[].sku_name` 是展示层字段：Backend 返回前使用 Python 标准库 `html.unescape` 并 trim，不回写数据库。`stock_changed` 的名称优先按 `snapshot_id + entity_key` 精确匹配对应 `SkuSnapshot`，再按同一竞品历史 `SkuSnapshot` 的 `sku_id` 回退；仍找不到时返回 `null`，由前端回退为事实性 `SKU {entity_key}`。
+详情 API 的 `latest_skus[].sku_name` 和 `recent_changes[].sku_name` 是展示层字段：Backend 返回前使用 Python 标准库 `html.unescape` 并 trim，不回写数据库。所有 SKU 级事件统一通过 `entity_key = sku_id`，优先按事件 `snapshot_id + entity_key` 精确匹配 `SkuSnapshot`，再按同一竞品历史 `SkuSnapshot.sku_id` 回退；适用于 SKU price、库存方向、售罄 / 恢复有货、新增 / 删除及历史 `stock_changed`。仍找不到时返回 `null`，前端回退为事实性 `SKU {entity_key}`。
 
 ### 7.1 当前已实现的 change_type
 
-当前数据库 CHECK 和业务检测逻辑支持以下 9 种：
+当前数据库 CHECK 允许以下 14 种 V2 标准事件：
 
 ~~~text
 price_increase
 price_decrease
+stock_increase
+stock_decrease
 sku_added
 sku_removed
-stock_changed
-title_changed
-main_image_changed
+sku_sold_out
+sku_restocked
+min_order_quantity_increase
+min_order_quantity_decrease
 product_offline
 product_online
+title_changed
+main_image_changed
 ~~~
 
-当前检测语义覆盖价格、标题、SKU 新增、SKU 删除、库存变化、主图变化和商品生命周期变化。`main_image_changed` 仅比较相邻快照中已经 normalization 并持久化的 `main_image_url`：两侧均为非空且不相等时生成事件；首次采集、任一侧为 NULL、相同 URL 或 `image_urls` 变化均不生成事件。从 `active` 明确检测到下架时生成 `product_offline`，从 `offline` 恢复采集并重新获得商品事实时生成 `product_online`。
+数据库同时允许历史 legacy 类型 `stock_changed`，因此 CHECK 共允许 15 个字符串。它只用于兼容读取，不再由新采集生成；不改写或推断历史事件方向。
 
-`snapshot_id` 规则由数据库约束保证：`product_offline` 必须为 `NULL`；其他 8 种事件必须非 `NULL`，并指向本次对应的 `ProductSnapshot`。下架不创建空 `ProductSnapshot`。
+商品级事件的 `entity_key = NULL`：商品级 price increase/decrease、MOQ increase/decrease、product offline/online、title changed、main image changed。SKU 级事件的 `entity_key = sku_id`：SKU price increase/decrease、stock increase/decrease、sku added/removed/sold out/restocked。
+
+检测规则摘要：
+
+- 商品级价格只有相邻快照两侧价格区间都可比较，且 min/max 同方向变化时才生成 price event；区间无法表达唯一数值差时 delta 字段为 NULL。若两侧均为单值价格，则可计算 delta。
+- 同一 `sku_id` 两侧 `SkuSnapshot.price` 均非 NULL 且不同，生成同类型的 `price_increase` / `price_decrease`，以 `entity_key` 表示 SKU 层级。SKU 新增或删除不额外生成 price event。
+- 同一 SKU 两侧 stock 均已知时，`old > 0` 且 `new > 0` 的数值变化生成 `stock_increase` / `stock_decrease`；`>0 → 0` 生成 `sku_sold_out`；`0 → >0` 生成 `sku_restocked`。SKU 新增 / 删除只生成 `sku_added` / `sku_removed`。NULL 不按 0 推断。商品总库存仍由 Snapshot 的完整 SKU stock 求和派生，不生成商品级库存 ChangeEvent。
+- 起批量两侧均为合法正整数且发生变化时，生成商品级 `min_order_quantity_increase` / `min_order_quantity_decrease`；首次采集、NULL 或无法验证的值不生成事件。
+- `main_image_changed` 仅比较相邻快照中已标准化并持久化的 `main_image_url`：两侧均非空且不相等时生成；首次采集、任一侧为 NULL、相同 URL 或仅 `image_urls` 变化均不生成。
+- `delta_value` / `delta_rate` 可用于商品单值价格、SKU 价格、SKU 库存变化（包括售罄 / 恢复有货）及 MOQ。例：`100 → 0` 的 delta 为 `-100`、rate 为 `-100%`；`0 → 100` 的 delta 为 `100`、rate 为 NULL，避免除以零。非数值事件的 delta 字段为 NULL。
+
+生命周期规则：
+
+- 第一次成功采集只建立 baseline，不生成普通 ChangeEvent；`unknown → active` 不生成 `product_online`。
+- 只有明确下架证据才从 `active` 生成 `product_offline`；不创建空 Snapshot，事件 `snapshot_id = NULL`、`collection_run_id` 有值，历史保留。
+- `offline → active` 创建新 Snapshot，只生成 `product_online`，不做普通价格、SKU、库存、MOQ、标题或主图 diff；该 Snapshot 成为后续比较 baseline。
 
 ### 7.2 当前检测基线
 
@@ -296,8 +326,8 @@ CompetitorGroup
            ├── N CollectionRun
            │
            └── N ChangeEvent
-                  │
-                  └── snapshot_id → ProductSnapshot
+                  ├── snapshot_id → ProductSnapshot（可空）
+                  └── collection_run_id → CollectionRun（可空，历史兼容）
 
 Competitor
     │
@@ -308,9 +338,11 @@ Competitor
     ├── N CollectionRun
     │
     └── N ChangeEvent
-           │
-           └── snapshot_id → ProductSnapshot
+           ├── snapshot_id → ProductSnapshot（可空）
+           └── collection_run_id → CollectionRun（可空，历史兼容）
 ~~~
+
+CompetitorGroup 与 Competitor 仍是一对多关系；Competitor 通过 `group_id` 表示属于哪个组，通过 `group_role` 表示在该组中是 own 还是 direct competitor。不存在单独的 OwnProduct 实体。
 
 ---
 
@@ -346,8 +378,6 @@ Competitor
 | change_type | 当前未实现原因 |
 |---|---|
 | sales_increase | 当前 ProductSnapshot 没有销量字段 |
-
-SKU price change 当前也不支持，且不属于当前 change_type 集合。
 
 这些能力具备可靠数据来源和明确规则后，才能通过独立变更加入当前模型。
 
@@ -410,14 +440,20 @@ mtop.1688...
 ## 14. Single Source of Truth
 
 ~~~text
+Competitor.group_id
+= 当前组归属
+
+Competitor.group_role
+= 当前组内角色（competitor 或 own）
+
 Competitor
-= 当前被监控对象
+= 当前监控对象
 
 ProductSnapshot / SkuSnapshot
 = 历史采集事实
 
 ChangeEvent
-= 两次成功采集事实之间的变化结果
+= 成功采集事实之间检测出的客观变化
 
 CollectionRun
 = 采集执行状态

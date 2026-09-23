@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -9,6 +9,7 @@ const competitor: Competitor = {
   offer_id: "123456789",
   url: "https://detail.1688.com/offer/123456789.html",
   group_id: null,
+  group_role: "competitor",
   title: null,
   shop_name: null,
   main_image_url: null,
@@ -25,7 +26,7 @@ const mainClassTokens = (html: string) => html.match(/<main\b[^>]*\bclass="([^"]
 const listProps = { groups: [] as CompetitorGroup[] };
 const group: CompetitorGroup = { id: 1, name: "暖手宝", created_at: "2026-09-20T10:00:00Z" };
 const groupMetrics: CompetitorGroupMetrics = { competitor_count: 3, active_count: 2, price_min: "34.00", price_max: "40.00", changed_competitors_today: 2, last_change_at: "2026-09-21T10:35:00Z" };
-const groupSummary: CompetitorGroupSummary = { ...group, ...groupMetrics };
+const groupSummary: CompetitorGroupSummary = { ...group, ...groupMetrics, own_product: null };
 const latestChange = (overrides: Partial<Change> = {}): Change => ({
   id: 1,
   snapshot_id: 2,
@@ -611,7 +612,7 @@ test("non-dashboard pages keep the base main-content class", () => {
   const pages = [
     renderToStaticMarkup(<ListPage {...listProps} competitors={[]} status="loading" error={null} onRetry={noop} onAdd={noop} />),
     renderToStaticMarkup(<DetailPage {...detailProps} data={null} status="loading" error={null} />),
-    renderToStaticMarkup(<GroupPage summary={null} status="loading" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />),
+    renderToStaticMarkup(<GroupPage summary={null} status="loading" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />),
   ];
   for (const html of pages) {
     expect(mainClassTokens(html)).toContain("main-content");
@@ -752,20 +753,43 @@ test("applies group navigation intent and clears it for normal list navigation",
 });
 
 test("renders group page loading, error, full empty, unassigned and normal states", () => {
-  const loading = renderToStaticMarkup(<GroupPage summary={null} status="loading" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
-  const error = renderToStaticMarkup(<GroupPage summary={null} status="error" error="请求失败" onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
-  const empty = renderToStaticMarkup(<GroupPage summary={{ groups: [], unassigned: { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
-  const onlyUnassigned = renderToStaticMarkup(<GroupPage summary={{ groups: [], unassigned: { ...groupMetrics, competitor_count: 1, active_count: 1 } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
-  const normal = renderToStaticMarkup(<GroupPage summary={{ groups: [groupSummary], unassigned: { ...groupMetrics, competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onNavigate={noop} />);
+  const loading = renderToStaticMarkup(<GroupPage summary={null} status="loading" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
+  const error = renderToStaticMarkup(<GroupPage summary={null} status="error" error="请求失败" onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
+  const empty = renderToStaticMarkup(<GroupPage summary={{ groups: [], unassigned: { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
+  const onlyUnassigned = renderToStaticMarkup(<GroupPage summary={{ groups: [], unassigned: { ...groupMetrics, competitor_count: 1, active_count: 1 } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
+  const normal = renderToStaticMarkup(<GroupPage summary={{ groups: [groupSummary], unassigned: { ...groupMetrics, competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
   expect(loading).toContain("正在加载竞品组");
   expect(error).toContain("重试");
   expect(empty).toContain("还没有竞品组");
   expect(onlyUnassigned).toContain("未分组");
   expect(onlyUnassigned).toContain("查看竞品");
+  expect(onlyUnassigned).not.toContain("绑定我方商品");
   expect(normal).toContain("暖手宝");
   expect(normal).toContain("3 个竞品");
   expect(normal).toContain("¥34.00 ~ ¥40.00");
   expect(normal).toContain("更多");
+  const bound = renderToStaticMarkup(<GroupPage summary={{ groups: [{ ...groupSummary, own_product: { id: 7, offer_id: "700", title: "我的基准商品", shop_name: "我的店铺", main_image_url: null, status: "active", is_active: true } }], unassigned: { ...groupMetrics, competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
+  expect(bound).toContain("我的基准商品");
+});
+
+test("shows own role in list and detail and limits bind candidates to group members", () => {
+  const own = { ...competitor, id: 7, group_id: 1, group_role: "own" as const, title: null };
+  const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[own]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(list).toContain("我方");
+  const detail = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, group_role: "own" } }} status="ready" error={null} />);
+  expect(detail).toContain("我方商品");
+  const dialog = renderToStaticMarkup(<OwnProductDialog group={{ ...groupSummary, own_product: { id: own.id, offer_id: own.offer_id, title: null, shop_name: null, main_image_url: null, status: "unknown", is_active: true } }} mode="bind" competitors={[own, { ...competitor, id: 8, group_id: null }, { ...competitor, id: 9, group_id: 1, offer_id: "909" }]} loading={false} selectedId={null} confirming={false} submitting={false} error={null} onSelect={noop} onConfirmStep={noop} onClose={noop} onSubmit={noop} />);
+  expect(dialog).toContain("Offer 909");
+  expect(dialog).not.toContain("Offer 123456789");
+  const replacement = renderToStaticMarkup(<OwnProductDialog group={{ ...groupSummary, own_product: { id: 7, offer_id: "700", title: "原商品", shop_name: null, main_image_url: null, status: "active", is_active: true } }} mode="replace" competitors={[{ ...competitor, id: 9, group_id: 1, offer_id: "909", title: "新商品" }]} loading={false} selectedId={9} confirming submitting error="绑定失败" onSelect={noop} onConfirmStep={noop} onClose={noop} onSubmit={noop} />);
+  expect(replacement).toContain("原商品");
+  expect(replacement).toContain("新商品");
+  expect(replacement).toContain("历史监控数据不会删除");
+  expect(replacement).toContain("绑定失败");
+  expect(replacement).toContain('disabled=""');
+  const unbind = renderToStaticMarkup(<OwnProductDialog group={{ ...groupSummary, own_product: { id: 7, offer_id: "700", title: "原商品", shop_name: null, main_image_url: null, status: "active", is_active: true } }} mode="unbind" competitors={[]} loading={false} selectedId={null} confirming={false} submitting={false} error={null} onSelect={noop} onConfirmStep={noop} onClose={noop} onSubmit={noop} />);
+  expect(unbind).toContain("仍保留在当前组");
+  expect(unbind).toContain("历史数据不会删除");
 });
 
 test("renders create and rename group dialogs with failure feedback", () => {
@@ -796,6 +820,7 @@ const detailData: CompetitorDetail = {
     offer_id: "123456789",
     url: "https://detail.1688.com/offer/123456789.html",
     group_id: 1,
+    group_role: "competitor",
     title: "暖手宝商品",
     shop_name: "家居店",
     main_image_url: null,

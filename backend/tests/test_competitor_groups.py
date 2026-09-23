@@ -237,11 +237,13 @@ def test_summary_returns_group_and_unassigned_metrics_without_mixing_history(
         "price_max": "30.00",
         "changed_competitors_today": 1,
         "last_change_at": "2026-09-21T09:00:00",
+        "own_product": None,
     }
     assert body["groups"][1]["competitor_count"] == 0
     assert body["groups"][1]["price_min"] is None
     assert body["groups"][1]["price_max"] is None
     assert body["groups"][1]["last_change_at"] is None
+    assert body["groups"][1]["own_product"] is None
     assert body["unassigned"] == {
         "competitor_count": 1,
         "active_count": 1,
@@ -387,6 +389,7 @@ def test_deletes_group_by_unassigning_competitors_and_preserving_history(
         session.add(CompetitorGroup(id=1, name="A19", created_at=datetime(2026, 9, 19)))
         session.flush()
         competitor = _add_competitor(session, 1, group_id=1, is_active=False)
+        competitor.group_role = "own"
         session.flush()
         snapshot = _add_snapshot(session, 1, 11, datetime(2026, 9, 20), price_min=Decimal("39"), price_max=None)
         session.flush()
@@ -403,6 +406,7 @@ def test_deletes_group_by_unassigning_competitors_and_preserving_history(
         preserved = session.get(Competitor, 1)
         assert preserved is not None
         assert preserved.group_id is None
+        assert preserved.group_role == "competitor"
         assert preserved.is_active is False
         assert session.scalar(select(ProductSnapshot).where(ProductSnapshot.id == 11)) is not None
         assert session.scalar(select(SkuSnapshot).where(SkuSnapshot.product_snapshot_id == 11)) is not None
@@ -443,3 +447,118 @@ def test_delete_rolls_back_when_unassigning_fails(
     with client[1]() as session:
         assert session.get(CompetitorGroup, 1) is not None
         assert session.get(Competitor, 1).group_id == 1
+
+
+def test_own_product_binding_replacement_unbinding_and_error_contract(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    first_group = test_client.post("/api/competitor-groups", json={"name": "A19"}).json()["id"]
+    other_group = test_client.post("/api/competitor-groups", json={"name": "X6"}).json()["id"]
+    with session_factory() as session:
+        _add_competitor(session, 1, group_id=first_group)
+        _add_competitor(session, 2, group_id=first_group, is_active=False)
+        _add_competitor(session, 3, group_id=other_group)
+        session.get(Competitor, 1).title = "我方 A19"
+        session.get(Competitor, 1).status = "offline"
+        session.commit()
+
+    first = test_client.put(f"/api/competitor-groups/{first_group}/own-product", json={"competitor_id": 1})
+    assert first.status_code == 200
+    assert first.json()["competitor"]["group_role"] == "own"
+    assert test_client.put(f"/api/competitor-groups/{first_group}/own-product", json={"competitor_id": 1}).status_code == 200
+    conflict = test_client.put(f"/api/competitor-groups/{first_group}/own-product", json={"competitor_id": 2})
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "own_product_already_bound"
+
+    replaced = test_client.put(
+        f"/api/competitor-groups/{first_group}/own-product",
+        json={"competitor_id": 2, "replace_existing": True},
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["competitor"]["group_role"] == "own"
+    with session_factory() as session:
+        assert session.get(Competitor, 1).group_role == "competitor"
+        assert session.get(Competitor, 2).group_role == "own"
+        assert session.get(Competitor, 2).is_active is False
+
+    unbound = test_client.delete(f"/api/competitor-groups/{first_group}/own-product")
+    assert unbound.status_code == 204
+    assert test_client.delete(f"/api/competitor-groups/{first_group}/own-product").status_code == 204
+    with session_factory() as session:
+        assert session.get(Competitor, 2).group_id == first_group
+        assert session.get(Competitor, 2).group_role == "competitor"
+
+    assert test_client.put("/api/competitor-groups/999/own-product", json={"competitor_id": 1}).json()["code"] == "competitor_group_not_found"
+    assert test_client.put(f"/api/competitor-groups/{first_group}/own-product", json={"competitor_id": 999}).json()["code"] == "competitor_not_found"
+    wrong_group = test_client.put(f"/api/competitor-groups/{first_group}/own-product", json={"competitor_id": 3})
+    assert wrong_group.status_code == 400
+    assert wrong_group.json()["code"] == "competitor_not_in_group"
+    assert test_client.delete("/api/competitor-groups/999/own-product").json()["code"] == "competitor_group_not_found"
+
+
+def test_summary_excludes_own_product_facts_and_returns_minimal_binding(
+    client: tuple[TestClient, sessionmaker[Session]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        competitor_groups_module,
+        "business_day_bounds",
+        lambda: (datetime(2026, 9, 21).date(), datetime(2026, 9, 20), datetime(2026, 9, 21)),
+    )
+    with client[1]() as session:
+        session.add(CompetitorGroup(id=1, name="A19", created_at=datetime(2026, 9, 19)))
+        session.flush()
+        own = _add_competitor(session, 1, group_id=1, is_active=False)
+        own.group_role = "own"
+        own.title = "我方 A19"
+        own.shop_name = "我方店铺"
+        own.status = "offline"
+        _add_competitor(session, 2, group_id=1)
+        _add_snapshot(session, 1, 11, datetime(2026, 9, 20, 1), price_min=Decimal("999"), price_max=Decimal("1200"))
+        _add_snapshot(session, 2, 21, datetime(2026, 9, 20, 2), price_min=Decimal("20"), price_max=Decimal("30"))
+        session.flush()
+        _add_change(session, 1, 11, 101, datetime(2026, 9, 20, 20))
+        _add_change(session, 2, 21, 201, datetime(2026, 9, 20, 10))
+        session.commit()
+
+    summary = client[0].get("/api/competitor-groups/summary").json()["groups"][0]
+    assert summary["own_product"] == {
+        "id": 1,
+        "offer_id": "1",
+        "title": "我方 A19",
+        "shop_name": "我方店铺",
+        "main_image_url": None,
+        "status": "offline",
+        "is_active": False,
+    }
+    assert summary["competitor_count"] == 1
+    assert summary["active_count"] == 1
+    assert summary["price_min"] == "20.00"
+    assert summary["price_max"] == "30.00"
+    assert summary["changed_competitors_today"] == 1
+    assert summary["last_change_at"] == "2026-09-20T10:00:00"
+    assert set(client[0].get("/api/competitor-groups").json()[0]) == {"id", "name", "created_at"}
+
+
+def test_bind_database_failure_rolls_back_replacement(
+    client: tuple[TestClient, sessionmaker[Session]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    group_id = client[0].post("/api/competitor-groups", json={"name": "A19"}).json()["id"]
+    with client[1]() as session:
+        _add_competitor(session, 1, group_id=group_id)
+        _add_competitor(session, 2, group_id=group_id)
+        session.get(Competitor, 1).group_role = "own"
+        session.commit()
+
+    def fail_update(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("forced failure")
+
+    monkeypatch.setattr(competitor_groups_module, "update", fail_update)
+    response = client[0].put(
+        f"/api/competitor-groups/{group_id}/own-product",
+        json={"competitor_id": 2, "replace_existing": True},
+    )
+    assert response.status_code == 500
+    with client[1]() as session:
+        assert session.get(Competitor, 1).group_role == "own"
+        assert session.get(Competitor, 2).group_role == "competitor"
