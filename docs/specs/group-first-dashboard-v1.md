@@ -24,7 +24,7 @@ Dashboard 不计算 Attention，也不代替组分析或单品证据页。
 
 1. Header：页面身份及“添加竞品”“立即采集”操作。
 2. Group-first KPI：监控商品组、今日有变化商品组、今日涉及变化竞品、异常采集。
-3. 页面核心“今日需要关注的商品组”：仅显示 Backend Attention 返回的今日有变化组，保持返回顺序。
+3. 页面核心“今日需要关注的商品组”：仅显示满足本 Spec eligibility 且今日有变化的 Backend Attention 结果，保持返回顺序。
 4. 辅助信息：采集运行状态与 7 天趋势。二者不抢占主列表视觉优先级。
 5. 次级弱入口：无变化组数量或“查看全部商品组”；不能把无变化组伪装为关注项。
 
@@ -34,21 +34,28 @@ Dashboard 不计算 Attention，也不代替组分析或单品证据页。
 
 | KPI | 语义 |
 |---|---|
-| 监控商品组 | 至少绑定一个 own product 且至少有一个 `is_active = true` 直接竞品的不同组数；按当前成员关系统计。由 Backend 返回，Frontend 不从竞品行推算。 |
-| 今日有变化商品组 | 今日有有效直接竞品变化且进入 Group Attention 结果的不同组数；由 Backend 返回。 |
-| 今日涉及变化竞品 | 今日 Attention 纳入计算的不同直接竞品数；由 Backend 按 `competitor_id` 去重并返回，不从事件数或页面行数推算。仅计当前属于可进入 Group-first 关注模型商品组的直接竞品；未分组商品不计。组归属范围、当前 `group_role` 与 Asia/Shanghai 今日边界沿用 Group Attention 规则。 |
+| 监控商品组 | 已绑定 `group_role = own` 商品且当前至少有 1 个直接竞品的不同组数；按当前成员关系统计。由 Backend 返回，Frontend 不从竞品行推算。 |
+| 今日有变化商品组 | 满足 Dashboard Attention eligibility，且今日有可纳入 Attention 的直接竞品变化的不同组数；由 Backend 返回。 |
+| 今日涉及变化竞品 | 满足 Dashboard Attention eligibility 的组中，今日 Attention 纳入计算的不同直接竞品数；由 Backend 按 `competitor_id` 去重并返回，不从事件数或页面行数推算。未分组商品不计。组归属范围、当前 `group_role` 与 Asia/Shanghai 今日边界沿用 Group Attention 规则。 |
 | 异常采集 | 沿用现有 Dashboard 当日失败采集统计口径；不得与 Attention 失败混为一谈。 |
 
 若当前契约不能返回前三项，Backend read contract 必须补足上述聚合字段；Frontend 不得组合 `/api/competitor-groups/summary`、`/api/dashboard/today` 或组成员数据自行拼数。采集失败 KPI 继续消费现有 Dashboard 数据。
 
 ## Attention Group List
 
-主体标题为“今日需要关注的商品组”。列表只消费 Backend Group Attention read model：
+主体标题为“今日需要关注的商品组”。列表只消费 Backend Group Attention read model。Dashboard Attention eligibility 必须同时满足：
+
+1. 当前组已绑定 `group_role = own` 商品；
+2. 当前组至少存在 1 个直接竞品；
+3. 当前组今日有至少一项可纳入 Attention 的直接竞品变化。
+
+未绑定 own product 的 Group 不进入主列表，也不计入三个 Group-first KPI。它们继续属于 Groups 管理职责；V1 Dashboard 不必新增“待绑定组”提示。Backend read model 在查询、聚合和 KPI 计数时统一执行 eligibility；Frontend 不自行过滤或补算。
+
+符合 eligibility 的每项展示：
 
 - 按 `group-attention-priority-v1.md` 的 Attention Level 和稳定排序键展示，不在 Frontend 再排序；
 - 每项展示组名、own product 简要身份、Attention Level（“重点关注 / 建议查看 / 一般变化”）、今日变化竞品数、最多 3 条 Backend Reason、最近变化时间，以及“进入组分析”；
 - 不展示内部 `attention_score`；不将 ChangeEvent 条数作为变化竞品数；
-- own identity 使用真实 own product 数据；缺失值显示“未绑定我方商品”或契约定义的不可用状态，不按名称猜测；
 - 今日无变化的 Group 不出现在关注列表。可以弱化展示无变化组数量或“查看全部商品组”，不提供虚构的 Attention Level / Reason。
 
 ## Empty / Loading / Error States
@@ -93,7 +100,8 @@ Dashboard 不计算 Attention，也不代替组分析或单品证据页。
 因此本 Spec 不伪称现有接口已能满足 Group-first Dashboard，也不锁定 endpoint 名称。实现时需提供最小的 Backend 读取契约，可与现有 Dashboard 请求并行，至少权威返回：
 
 - 今日有变化且已排序的 Group 项目；每项含 `group_id` / `group_name`、own product 简要身份、Attention Level、distinct changed competitor count、最多 3 条结构化 Reason（含展示文本）及 `latest_change_at`；
-- KPI 所需的监控商品组数、今日有变化商品组数、今日涉及变化竞品数，字段语义清楚；今日变化组和竞品统计范围与 Attention 规则一致；
+- Backend 在组列表、Attention 聚合和 KPI 计数中统一应用 eligibility：已绑定 `group_role = own` 商品、至少 1 个直接竞品、且今日存在可纳入 Attention 的直接竞品变化。未绑定 own product 的 Group 不进入结果，也不计入监控商品组数、今日有变化商品组数或今日涉及变化竞品数；Frontend 不自行过滤；
+- KPI 所需的监控商品组数、今日有变化商品组数、今日涉及变化竞品数，字段语义清楚且遵守上述 eligibility；
 - 如有必要的业务日期/数据状态字段，以区分成功空结果与失败。
 
 契约不得向 UI 暴露 `attention_score`；不要求新增表、持久化分数或改造历史事实。采集异常数及 7 天趋势继续来自现有 `/api/dashboard/today`。现有 Group Summary 可用于其既定 Groups 页面职责；不得将其旧排序当作 Attention 排序。
@@ -104,9 +112,10 @@ Dashboard 不计算 Attention，也不代替组分析或单品证据页。
 2. 作为运营者，我希望列表顺序和关注等级由 Backend Attention 决定，以免页面用事件数量自行推断重要性。
 3. 作为运营者，我希望看到每组最多三条简明原因及变化竞品数，以便在进入详情前理解关注依据。
 4. 作为运营者，我希望今日无变化组不混入关注列表，以免误把静态状态当作竞争变化。
-5. 作为运营者，我希望点击组后进入既有 Group Detail，以便继续查看差异和证据。
-6. 作为运营者，我希望 Attention 读取失败时采集状态和趋势仍可用，以便局部故障不影响整页。
-7. 作为运营者，我希望批量采集完成后看到刷新后的关注结果，以便依据最新事实行动。
+5. 作为运营者，我希望未绑定 own product 的 Group 不进入关注列表和 Group-first KPI，并继续通过 Groups 管理，以便首页只呈现我方商品组的竞争变化。
+6. 作为运营者，我希望点击组后进入既有 Group Detail，以便继续查看差异和证据。
+7. 作为运营者，我希望 Attention 读取失败时采集状态和趋势仍可用，以便局部故障不影响整页。
+8. 作为运营者，我希望批量采集完成后看到刷新后的关注结果，以便依据最新事实行动。
 
 ## Implementation Decisions
 
@@ -147,6 +156,7 @@ Dashboard 不计算 Attention，也不代替组分析或单品证据页。
 
 - Dashboard 的首要问题变为“今天哪些我方商品组最值得先看”。
 - 主列表只展示今日有变化的 Attention Group，顺序完全保持 Backend 返回顺序。
+- 主列表与三个 Group-first KPI 均遵守统一 eligibility；Frontend 不执行额外过滤。
 - 组项显示规定的身份、Level、变化竞品数、最多三条 Reason、最近变化时间及 Group Detail 入口，不显示 Score。
 - Group-first KPI 语义由 Backend 权威提供；Frontend 不从旧接口拼口径。
 - 无变化、加载、Attention 失败状态按本 Spec 区分，Attention 失败不使独立采集状态/趋势不可用。
