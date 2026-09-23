@@ -1,6 +1,6 @@
 # 竞品组中心化 / Group Intelligence V1
 
-状态：正式产品 Spec，仅定义下一阶段产品与业务规则；本轮不实现。
+状态：正式产品方向 Spec。基础事实层、ChangeEvent V2、我方角色绑定已实现；Group Detail / 组级读取 contract 尚待实现。
 
 ## Problem Statement
 
@@ -82,9 +82,9 @@ V1 只输出事实、对比和事件聚合，不输出竞争力评分、风险�
 
 ### 2. 如何表示我方商品：候选方案比较
 
-#### 方案 A：在现有商品记录上增加组内角色（推荐方向）
+#### 方案 A：在现有商品记录上增加组内角色（已采用并实现）
 
-继续使用现有 `Competitor` 作为所有 1688 商品的统一监控实体，沿用现有 `group_id`。为组内关系增加一个“我方基准 / 直接竞品”的角色表示，并保证一个组最多一个我方基准。
+继续使用现有 `Competitor` 作为所有 1688 商品的统一监控实体，沿用现有 `group_id`。这一方案已实现：字段为 `Competitor.group_role`，正式值为 `competitor` 和 `own`，数据库约束和绑定规则见 `own-product-role-binding.md`。
 
 优点：
 
@@ -112,9 +112,9 @@ V1 只输出事实、对比和事件聚合，不输出竞争力评分、风险�
 - 角色是组关系的一部分，却分散在组和商品两处，较容易出现引用与 `group_id` 不一致；
 - 仍然不能复用一个独立的 OwnProduct 身份，实际采集仍依赖 `Competitor`。
 
-#### 推荐
+#### 已采用方案
 
-推荐采用方案 A 的逻辑方向：把我方商品作为现有监控商品在组内的一个角色，而不是创建平行商品体系。这里冻结的是产品与领域方向，不在本轮拍板具体数据库字段名或 migration 结构；实现前应按当前 ORM、SQLite 约束和已有 API contract 做一次最小 schema 设计。
+方案 A 已实现；本 Spec 后续内容以 `Competitor.group_role` 和 `own-product-role-binding.md` 的正式 contract 为准。方案 B 保留为设计背景，不是待选方案。
 
 不推荐新建角色关联表或独立 OwnProduct 聚合根。当前只有单用户、单平台、一个商品最多属于一个组的约束，复杂关系模型会增加迁移、查询、删除和历史兼容成本。
 
@@ -139,7 +139,7 @@ V1 只输出事实、对比和事件聚合，不输出竞争力评分、风险�
 | 商品价格区间 | 最新 `ProductSnapshot.price_min` / `price_max` | 我方价格位置与价格差距 |
 | 最小起批量 | 最新 `ProductSnapshot.min_order_quantity` | 起批量差距 |
 | SKU 数量 | 最新 `ProductSnapshot` 下的 `SkuSnapshot` 数量 | SKU 规模比较 |
-| SKU 当前页面展示价格 | `SkuSnapshot.price` | 后续 SKU 价格变化与证据 |
+| SKU 当前页面展示价格 | `SkuSnapshot.price` | SKU 价格事实与已实现的价格变化事件 |
 | SKU 库存 | `SkuSnapshot.stock` | 完整库存位置与 SKU 库存事实 |
 | 商品主图、标题、上下架状态 | 最新快照与现有 `Competitor` 摘要 | 横向识别与内容 / 生命周期变化 |
 | 采集时间 | `captured_at` / `last_collected_at` | 判断数据新鲜度，不伪装为实时 |
@@ -270,15 +270,13 @@ V1 可以给出事实差距，但不做建议。
 - 同一次采集产生的多个客观变化分别计数，页面可按商品和事件领域聚合；
 - 无事件返回空集合和 0 计数，不使用虚假默认事件。
 
-### 8. ChangeEvent V2 充分性评估
+### 8. ChangeEvent V2 当前能力
 
-本节只做产品判断；统一事件的正式命名和持久化规则以 `docs/specs/detect-competitor-changes.md` 为准。
+ChangeEvent V2 已实现。当前正式事件模型以 `docs/specs/detect-competitor-changes.md` 和当前 ORM 为准：14 种 V2 事件及历史 legacy `stock_changed` 兼容读取均已具备。Group Intelligence 必须消费统一 ChangeEvent，不在页面层重复推断事件。
 
-当前 main 的数据库 / ORM 仍是现有 9 种事件；`detect-competitor-changes.md` 冻结下一阶段的 14 种 V2 事件。Group Intelligence 不应在页面层重复推断事件，必须复用统一 ChangeEvent。
+#### 8.1 起批量变化：已实现的 V2 方向事件
 
-#### 8.1 起批量变化：纳入 V2 方向事件
-
-结论：必须加入。
+结论：已按正式 V2 contract 实现。
 
 原因：
 
@@ -289,9 +287,9 @@ V1 可以给出事实差距，但不做建议。
 
 正式事件使用两个商品级方向类型：`min_order_quantity_decrease`、`min_order_quantity_increase`，`entity_key = NULL`。同一商品相邻有效快照的两侧起批量都已采集且数值不同，按方向生成事件；任一侧为 NULL、首次采集或恢复上架首轮，不猜测变化。
 
-#### 8.2 SKU 价格变化：纳入统一价格事件
+#### 8.2 SKU 价格变化：已实现的统一价格事件
 
-结论：纳入 V2，当前 ChangeEvent 会漏掉有价值的动作。
+结论：已纳入 V2 并实现；商品级和 SKU 级价格复用统一事件类型。
 
 场景：商品整体 `price_min / price_max` 没有变化，但某个 SKU 的页面展示价格单独下降。对 1688 运营而言，这仍可能是竞争商品的实际价格动作。
 
@@ -307,9 +305,9 @@ V1 可以给出事实差距，但不做建议。
 
 Group Intelligence 应直接消费这些统一价格事件，而不是让前端临时比较两个快照。
 
-#### 8.3 SKU 普通库存变化：属于组级有价值的基础事实
+#### 8.3 SKU 普通库存变化：已实现的方向事件
 
-结论：当前系统已经具备该能力；V2 应将 legacy `stock_changed` 标准化为统一方向事件，不得删除或降级。
+结论：V2 已实现 SKU 库存方向、售罄和恢复有货事件；历史 `stock_changed` 保留兼容读取，不应删除或降级。
 
 场景：黑色库存 `100 → 0`、白色库存 `100 → 200` 可由售罄 / 恢复或总库存部分表达；更关键的场景是黑色 `500 → 400`、白色 `500 → 600`，商品总库存保持不变。当前只看商品总库存会遗漏库存结构发生变化。
 
@@ -325,9 +323,9 @@ Group Intelligence 应直接消费这些统一价格事件，而不是让前端�
 
 正式事件复用 `stock_increase` / `stock_decrease`，`entity_key = sku_id`。这是支持“哪家库存结构发生明显变化”和动作统计的基础事实；不是新增一套能力，也不能由组详情临时推断。
 
-#### 8.4 已有 V2 事件的复用
+#### 8.4 当前 V2 事件的复用
 
-后续实现应复用以下已冻结事件语义：
+组级读取应复用以下已实现事件语义：
 
 - 商品价格上涨 / 下降；
 - SKU 普通库存上涨 / 下降；
@@ -448,24 +446,13 @@ Y35：1 家商品下架，2 家调整价格
 - 销量、成交趋势或销售速度的伪造与推断；
 - 新采集 POC、平行 OwnProduct 采集链路或复杂推荐算法；
 - 多对多竞品关系、跨组历史成员审计和复杂领域模型；
-- 本轮修改 `competitor-groups.md`、`detect-competitor-changes.md` 或长期 `docs`；
-- 本轮业务代码、前端、数据库、Alembic migration、测试、commit 或 push。
 
 ## Further Notes
 
-### 推荐的后续实施顺序
+### 后续实施顺序
 
-1. **直接复用已冻结事件规则**：按 `docs/specs/detect-competitor-changes.md` 的 ChangeEvent V2 contract 消费 `min_order_quantity_increase` / `min_order_quantity_decrease`、统一价格事件和 SKU 库存方向事件；不让 Group Detail 在前端自行推断。
-2. **实现最小角色绑定**：在现有商品与组关系上增加组内我方 / 竞品角色，默认兼容旧数据为直接竞品，保证一组最多一个我方基准。
-3. **复用采集和事实链路**：让我方商品继续走现有 collection service，保存到现有 Snapshot / SKU Snapshot，并验证字段缺失、库存未知、上下架和失败隔离语义。
-4. **实现事件扩展与回归**：先完成起批量、SKU 价格、SKU 普通库存的统一事件检测和 legacy 兼容，再验证 Dashboard / Detail / List 的现有消费者不被破坏。
-5. **实现组级读取 contract**：一次读取绑定关系、最新快照、横向字段、今日事件和 7 / 30 天动作；不新增聚合存储表，不把查询聚合回写为 ChangeEvent。
-6. **实现 Group Detail**：按本 Spec 的五段业务结构接入真实数据，先覆盖 loading、empty、unbound、partial-data、error 和正常状态，再做必要的页面交互。
-7. **逐步调整 Dashboard 入口**：Group Detail 稳定后，再把首页从竞品事件入口逐步改为“值得关注的我方商品组”入口；不在本阶段提前重做首页。
-8. **最后同步长期文档**：实现、测试、真实采集和历史兼容验证完成后，再统一更新 `docs/product.md`、`docs/data-model.md` 和其他长期文档中的当前能力描述。
+1. 实现组级读取 contract，批量聚合现有商品、最新 Snapshot、SKU 与 ChangeEvent，不新增聚合存储或事件。
+2. 实现 Group Detail 页面并消费该 contract；当前 Groups / List / Dashboard / Competitor Detail 不被误认为 Group Detail 已存在。
+3. Group Detail 稳定后再考虑 Dashboard 组级入口；本阶段不修改 Dashboard。
 
-### 本轮确认项
-
-产品方向和本 Spec 不存在必须阻塞实现的确认问题。统一事件类型、`entity_key` 分层、起批量方向事件和商品总库存派生规则已在 ChangeEvent V2 Spec 中冻结；实现前只需按两份 Spec 编写迁移与回归测试。
-
-本轮交付仅新增本文件；不发布 issue、不修改代码、数据库、migration、测试、旧 Spec 或长期文档。
+Group Detail V1 的直接实现 contract 见 `docs/specs/group-detail-v1.md`。角色、事件和基础事实层已实现；本 Spec 保留产品方向与设计背景，不代表 Group Detail 或组级读取 API 已存在。
