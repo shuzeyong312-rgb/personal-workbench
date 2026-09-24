@@ -220,6 +220,36 @@ export type DashboardData = {
   trend_7d: DashboardTrendPoint[];
 };
 
+export type GroupAttentionReason = {
+  reason_type: string;
+  display_text: string;
+  competitor_count: number;
+  sku_count: number | null;
+  direction: string | null;
+  event_level: "S" | "A" | "B" | "C" | "D";
+  current_state_safe: boolean;
+};
+
+export type GroupAttentionItem = {
+  group_id: number;
+  group_name: string;
+  own_product: Pick<Competitor, "id" | "offer_id" | "title" | "shop_name" | "main_image_url">;
+  attention_level: "重点关注" | "建议查看" | "一般变化";
+  changed_competitor_count: number;
+  reasons: GroupAttentionReason[];
+  latest_change_at: string;
+};
+
+export type GroupAttentionData = {
+  date: string;
+  kpis: {
+    monitored_product_groups: number;
+    changed_product_groups_today: number;
+    changed_competitors_today: number;
+  };
+  groups: GroupAttentionItem[];
+};
+
 export type DashboardTrendPoint = {
   date: string;
   price_changes: number;
@@ -619,42 +649,6 @@ export function formatChange(change: Change): string {
   }
 }
 
-export function getChangeTypeLabel(changeType: string): string {
-  if (changeType === "product_offline") return "商品下架";
-  if (changeType === "product_online") return "恢复上架";
-  if (changeType === "price_increase" || changeType === "price_decrease") return "变价";
-  if (changeType === "stock_increase") return "库存增加";
-  if (changeType === "stock_decrease") return "库存下降";
-  if (changeType === "sku_sold_out") return "SKU 售罄";
-  if (changeType === "sku_restocked") return "SKU 恢复有货";
-  if (changeType === "stock_changed") return "库存变化";
-  if (changeType === "sku_added" || changeType === "sku_removed") return "SKU变化";
-  if (changeType === "min_order_quantity_increase") return "起批量增加";
-  if (changeType === "min_order_quantity_decrease") return "起批量降低";
-  if (changeType === "main_image_changed") return "主图变化";
-  if (changeType === "title_changed") return "标题变化";
-  return "其他变化";
-}
-
-function dashboardChangeBadges(changeTypes: readonly string[]): { label: string; className: string }[] {
-  const badges: { label: string; className: string }[] = [];
-  const labels = new Set<string>();
-  for (const changeType of changeTypes) {
-    const label = getChangeTypeLabel(changeType);
-    if (labels.has(label)) continue;
-    labels.add(label);
-    badges.push({ label, className: `change-type-${changeType}` });
-  }
-  return badges;
-}
-
-export function formatChangeValue(change: Change, side: "old" | "new"): string {
-  const value = side === "old" ? change.old_value : change.new_value;
-  const raw = value?.trim() || "";
-  if (!raw) return "—";
-  return change.change_type === "price_increase" || change.change_type === "price_decrease" ? `¥${raw}` : raw;
-}
-
 function formatPercentageMagnitude(percentage: number): string {
   const direction = percentage < 0 ? "↓" : "↑";
   const magnitude = Math.abs(percentage).toFixed(1);
@@ -687,43 +681,6 @@ export function formatDuration(seconds: number | null): string {
   const rounded = Math.round(seconds);
   if (rounded < 60) return `${rounded} 秒`;
   return `${Math.floor(rounded / 60)} 分 ${rounded % 60} 秒`;
-}
-
-export function formatDashboardSummary(item: DashboardItem): string {
-  const change = item.primary_change;
-  if (!change) return "发生变化";
-  if (change.change_type === "product_offline") return "商品已下架";
-  if (change.change_type === "product_online") return "商品恢复上架";
-  if (change.change_type === "price_increase" || change.change_type === "price_decrease") {
-    if (change.entity_key) return formatChange(change);
-    return `${formatChangeValue(change, "old")} → ${formatChangeValue(change, "new")}`;
-  }
-  if (["stock_increase", "stock_decrease", "sku_sold_out", "sku_restocked", "stock_changed"].includes(change.change_type)) {
-    const totals = item.stock_total_change;
-    if (!totals || totals.old_total === null || totals.new_total === null) return "总库存发生变化";
-    return `总库存 ${formatStockDisplay(totals.old_total)} → ${formatStockDisplay(totals.new_total)}`;
-  }
-  if (change.change_type === "sku_added" || change.change_type === "sku_removed") {
-    const parts = [];
-    if (item.sku_added_count > 0) parts.push(`新增 ${item.sku_added_count} 个 SKU`);
-    if (item.sku_removed_count > 0) parts.push(`移除 ${item.sku_removed_count} 个 SKU`);
-    return parts.join("，") || "SKU 发生变化";
-  }
-  if (["min_order_quantity_increase", "min_order_quantity_decrease"].includes(change.change_type)) return formatChange(change);
-  if (change.change_type === "main_image_changed") return "主图发生变化";
-  if (change.change_type === "title_changed") return "标题已变更";
-  return "发生变化";
-}
-
-export function formatDashboardMagnitude(item: DashboardItem): string {
-  if (!item.primary_change) return "—";
-  if (["stock_increase", "stock_decrease", "sku_sold_out", "sku_restocked", "stock_changed"].includes(item.primary_change.change_type)) {
-    const totals = item.stock_total_change;
-    if (!totals || totals.old_total === null || totals.new_total === null || totals.old_total === 0) return "—";
-    const percentage = ((totals.new_total - totals.old_total) / totals.old_total) * 100;
-    return formatPercentageMagnitude(percentage);
-  }
-  return formatChangeMagnitude(item.primary_change);
 }
 
 export type DashboardTrendChartPoint = DashboardTrendPoint & { x: number; y: Record<"price_changes" | "stock_changes" | "sku_changes" | "failed_collections", number> };
@@ -1310,7 +1267,9 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, b
 
 type DashboardPageProps = {
   data: DashboardData | null;
-  groups: CompetitorGroup[];
+  attention: GroupAttentionData | null;
+  attentionStatus: DashboardStatus;
+  attentionError: string | null;
   status: DashboardStatus;
   error: string | null;
   batchState?: BatchState;
@@ -1318,20 +1277,21 @@ type DashboardPageProps = {
   onNavigate: (page: Page) => void;
   onAdd?: () => void;
   onCollect?: () => void;
-  onOpenDetail?: (competitorId: number) => void;
+  onOpenGroupDetail?: (groupId: number) => void;
+  onRetryAttention: () => void;
 };
 
-function DashboardIcon({ kind }: { kind: "price" | "stock" | "sku" | "error" }) {
+function DashboardIcon({ kind }: { kind: "groups" | "changed-groups" | "competitors" | "error" }) {
   const paths = {
-    price: <><path d="M5 17 10 12l3 3 6-7" /><path d="M15 8h4v4" /></>,
-    stock: <><path d="m12 4 7 4v8l-7 4-7-4V8l7-4Z" /><path d="m5 8 7 4 7-4M12 12v8" /></>,
-    sku: <><path d="m12 4 7 4-7 4-7-4 7-4Z" /><path d="m5 12 7 4 7-4M5 16l7 4 7-4" /></>,
+    groups: <><rect x="3.5" y="4" width="7" height="6" rx="1.5" /><rect x="13.5" y="4" width="7" height="6" rx="1.5" /><rect x="3.5" y="14" width="7" height="6" rx="1.5" /><rect x="13.5" y="14" width="7" height="6" rx="1.5" /></>,
+    "changed-groups": <><path d="M4 6h9M4 12h6M4 18h9" /><path d="m15 10 3 3 3-3M18 13V4" /></>,
+    competitors: <><circle cx="8" cy="8" r="3" /><circle cx="17" cy="9" r="2.5" /><path d="M2.5 20c.4-3.4 2.2-5 5.5-5s5.1 1.6 5.5 5M14 15c3.8-.8 6.4.7 7.3 4" /></>,
     error: <><path d="M12 4 21 20H3L12 4Z" /><path d="M12 9v5M12 17h.01" /></>,
   };
   return <svg className="dashboard-icon" viewBox="0 0 24 24" aria-hidden="true">{paths[kind]}</svg>;
 }
 
-function DashboardStatCard({ label, value, kind, tone }: { label: string; value: number | string; kind: "price" | "stock" | "sku" | "error"; tone: string }) {
+function DashboardStatCard({ label, value, kind, tone }: { label: string; value: number | string; kind: "groups" | "changed-groups" | "competitors" | "error"; tone: string }) {
   return <div className="dashboard-stat-card"><span className={`dashboard-stat-icon dashboard-stat-${tone}`}><DashboardIcon kind={kind} /></span><div><span>{label}</span><strong>{value}</strong></div></div>;
 }
 
@@ -1382,35 +1342,36 @@ export function OwnProductDialog({ group, mode, competitors, loading, selectedId
   </section></div>;
 }
 
-function CollectionOverview({ data, batchState }: { data: DashboardData | null; batchState: BatchState }) {
-  const summary = data?.collection_summary;
+function CollectionOverview({ data, status, error, batchState, onRetry }: { data: DashboardData | null; status: DashboardStatus; error: string | null; batchState: BatchState; onRetry: () => void }) {
+  const summary = status === "ready" ? data?.collection_summary : null;
   const busy = batchState.status === "running" || batchState.runner_active || batchState.browser_open;
   const progress = batchState.total > 0 ? Math.min(100, (batchState.completed / batchState.total) * 100) : 0;
   return <section className="table-card collection-overview"><div className="table-heading"><div><h2>采集状态概览</h2><span>数据库记录与当前批次</span></div><span className={busy ? "overview-status overview-status-running" : batchState.status === "verification_required" ? "overview-status overview-status-warning" : "overview-status"}>{batchState.status === "running" ? "采集中" : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务"}</span></div>
+    {status === "error" && <div className="dashboard-support-error" role="alert"><span>{error || "暂时无法获取采集统计和趋势。"}</span><button type="button" className="text-link-button" onClick={onRetry}>重试</button></div>}
     <div className="collection-summary-grid"><div><span>最近采集时间</span><strong>{summary?.last_collection_at ? formatDate(summary.last_collection_at) : "暂无采集记录"}</strong></div><div><span>今日成功</span><strong>{summary ? summary.success_runs : "—"}</strong></div><div><span>今日失败</span><strong className={summary?.failed_runs ? "collection-value-error" : ""}>{summary ? summary.failed_runs : "—"}</strong></div><div><span>平均耗时</span><strong>{formatDuration(summary?.average_duration_seconds ?? null)}</strong></div></div>
     <div className={`collection-batch collection-batch-${batchState.status}`}><div className="collection-batch-heading"><strong>{batchState.status === "running" ? `采集中 ${batchState.completed} / ${batchState.total}` : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务"}</strong><span>{batchState.status === "running" ? `成功 ${batchState.succeeded} · 失败 ${batchState.failed}` : batchState.status === "completed" ? `成功 ${batchState.succeeded} / 失败 ${batchState.failed}` : batchState.status === "verification_required" ? `已完成 ${batchState.completed} / ${batchState.total}` : "今日采集统计仍会保留"}</span></div>{batchState.status === "running" && <div className="collection-progress" role="progressbar" aria-label={`采集进度 ${batchState.completed} / ${batchState.total}`} aria-valuemin={0} aria-valuemax={batchState.total} aria-valuenow={batchState.completed}><span style={{ width: `${progress}%` }} /></div>}</div>
   </section>;
 }
 
-function QuickActions({ data, batchState, onAdd, onCollect, onNavigate }: { data: DashboardData | null; batchState: BatchState; onAdd?: () => void; onCollect?: () => void; onNavigate: (page: Page) => void }) {
+function DashboardHeaderActions({ data, batchState, onAdd, onCollect }: { data: DashboardData | null; batchState: BatchState; onAdd?: () => void; onCollect?: () => void }) {
   const busy = batchState.status === "running" || batchState.status === "verification_required" || batchState.runner_active || batchState.browser_open;
   const disabled = busy || !data || data.stats.monitored_competitors === 0;
-  return <section className="table-card quick-actions"><div className="table-heading"><div><h2>快捷入口</h2><span>从这里继续今天的监控工作</span></div></div><div className="quick-action-list"><button type="button" className="quick-action" onClick={onAdd}><span className="quick-action-icon quick-action-blue">＋</span><span><strong>添加竞品</strong><small>录入新的监控商品</small></span></button><button type="button" className="quick-action" onClick={onCollect} disabled={disabled}><span className="quick-action-icon quick-action-purple">↗</span><span><strong>立即采集</strong><small>采集全部监控中竞品</small></span></button><button type="button" className="quick-action" onClick={() => onNavigate("competitors")}><span className="quick-action-icon quick-action-green">▤</span><span><strong>竞品列表</strong><small>查看和管理监控商品</small></span></button></div></section>;
+  return <div className="dashboard-header-actions"><button type="button" className="secondary-button" onClick={onAdd}>添加竞品</button><button type="button" className="primary-button" onClick={onCollect} disabled={disabled}>立即采集</button></div>;
 }
 
-export function DashboardPage({ data, groups, status, error, batchState = idleBatchState, onRetry, onNavigate, onAdd, onCollect, onOpenDetail }: DashboardPageProps) {
-  const rows = status === "ready" && data ? data.items : [];
-  const value = (field: keyof DashboardData["stats"]) => status === "ready" && data ? data.stats[field] : "—";
+export function DashboardPage({ data, attention, attentionStatus, attentionError, status, error, batchState = idleBatchState, onRetry, onRetryAttention, onNavigate, onAdd, onCollect, onOpenGroupDetail }: DashboardPageProps) {
+  const attentionValue = (field: keyof GroupAttentionData["kpis"]) => attentionStatus === "ready" && attention ? attention.kpis[field] : "—";
+  const failedCollections = status === "ready" && data ? data.stats.failed_collections : "—";
   return <AppShell page="dashboard" onNavigate={onNavigate} breadcrumb="竞品监控大屏">
-    <header className="page-header dashboard-page-header"><div><h1>竞品监控大屏</h1><p className="page-description">查看今日竞品变化、采集状态与近期趋势。</p></div><span className="dashboard-monitoring-count">监控中 {value("monitored_competitors")} 个竞品</span></header>
-    <section className="dashboard-stats" aria-label="今日变化统计"><DashboardStatCard label="今日变价竞品" value={value("price_changed_competitors")} kind="price" tone="blue" /><DashboardStatCard label="今日库存变化竞品" value={value("stock_changed_competitors")} kind="stock" tone="green" /><DashboardStatCard label="今日 SKU 变化竞品" value={value("sku_changed_competitors")} kind="sku" tone="purple" /><DashboardStatCard label="异常采集" value={value("failed_collections")} kind="error" tone="orange" /></section>
-    <div className="dashboard-main-grid"><section className="table-card dashboard-change-section"><div className="table-heading"><div><h2>今日发生变化的竞品</h2><span>{status === "ready" && data ? data.date : "本地业务日"}</span></div><span className="table-count">{status === "ready" && data ? `今日 ${data.stats.changed_competitors} 个竞品 · ${data.stats.change_events} 条变化` : "—"}</span></div>
-      {status === "loading" && <div className="state-panel dashboard-inline-state"><div className="spinner" /><strong>正在加载今日变化…</strong></div>}
-      {status === "error" && <div className="state-panel state-error dashboard-inline-state"><strong>加载失败</strong><span>{error || "暂时无法获取今日变化。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div>}
-      {status === "ready" && data && rows.length === 0 && <div className="state-panel dashboard-empty"><div className="empty-icon">✓</div><strong>今日暂无竞品变化</strong><span>系统会继续按照每日采集规则监控竞品变化。</span></div>}
-      {rows.length > 0 && <div className="table-scroll dashboard-table-scroll"><table className="dashboard-events-table"><thead><tr><th>商品信息</th><th>变化类型</th><th>变化摘要</th><th>变化幅度</th><th>检测时间</th><th>竞品组</th><th>操作</th></tr></thead><tbody>{rows.map((item) => <tr key={item.competitor_id}><td><div className="product-cell"><ProductImage competitor={item} /><div><strong>{item.title || "未采集"}</strong><span>{item.shop_name || "未采集"}</span></div></div></td><td><div className="change-type-badge-list">{dashboardChangeBadges(item.change_types).map((badge) => <span key={badge.label} className={`change-type-badge ${badge.className}`}>{badge.label}</span>)}</div></td><td className="change-transition">{formatDashboardSummary(item)}</td><td className={`change-magnitude change-magnitude-${item.primary_change?.change_type || "unknown"}`}>{formatDashboardMagnitude(item)}</td><td className="collection-date-cell">{formatDate(item.latest_change_at)}</td><td>{getCompetitorGroupLabel(item.group_id, groups)}</td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(item.competitor_id)}>查看详情</button></td></tr>)}</tbody></table></div>}
-    </section><CollectionOverview data={data} batchState={batchState} /></div>
-    <div className="dashboard-lower-grid"><section className="table-card dashboard-trend-section"><div className="table-heading"><div><h2>近 7 天竞品变化趋势</h2><span>每天真实监控事件数量</span></div><span className="trend-period">连续 7 个业务日</span></div>{status === "ready" && data ? <DashboardTrendChart trend={data.trend_7d} /> : <div className="dashboard-trend-placeholder">—</div>}</section><QuickActions data={data} batchState={batchState} onAdd={onAdd} onCollect={onCollect} onNavigate={onNavigate} /></div>
+    <header className="page-header dashboard-page-header"><div><h1>竞品监控大屏</h1><p className="page-description">先看今天值得关注的商品组，再查看采集状态与近期趋势。</p></div><DashboardHeaderActions data={data} batchState={batchState} onAdd={onAdd} onCollect={onCollect} /></header>
+    <section className="dashboard-stats" aria-label="商品组关注统计"><DashboardStatCard label="监控商品组" value={attentionValue("monitored_product_groups")} kind="groups" tone="blue" /><DashboardStatCard label="今日有变化商品组" value={attentionValue("changed_product_groups_today")} kind="changed-groups" tone="purple" /><DashboardStatCard label="今日涉及变化竞品" value={attentionValue("changed_competitors_today")} kind="competitors" tone="green" /><DashboardStatCard label="异常采集" value={failedCollections} kind="error" tone="orange" /></section>
+    <section className="table-card dashboard-attention-section"><div className="table-heading"><div><h2>今日需要关注的商品组</h2><span>{attentionStatus === "ready" && attention ? attention.date : "今日"}</span></div><span className="table-count">{attentionStatus === "ready" && attention ? `${attention.groups.length} 个商品组` : "—"}</span></div>
+      {attentionStatus === "loading" && <div className="dashboard-attention-state"><div className="spinner" /><strong>正在加载商品组关注信息…</strong></div>}
+      {attentionStatus === "error" && <div className="dashboard-attention-state dashboard-attention-error" role="alert"><strong>暂时无法获取商品组关注信息</strong><span>{attentionError || "请检查服务后重试。"}</span><button type="button" className="secondary-button" onClick={onRetryAttention}>重试</button></div>}
+      {attentionStatus === "ready" && attention && attention.groups.length === 0 && <div className="dashboard-attention-state"><strong>今日暂无需要关注的竞争变化</strong><span>有新的竞品变化时，相关商品组会显示在这里。</span></div>}
+      {attentionStatus === "ready" && attention && attention.groups.length > 0 && <div className="dashboard-attention-list">{attention.groups.map((item) => <article className="dashboard-attention-card" key={item.group_id}><div className="dashboard-attention-main"><div className="dashboard-attention-identity"><h3>{item.group_name}</h3><span>{item.own_product.title?.trim() || `Offer ${item.own_product.offer_id}`}{item.own_product.shop_name ? ` · ${item.own_product.shop_name}` : ""}</span></div><span className={`dashboard-attention-level dashboard-attention-level-${item.attention_level === "重点关注" ? "high" : item.attention_level === "建议查看" ? "medium" : "low"}`}>{item.attention_level}</span></div><div className="dashboard-attention-meta"><span>今日变化竞品 <strong>{item.changed_competitor_count}</strong></span><span>最近变化 {formatDate(item.latest_change_at)}</span></div><ul className="dashboard-attention-reasons">{item.reasons.map((reason, index) => <li key={`${reason.reason_type}-${index}`}>{reason.display_text}</li>)}</ul><button type="button" className="detail-button dashboard-attention-action" onClick={() => onOpenGroupDetail?.(item.group_id)}>进入组分析</button></article>)}</div>}
+    </section>
+    <div className="dashboard-lower-grid"><CollectionOverview data={data} status={status} error={error} batchState={batchState} onRetry={onRetry} /><section className="table-card dashboard-trend-section"><div className="table-heading"><div><h2>近 7 天竞品变化趋势</h2><span>每天真实监控事件数量</span></div><span className="trend-period">连续 7 个业务日</span></div>{status === "ready" && data ? <DashboardTrendChart trend={data.trend_7d} /> : <div className="dashboard-trend-placeholder">{status === "error" ? "趋势暂不可用" : "—"}</div>}</section></div>
   </AppShell>;
 }
 
@@ -1624,6 +1585,9 @@ function App() {
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [dashboardStatus, setDashboardStatus] = useState<DashboardStatus>("loading");
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [dashboardAttention, setDashboardAttention] = useState<GroupAttentionData | null>(null);
+  const [dashboardAttentionStatus, setDashboardAttentionStatus] = useState<DashboardStatus>("loading");
+  const [dashboardAttentionError, setDashboardAttentionError] = useState<string | null>(null);
   const [listStatus, setListStatus] = useState<ListStatus>("ready");
   const [listError, setListError] = useState<string | null>(null);
   const [listLoaded, setListLoaded] = useState(false);
@@ -1692,10 +1656,26 @@ function App() {
     try { const [competitorsResponse, groupsResponse] = await Promise.all([fetch("/api/competitors"), fetch("/api/competitor-groups")]); if (!competitorsResponse.ok || !groupsResponse.ok) throw new Error("request failed"); const [competitorData, groupData] = await Promise.all([competitorsResponse.json(), groupsResponse.json()]); const nextCompetitors = competitorData as Competitor[]; setCompetitors(nextCompetitors); setSelectedIds((current) => new Set([...current].filter((id) => nextCompetitors.some((item) => item.id === id && item.is_active)))); setGroups(groupData as CompetitorGroup[]); setListStatus("ready"); setListLoaded(true); return true; }
     catch { setListError("暂时无法获取竞品列表，请检查服务是否正常运行。"); setListStatus("error"); return false; }
   }
+  async function loadDashboardAttention() {
+    setDashboardAttentionStatus("loading"); setDashboardAttentionError(null);
+    try {
+      const response = await fetch("/api/dashboard/group-attention");
+      if (!response.ok) throw new Error("request failed");
+      setDashboardAttention(await response.json() as GroupAttentionData);
+      setDashboardAttentionStatus("ready");
+    } catch {
+      setDashboardAttentionError("暂时无法获取商品组关注信息。"); setDashboardAttentionStatus("error");
+    }
+  }
   async function loadDashboard() {
     setDashboardStatus("loading"); setDashboardError(null);
-    try { const [dashboardResponse, groupsResponse] = await Promise.all([fetch("/api/dashboard/today"), fetch("/api/competitor-groups")]); if (!dashboardResponse.ok || !groupsResponse.ok) throw new Error("request failed"); const [dashboardData, groupData] = await Promise.all([dashboardResponse.json(), groupsResponse.json()]); setDashboard(dashboardData as DashboardData); setGroups(groupData as CompetitorGroup[]); setDashboardStatus("ready"); }
-    catch { setDashboardError("暂时无法获取今日变化，请检查服务是否正常运行。"); setDashboardStatus("error"); }
+    const attentionRequest = loadDashboardAttention();
+    try {
+      const response = await fetch("/api/dashboard/today");
+      if (!response.ok) throw new Error("request failed");
+      setDashboard(await response.json() as DashboardData); setDashboardStatus("ready");
+    } catch { setDashboardError("暂时无法获取今日变化，请检查服务是否正常运行。"); setDashboardStatus("error"); }
+    await attentionRequest;
   }
   async function loadGroups() {
     setGroupStatus("loading"); setGroupError(null);
@@ -2010,7 +1990,7 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <>{page === "dashboard" ? <DashboardPage data={dashboard} groups={groups} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenDetail={openDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} /> : page === "group-detail" ? <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{ownProductDialog && <OwnProductDialog group={ownProductDialog.group} mode={ownProductDialog.mode} competitors={competitors} loading={ownProductLoading} selectedId={ownProductSelectedId} confirming={ownProductConfirming} submitting={ownProductSubmitting} error={ownProductError} onSelect={(id) => { setOwnProductSelectedId(id); setOwnProductConfirming(false); }} onConfirmStep={() => { setOwnProductConfirming(true); setOwnProductError(null); }} onClose={closeOwnProductDialog} onSubmit={() => void submitOwnProduct()} />}{groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
+  return <>{page === "dashboard" ? <DashboardPage data={dashboard} attention={dashboardAttention} attentionStatus={dashboardAttentionStatus} attentionError={dashboardAttentionError} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onRetryAttention={() => void loadDashboardAttention()} onNavigate={navigate} onAdd={openDialog} onCollect={() => void handleBatchAction("all_active")} onOpenGroupDetail={openGroupDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds(checked ? new Set(competitorIds) : new Set())} onReconcileSelection={reconcileSelection} onBatchAction={(mode) => void handleBatchAction(mode)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} /> : page === "group-detail" ? <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{ownProductDialog && <OwnProductDialog group={ownProductDialog.group} mode={ownProductDialog.mode} competitors={competitors} loading={ownProductLoading} selectedId={ownProductSelectedId} confirming={ownProductConfirming} submitting={ownProductSubmitting} error={ownProductError} onSelect={(id) => { setOwnProductSelectedId(id); setOwnProductConfirming(false); }} onConfirmStep={() => { setOwnProductConfirming(true); setOwnProductError(null); }} onClose={closeOwnProductDialog} onSubmit={() => void submitOwnProduct()} />}{groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
 }
 
 export default App;

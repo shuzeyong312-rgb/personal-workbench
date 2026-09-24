@@ -1,7 +1,8 @@
+import { isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatChangeValue, formatDashboardMagnitude, formatDashboardSummary, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getChangeTypeLabel, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -423,8 +424,6 @@ test("treats null, empty, and invalid delta_rate as unknown without rendering Na
 test("formats lifecycle changes for list, detail, and dashboard", () => {
   expect(formatChange(latestChange({ change_type: "product_offline", snapshot_id: null }))).toBe("商品已下架");
   expect(formatChange(latestChange({ change_type: "product_online", snapshot_id: 4 }))).toBe("商品恢复上架");
-  expect(getChangeTypeLabel("product_offline")).toBe("商品下架");
-  expect(getChangeTypeLabel("product_online")).toBe("恢复上架");
 });
 
 test("formats backend UTC timestamps in Asia/Shanghai without double conversion", () => {
@@ -587,87 +586,131 @@ const dashboardData: DashboardData = {
   trend_7d: ["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-19", "2026-09-20"].map((date, index) => ({ date, price_changes: index === 6 ? 2 : 0, stock_changes: index === 5 ? 1 : 0, sku_changes: 0, failed_collections: 0 })),
 };
 
-test("renders dashboard loading, error and empty states", () => {
-  expect(renderToStaticMarkup(<DashboardPage data={null} groups={[]} status="loading" error={null} onRetry={noop} onNavigate={noop} />)).toContain("正在加载今日变化");
-  expect(renderToStaticMarkup(<DashboardPage data={null} groups={[]} status="error" error="请求失败" onRetry={noop} onNavigate={noop} />)).toContain("重试");
-  expect(renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [], stats: { ...dashboardData.stats, changed_competitors: 0, change_events: 0 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />)).toContain("今日暂无竞品变化");
-});
+const attentionData = {
+  date: "2026-09-20",
+  kpis: { monitored_product_groups: 7, changed_product_groups_today: 3, changed_competitors_today: 9 },
+  groups: [
+    { group_id: 9, group_name: "一般组", own_product: { id: 109, offer_id: "own-9", title: "我方一般款", shop_name: "自营店", main_image_url: null }, attention_level: "一般变化" as const, changed_competitor_count: 2, reasons: [{ reason_type: "product_content_changed", display_text: "2 家竞品调整商品内容", competitor_count: 2, sku_count: null, direction: null, event_level: "D" as const, current_state_safe: true }], latest_change_at: "2026-09-20T10:00:00Z" },
+    { group_id: 4, group_name: "建议组", own_product: { id: 104, offer_id: "own-4", title: "我方建议款", shop_name: null, main_image_url: null }, attention_level: "建议查看" as const, changed_competitor_count: 3, reasons: [{ reason_type: "price_increase", display_text: "3 家竞品涨价", competitor_count: 3, sku_count: null, direction: "price_increase", event_level: "B" as const, current_state_safe: true }, { reason_type: "sku_added", display_text: "1 家竞品新增 SKU", competitor_count: 1, sku_count: 2, direction: "sku_added", event_level: "B" as const, current_state_safe: true }], latest_change_at: "2026-09-20T11:00:00Z" },
+    { group_id: 2, group_name: "重点组", own_product: { id: 102, offer_id: "own-2", title: "我方重点款", shop_name: "旗舰店", main_image_url: null }, attention_level: "重点关注" as const, changed_competitor_count: 4, reasons: [0, 1, 2, 3].map((index) => ({ reason_type: `price_${index}`, display_text: `${index + 1} 家竞品降价`, competitor_count: index + 1, sku_count: null, direction: "price_decrease", event_level: "S" as const, current_state_safe: true })).slice(0, 3), latest_change_at: "2026-09-20T12:00:00Z" },
+  ],
+};
 
-test("renders dashboard stats, mapped group and aggregated change item", () => {
-  const html = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
-  expect(html).toContain('class="app-shell"');
-  expect(html).toContain('class="sidebar"');
-  expect(mainClassTokens(html)).toEqual(expect.arrayContaining(["main-content", "main-content-dashboard"]));
-  expect(html).toContain("监控中 5 个竞品");
-  expect(html).toContain("今日变价竞品");
-  expect(html).toContain("今日库存变化竞品");
-  expect(html).toContain("今日 SKU 变化竞品");
-  expect(html).toContain("异常采集");
-  expect(html).toContain("家居店");
-  expect(html).toContain("暖手宝");
-  expect(html).toContain("¥40.00");
-  expect(html).toContain("¥45.00");
-  expect(html).toContain("变价");
-  expect(html).toContain("标题变化");
-  expect(html).toContain("检测时间");
-  expect(html).toContain('class="change-type-badge-list"');
-  expect(html).not.toContain("变化时间");
-  expect(html).toContain("今日 1 个竞品 · 2 条变化");
-  expect((html.match(/class="change-type-badge [^"]+/g) || []).length).toBe(2);
-  expect(html).not.toContain("最近变化列表");
-  const unknownGroup = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [{ ...dashboardData.items[0], group_id: 99 }] }} groups={[group]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
-  expect(unknownGroup).toContain(">—</td>");
-});
+const dashboardProps: React.ComponentProps<typeof DashboardPage> = {
+  data: dashboardData,
+  attention: attentionData,
+  attentionStatus: "ready",
+  attentionError: null,
+  status: "ready",
+  error: null,
+  onRetry: noop,
+  onRetryAttention: noop,
+  onNavigate: noop,
+  onOpenGroupDetail: noop,
+};
+const renderDashboard = (props: Partial<React.ComponentProps<typeof DashboardPage>> = {}) => renderToStaticMarkup(<DashboardPage {...dashboardProps} {...props} />);
 
-test("non-dashboard pages keep the base main-content class", () => {
-  const pages = [
-    renderToStaticMarkup(<ListPage {...listProps} competitors={[]} status="loading" error={null} onRetry={noop} onAdd={noop} />),
-    renderToStaticMarkup(<DetailPage {...detailProps} data={null} status="loading" error={null} />),
-    renderToStaticMarkup(<GroupPage summary={null} status="loading" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />),
-  ];
-  for (const html of pages) {
-    expect(mainClassTokens(html)).toContain("main-content");
-    expect(mainClassTokens(html)).not.toContain("main-content-dashboard");
+function findButton(node: ReactNode, text: string): { onClick?: () => void } | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findButton(child, text);
+      if (match) return match;
+    }
+    return null;
   }
+  if (!isValidElement<{ children?: ReactNode; onClick?: () => void }>(node)) return null;
+  const children = node.props.children;
+  if (node.type === "button" && reactText(children) === text) return node.props;
+  return findButton(children, text);
+}
+
+function reactText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(reactText).join("");
+  return isValidElement<{ children?: ReactNode }>(node) ? reactText(node.props.children) : "";
+}
+
+test("renders group-first KPI and keeps backend group order and Attention levels", () => {
+  const html = renderDashboard();
+  expect(html).toContain("监控商品组");
+  expect(html).toContain(">7</strong>");
+  expect(html).toContain("今日有变化商品组");
+  expect(html).toContain(">3</strong>");
+  expect(html).toContain("今日涉及变化竞品");
+  expect(html).toContain(">9</strong>");
+  expect(html).toContain("异常采集");
+  expect(html).toContain("添加竞品");
+  expect(html).toContain("立即采集");
+  expect(html).toContain("今日需要关注的商品组");
+  const order = ["一般组", "建议组", "重点组"].map((name) => html.indexOf(name));
+  expect(order.every((index) => index >= 0)).toBe(true);
+  expect(order).toEqual([...order].sort((left, right) => left - right));
+  expect(html).toContain("一般变化");
+  expect(html).toContain("建议查看");
+  expect(html).toContain("重点关注");
+  expect(html).toContain("我方重点款");
+  expect(html).toContain("旗舰店");
+  expect(html).toContain("今日变化竞品");
+  expect(html).toContain("进入组分析");
+  expect(html).not.toContain("attention_score");
+  expect(html).not.toContain("今日发生变化的竞品");
+  expect(html).not.toContain("我方商品组</h2>");
+  expect(html).not.toContain("dashboard-events-table");
+  expect(html).toContain("采集状态概览");
+  expect(html).toContain("近 7 天竞品变化趋势");
 });
 
-test("renders all competitor items without expanding event rows", () => {
-  const items = Array.from({ length: 6 }, (_, index) => ({ ...dashboardData.items[0], competitor_id: index + 1 }));
-  const html = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items, stats: { ...dashboardData.stats, changed_competitors: 6, change_events: 12 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
-  expect((html.match(/class="product-cell/g) || []).length).toBe(6);
-  expect(html).toContain("今日 6 个竞品 · 12 条变化");
-  expect(html).toContain("dashboard-table-scroll");
+test("limits rendered reasons to the backend-provided list and shows the no-change state", () => {
+  const html = renderDashboard();
+  expect((html.match(/dashboard-attention-reasons/g) || []).length).toBe(3);
+  const empty = renderDashboard({ attention: { ...attentionData, groups: [], kpis: { ...attentionData.kpis, changed_product_groups_today: 0, changed_competitors_today: 0 } } });
+  expect(empty).toContain("今日暂无需要关注的竞争变化");
+  expect(empty).not.toContain("一般组");
+  expect(empty).not.toContain("重点组");
 });
 
-test("formats dashboard change rows, badges, magnitudes, and collection durations", () => {
-  const price = { id: 1, change_type: "price_decrease", entity_key: null, old_value: "40", new_value: "38", delta_value: null, delta_rate: null, detected_at: "2026-09-20T10:00:00Z" };
-  const sku = { id: 2, change_type: "sku_added", entity_key: "sku-red", old_value: null, new_value: "红色", delta_value: null, delta_rate: null, detected_at: "2026-09-20T10:00:00Z" };
-  expect(formatChangeValue(price, "old")).toBe("¥40");
-  expect(formatChangeValue(price, "new")).toBe("¥38");
-  expect(formatChangeMagnitude(price)).toBe("↓ 5.0%");
-  expect(formatChangeValue(sku, "old")).toBe("—");
-  expect(formatChangeValue(sku, "new")).toBe("红色");
-  expect(formatChangeMagnitude(sku)).toBe("—");
-  expect(getChangeTypeLabel("stock_changed")).toBe("库存变化");
-  expect(getChangeTypeLabel("main_image_changed")).toBe("主图变化");
-  const stock = { ...price, change_type: "stock_changed", entity_key: "sku-red", sku_name: "白色款", old_value: "481", new_value: "478" };
-  const stockItem = { ...dashboardData.items[0], change_count: 2, change_types: ["stock_changed"], primary_change: stock, stock_changed_sku_count: 2, stock_total_change: { old_total: 300, new_total: 270 } };
-  expect(formatDashboardSummary(stockItem)).toBe("总库存 300 → 270");
-  expect(formatDashboardMagnitude(stockItem)).toBe("↓ 10.0%");
-  expect(formatDashboardSummary({ ...stockItem, stock_total_change: { old_total: null, new_total: 270 } })).toBe("总库存发生变化");
-  expect(formatDashboardMagnitude({ ...stockItem, stock_total_change: { old_total: null, new_total: 270 } })).toBe("—");
-  expect(formatDashboardMagnitude({ ...stockItem, stock_total_change: { old_total: 0, new_total: 10 } })).toBe("—");
-  expect(formatDashboardSummary(stockItem)).not.toContain("白色款");
-  expect(formatDashboardSummary(stockItem)).not.toContain("个 SKU");
-  const skuPrice = { ...price, change_type: "price_decrease", entity_key: "sku-red", sku_name: "白色款", old_value: "40", new_value: "38" };
-  expect(formatDashboardSummary({ ...dashboardData.items[0], primary_change: skuPrice })).toBe("白色款 · SKU 降价 40 → 38");
-  const mainImage = { ...price, change_type: "main_image_changed", entity_key: null, sku_name: null, old_value: "https://img.example.com/a.jpg", new_value: "https://img.example.com/b.jpg" };
-  const mainImageItem = { ...dashboardData.items[0], change_types: ["main_image_changed"], primary_change: mainImage, stock_total_change: null };
-  expect(formatDashboardSummary(mainImageItem)).toBe("主图发生变化");
-  expect(formatDashboardMagnitude(mainImageItem)).toBe("—");
-  const mainImageHtml = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, items: [mainImageItem] }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
-  expect(mainImageHtml).toContain("主图变化");
-  expect(mainImageHtml).toContain("主图发生变化");
+test("isolates Attention error from collection and trend and offers an Attention-only retry", () => {
+  const retry = vi.fn();
+  const html = renderDashboard({ attention: null, attentionStatus: "error", attentionError: "Attention unavailable", onRetryAttention: retry });
+  expect(html).toContain("Attention unavailable");
+  expect(html).toContain("重试");
+  expect(html).toContain("采集状态概览");
+  expect(html).toContain("近 7 天竞品变化趋势");
+  expect(html).not.toContain("今日暂无需要关注的竞争变化");
+  expect(html).toContain("暂时无法获取商品组关注信息");
+  expect(html).not.toContain("attention_score");
+  expect(retry).not.toHaveBeenCalled();
+});
+
+test("wires Attention retry and Group Detail actions to their supplied callbacks", () => {
+  const retry = vi.fn();
+  const retryTree = DashboardPage({ ...dashboardProps, attention: null, attentionStatus: "error", attentionError: "failed", onRetryAttention: retry });
+  findButton(retryTree, "重试")?.onClick?.();
+  expect(retry).toHaveBeenCalledOnce();
+
+  const openGroup = vi.fn();
+  const groupTree = DashboardPage({ ...dashboardProps, onOpenGroupDetail: openGroup });
+  findButton(groupTree, "进入组分析")?.onClick?.();
+  expect(openGroup).toHaveBeenCalledWith(9);
+});
+
+test("shows an independent dashboard/today error while preserving Attention results", () => {
+  const html = renderDashboard({ status: "error", error: "今日数据暂不可用" });
+  expect(html).toContain("今日数据暂不可用");
+  expect(html).toContain("重点组");
+  expect(html).toContain("今日需要关注的商品组");
+});
+
+test("renders the collection batch status and Group Detail action", () => {
+  const running = renderDashboard({ batchState: { ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true } });
+  expect(running).toContain("采集中 3 / 9");
+  expect(running).toContain('style="width:33.33333333333333%"');
+  expect(running).toContain("进入组分析");
+  const verification = renderDashboard({ batchState: { ...idleBatchState, status: "verification_required", total: 9, completed: 3 } });
+  expect(verification).toContain("需要人工验证");
+});
+
+test("formats collection durations", () => {
   expect(formatDuration(72)).toBe("1 分 12 秒");
   expect(formatDuration(null)).toBe("—");
 });
@@ -700,21 +743,21 @@ test("dashboard all-zero trend still has a usable integer domain", () => {
 test("renders batch state and quick action semantics", () => {
   const onAdd = () => undefined;
   const onCollect = () => undefined;
-  const running = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[]} status="ready" error={null} batchState={{ ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true }} onRetry={noop} onNavigate={noop} onAdd={onAdd} onCollect={onCollect} />);
+  const running = renderDashboard({ batchState: { ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true }, onAdd, onCollect });
   expect(running).toContain("采集中 3 / 9");
   expect(running).toContain('style="width:33.33333333333333%"');
-  const verification = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[]} status="ready" error={null} batchState={{ ...idleBatchState, status: "verification_required", total: 9, completed: 3 }} onRetry={noop} onNavigate={noop} />);
+  const verification = renderDashboard({ batchState: { ...idleBatchState, status: "verification_required", total: 9, completed: 3 } });
   expect(verification).toContain("需要人工验证");
-  const empty = renderToStaticMarkup(<DashboardPage data={{ ...dashboardData, stats: { ...dashboardData.stats, monitored_competitors: 0 } }} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} />);
+  const empty = renderDashboard({ data: { ...dashboardData, stats: { ...dashboardData.stats, monitored_competitors: 0 } } });
   expect(empty).toContain("当前无采集任务");
   expect(empty).toContain("今日采集统计仍会保留");
   expect(empty).toContain('disabled=""');
 });
 
 test("renders detail entry actions on dashboard and competitor list", () => {
-  const dashboard = renderToStaticMarkup(<DashboardPage data={dashboardData} groups={[]} status="ready" error={null} onRetry={noop} onNavigate={noop} onOpenDetail={noop} />);
+  const dashboard = renderDashboard();
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} status="ready" error={null} onRetry={noop} onAdd={noop} onOpenDetail={noop} />);
-  expect(dashboard).toContain("查看详情");
+  expect(dashboard).toContain("进入组分析");
   expect(list).toContain(">详情<");
 });
 

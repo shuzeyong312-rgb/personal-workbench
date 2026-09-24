@@ -13,6 +13,7 @@ from app.competitors import router as competitors_router
 from app.competitor_detail import router as competitor_detail_router
 from app.competitor_groups import router as competitor_groups_router
 from app.group_detail import router as group_detail_router
+from app.group_attention import router as group_attention_router
 from app.database import engine
 from app.dashboard import router as dashboard_router
 
@@ -69,6 +70,7 @@ app.include_router(competitors_router)
 app.include_router(competitor_detail_router)
 app.include_router(competitor_groups_router)
 app.include_router(group_detail_router)
+app.include_router(group_attention_router)
 app.include_router(dashboard_router)
 
 
