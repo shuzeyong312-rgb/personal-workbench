@@ -10,3 +10,4 @@ backend/data/*.db
 .env
 .env.*
 coverage/
+logs/
