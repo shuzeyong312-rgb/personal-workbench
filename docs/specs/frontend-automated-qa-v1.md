@@ -43,7 +43,7 @@ Playwright 不替代 Vitest 或 pytest，也不将现有低层测试机械重写
 - `5201` 是 QA 专用端口，与 `dev.ps1` 的常规开发端口 `5200` 分离。QA 不依赖用户先运行 `dev.ps1`，也不修改 `dev.ps1`。
 - 后续在 `frontend/package.json` 提供唯一清晰入口：`npm run qa:e2e`。该命令启动 Vite、执行测试并正常退出；它不启动 Backend。
 
-本项目当前 Vite 的 `/api` proxy 仅服务普通开发。E2E 测试必须在页面导航和 API 发起前以 `page.route(...)` 拦截所有该场景会访问的 `/api/...` 请求，因此请求不会穿透 proxy 到 `8100`。
+本项目当前 Vite 的 `/api` proxy 仅服务普通开发。E2E 测试必须在页面导航和 API 发起前建立 `/api/**` 的 fail-closed 防线，再以 `page.route(...)` 为当前场景明确声明的 API 返回 fixture。未声明的 API 请求必须由测试层主动阻止并使 QA 失败；不得穿透 proxy 到 `8100`。Backend 是否正在运行不得影响 E2E 测试结果。
 
 ## 5. 可控数据与网络 Mock
 
@@ -62,7 +62,21 @@ frontend/
 
 `competitors.ts` 可提供少量 factory，以紧凑构造 10、11、23 条竞品和 active/inactive 变体；不要复制大段 JSON。fixture 的字段必须匹配页面实际读取的 `GET /api/competitors`、`GET /api/competitor-groups`，以及页面启动期间实际需要的 Dashboard 或 batch-status 响应。
 
-每个 spec 在 `page.goto` 前使用 `page.route(...)` 返回这些响应。具体场景需要 POST 或 PATCH 时，仅为该场景 stub 对应请求和后续刷新所需的 GET。不得新增 MSW、独立 Mock Server 或额外服务。
+每个 spec 在 `page.goto` 前先建立全局 `/api/**` 默认拒绝，再使用 `page.route(...)` 为该场景显式允许的请求返回这些响应。具体场景需要 POST 或 PATCH 时，仅为该场景 stub 对应请求和后续刷新所需的 GET。不得新增 MSW、独立 Mock Server 或额外服务。
+
+`/api/**` 是测试受控资源，固定遵循以下外部行为：
+
+```text
+所有 /api/**
+        ↓
+默认禁止
+        ↓
+当前测试明确 Mock？
+├─ 是 → 返回固定 fixture
+└─ 否 → 立即 QA Fail，且请求不继续网络访问
+```
+
+未 Mock 的 `/api/**` 是 QA 配置错误，不得以“Backend 未启动，网络请求自然失败”作为隔离手段。即使 `127.0.0.1:8100` 正在运行，Backend 也不得收到该请求。后续实现可采用简单可靠的 catch-all route、allowlist/mock registry，或记录 unexpected API 后在测试结束断言失败；本 Spec 不冻结内部实现。
 
 ## 6. 分页 E2E V1 场景
 
@@ -166,11 +180,13 @@ V1 不做真实 Backend E2E、SQLite 测试数据库、1688 自动采集 QA、he
 
 1. `npm run qa:e2e` 能自行启动测试用前端服务器、运行 Chromium E2E 并退出；
 2. 测试不需要 Backend，且不访问真实数据库、1688、`.browser-profile` 或验证码；
-3. 所有页面 API 使用固定 `page.route(...)` mock fixture；
-4. 首批分页关键路径 A 至 D 可以自动验证；
-5. 只运行 Chromium；
-6. 失败时产生 screenshot 和 trace；
-7. 实际运行产物被 Git 忽略；
-8. E2E 不重复低层已有测试，也不改变生产业务行为；
-9. 测试失败时命令返回非 0 exit code，Codex 可明确识别失败；
-10. 不新增真实 Backend、SQLite、1688 或 CI 依赖链。
+3. 所有页面 API 使用固定 `page.route(...)` mock fixture，并先建立 `/api/**` 默认 fail-closed 防线；
+4. 人为触发当前测试未声明的 `/api/**` 请求时，E2E 必须失败，且请求不得到达真实 Backend；即使 `127.0.0.1:8100` 正在运行也成立；
+5. Backend 是否启动不得影响 E2E 测试隔离或结果；
+6. 首批分页关键路径 A 至 D 可以自动验证；
+7. 只运行 Chromium；
+8. 失败时产生 screenshot 和 trace；
+9. 实际运行产物被 Git 忽略；
+10. E2E 不重复低层已有测试，也不改变生产业务行为；
+11. 测试失败时命令返回非 0 exit code，Codex 可明确识别失败；
+12. 不新增真实 Backend、SQLite、1688 或 CI 依赖链。
