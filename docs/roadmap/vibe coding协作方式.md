@@ -21,6 +21,8 @@
 - 将业务想法整理成明确的规则、边界、POC、Spec 或实现任务。
 - 为 Codex 编写精简、可执行的任务提示词。
 - 检查 Codex 的实现、测试和报告是否偏离目标。
+- **负责正式 Spec Review。** Codex 写完并 Push Spec 后，ChatGPT 直接从 GitHub 读取最新 Spec，检查业务规则、范围、边界、架构一致性、当前实现兼容性和测试要求；只有 Review 通过后 Spec 才冻结。
+- 对技术复杂度特别高的 Spec，可以额外让 Codex 做技术可实现性检查，但它只作为补充，不替代 ChatGPT 的 Spec Review。
 - 控制 Review、修复、Commit 和 Push 的时机。
 
 ### 3. Codex：工程执行者
@@ -68,7 +70,9 @@ Spec 冻结
     ↓
 实现与自动测试
     ↓
-用户人工验收
+有对应场景时运行 Playwright 自动 QA
+    ↓
+按风险分级进行人工验收
     ↓
 独立 Code Review
     ↓
@@ -120,11 +124,41 @@ Commit / Push
 - 只改完成当前目标所必需的文件。
 - 不新增未要求的功能、依赖、迁移、抽象或重构。
 - 跑 targeted tests，再按风险运行 full tests。
-- 业务代码实现完成后，通常先不 Commit / Push，等待人工验收和 Review。
+- 已经有 Playwright E2E 覆盖的前端关键路径，按影响范围运行对应自动 QA；不要把已有 Vitest / pytest 逻辑机械重写成 E2E。
+- 业务代码实现完成后，通常先不 Commit / Push，等待风险分级人工验收和 Review。
 
-### 5. 人工验收
+### 5. 自动 QA 与人工验收
 
-自动测试通过不等于完成。用户实际使用页面，重点检查：
+自动测试通过不等于完成，但也不要求用户对每个 Feature 重复机械点击全部逻辑。
+
+项目采用三层验证：
+
+```text
+Vitest / pytest
+→ 逻辑、纯函数、API Contract、业务规则
+
+Playwright E2E
+→ 真实浏览器中的关键用户路径：点击、输入、翻页、勾选、筛选等
+
+人工验收
+→ 视觉是否舒服、交互是否自然、业务是否真正好用
+```
+
+自动 QA 原则：
+
+- E2E 只保护值得长期防回归的关键用户路径，不追求“每条 Spec 验收项对应一条 E2E”。
+- 已有 E2E 覆盖的路径，后续 Feature 优先复用或增量补 1～2 个断言/场景，不重复重写整套测试。
+- 纯逻辑继续由 Vitest / pytest 保护；真实浏览器行为才交给 Playwright。
+- Bug 如果适合自动复现，优先增加最小 Regression Test。
+- Frontend E2E 使用受控 Mock 数据时必须与真实 Backend 隔离，不能读取或修改真实工作数据。
+
+人工验收按风险分级：
+
+- **低风险 Feature**：自动测试和相关 Playwright QA 通过后，只做最小体验验收，例如看页面是否正常、操作是否明显别扭。
+- **中风险 Feature**：补充关键用户路径人工验收。
+- **高风险 Feature**：涉及真实数据写入、永久删除、生命周期、采集、调度、真实外部网站或其他难以安全 Mock 的行为时，保留完整人工 QA。
+
+用户人工验收重点检查：
 
 - 布局、层级和信息密度；
 - 时间和状态语义；
@@ -164,7 +198,9 @@ P3 可以记录为后续优化。Reviewer 只负责发现问题，不直接修�
 - 使用精确路径 `git add -- <files>`；
 - Commit 后 Push，并验证 `HEAD == origin/main` 和工作区状态。
 
-一个完整 Feature 尽量一个聚焦 Commit；Bug、Research、Spec 和 Feature 等不同性质的工作不要混在同一个 Commit 中。
+一个完整 Feature 尽量一个聚焦 Commit；Bug、Research、Spec、Feature 和 QA 基础设施等不同性质的工作不要混在同一个 Commit 中。
+
+当一个 Feature 与新的 QA 基础设施同时开发时，优先分别提交。例如“分页 Feature”和“首次引入 Playwright QA”应保持独立 Commit，便于 Review、回滚和后续维护。
 
 **Spec 任务是上述常规提交流程的明确例外：**
 
