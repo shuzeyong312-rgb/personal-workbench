@@ -56,7 +56,15 @@
     ↓
 必要时先做 POC 或冻结产品规则
     ↓
-编写并确认 Spec
+编写 Spec
+    ↓
+Codex 自检并单独 Commit / Push Spec
+    ↓
+ChatGPT 从 GitHub 读取最新 Spec 并做 Spec Review
+    ↓
+必要时修订 Spec 并再次 Push
+    ↓
+Spec 冻结
     ↓
 实现与自动测试
     ↓
@@ -96,8 +104,12 @@ Commit / Push
 当规则涉及多个状态、页面、数据结构或参与者时，先写正式 Spec。
 
 - Spec 放在 `docs/specs/`。
+- **纯 Spec 任务默认允许在自检通过后直接 Commit / Push。** 这样任务完成后，ChatGPT 可以直接从 GitHub 读取最新提交的 Spec，而不依赖用户手动复制全文，再立即进入独立 Spec Review。
+- Spec 阶段的 Commit / Push 必须保持聚焦：原则上只提交本轮目标 Spec，以及确有必要且与该 Spec 直接相关的文档；不得顺带提交业务代码、测试、日志或其他无关改动。
+- Push 后必须核验远端已包含本轮 Spec（例如确认 `HEAD == origin/main`，或等价地确认目标提交已在远端分支）。
+- ChatGPT 在 Spec Review 中检查业务规则、范围、边界、架构一致性、现有实现兼容性和测试要求。Review 未通过时，回到 Spec 窗口做最小修订，再次 Commit / Push 后复审。
+- **只有 Spec Review 通过后，Spec 才视为冻结，随后才进入 Implement。**
 - 冻结后实现严格按 Spec，不重新设计需求。
-- Spec 可以在自检后单独 Commit / Push，再由 ChatGPT 独立复核。
 - Spec 的局部规则不应反复写入长期架构文档。
 
 ### 4. Implement
@@ -153,6 +165,14 @@ P3 可以记录为后续优化。Reviewer 只负责发现问题，不直接修�
 - Commit 后 Push，并验证 `HEAD == origin/main` 和工作区状态。
 
 一个完整 Feature 尽量一个聚焦 Commit；Bug、Research、Spec 和 Feature 等不同性质的工作不要混在同一个 Commit 中。
+
+**Spec 任务是上述常规提交流程的明确例外：**
+
+- 当本轮任务仅用于新增或修订 Spec 时，默认允许 Codex 在完成自检后直接 Commit / Push，不需要等待人工验收或代码 Review；
+- 这样 ChatGPT 可以在 Codex 完成后直接通过 GitHub 读取远端最新 Spec，并立即执行 Spec Review；
+- Spec Review 发现问题时，修订仍保持为独立、聚焦的 Spec Commit，并再次 Push 后复审；
+- Spec Review 通过后才进入业务代码实现；
+- 该例外仅适用于 Spec / 直接相关文档，不自动授权业务代码实现阶段 Commit / Push。
 
 ## 四、Codex 窗口和提示词规则
 
@@ -210,6 +230,8 @@ Skill：使用 `<skill-name>`（`<仓库内相对路径>`）
 - 只保留容易做错的关键规则；
 - 直接引用已有 Spec，不重复整份 Spec；
 - 写明测试和 Git 权限；
+- 如果本轮是纯 Spec 任务，Git 权限默认写明：允许在 Spec 自检通过后直接 Commit / Push，但仅限本轮 Spec 和必要的直接相关文档；Push 后验证远端提交成功，以便 ChatGPT 直接从 GitHub 进入 Spec Review；
+- 如果本轮是业务代码实现，仍按风险和阶段明确是否允许 Commit / Push，不继承 Spec 阶段的默认授权；
 - 尽量使用一个可直接复制的连续代码块。
 
 ## 五、文档分层
