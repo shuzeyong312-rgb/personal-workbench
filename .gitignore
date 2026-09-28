@@ -11,3 +11,5 @@ backend/data/*.db
 .env.*
 coverage/
 logs/
+test-results/
+playwright-report/
