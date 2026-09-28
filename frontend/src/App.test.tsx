@@ -2,6 +2,8 @@ import { isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
 
+import { competitorPageSize, paginateCompetitors, updatePageSelection } from "./App";
+
 import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
@@ -71,6 +73,20 @@ const filterGroups: CompetitorGroup[] = [
 
 const filter = (overrides: Partial<CompetitorFilters>): CompetitorFilters => ({ ...defaultCompetitorFilters, ...overrides });
 const filteredIds = (filters: CompetitorFilters) => filterCompetitors(filterCompetitorFixtures, filters).map((item) => item.id);
+
+test("paginates eleven competitors with a fixed page size and clamps invalid pages", () => {
+  const items = Array.from({ length: 11 }, (_, index) => ({ ...competitor, id: index + 1, offer_id: String(index + 1) }));
+  expect(competitorPageSize).toBe(10);
+  expect(paginateCompetitors(items, 1)).toMatchObject({ page: 1, totalPages: 2, items: items.slice(0, 10) });
+  expect(paginateCompetitors(items, 2)).toMatchObject({ page: 2, totalPages: 2, items: [items[10]] });
+  expect(paginateCompetitors(items, 3)).toMatchObject({ page: 2, totalPages: 2, items: [items[10]] });
+  expect(paginateCompetitors([], 3)).toMatchObject({ page: 1, totalPages: 1, items: [] });
+});
+
+test("current-page select-all preserves selections on other pages", () => {
+  expect(updatePageSelection(new Set([1, 11]), [2, 3], true)).toEqual(new Set([1, 2, 3, 11]));
+  expect(updatePageSelection(new Set([1, 2, 3, 11]), [2, 3], false)).toEqual(new Set([1, 11]));
+});
 
 test("filters by title", () => {
   expect(filteredIds(filter({ search: "暖手宝" }))).toEqual([10]);
