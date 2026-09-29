@@ -1,10 +1,14 @@
 import { isValidElement, type ReactNode } from "react";
+import { fileURLToPath } from "node:url";
+
+import { chromium, expect as playwrightExpect } from "@playwright/test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createServer } from "vite";
 import { expect, test, vi } from "vitest";
 
-import { competitorPageSize, paginateCompetitors, updatePageSelection } from "./App";
+import { competitorPageSize, getBatchRefreshNotice, paginateCompetitors, updatePageSelection } from "./App";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -167,9 +171,9 @@ test("filtered result counts provide the list statistics", () => {
   expect({ total: filtered.length, collected, notCollected: filtered.length - collected }).toEqual({ total: 1, collected: 1, notCollected: 0 });
 });
 
-test("select-all candidates come only from filtered active rows", () => {
+test("select-all candidates include every filtered row", () => {
   const filtered = filterCompetitors(filterCompetitorFixtures, filter({ search: "店" }));
-  expect(filtered.filter((item) => item.is_active).map((item) => item.id)).toEqual([10]);
+  expect(filtered.map((item) => item.id)).toEqual([10, 11]);
 });
 
 test("reloaded data can reuse the same applied filters", () => {
@@ -211,7 +215,7 @@ test("renders filtered-result empty state separately from system empty state", (
 test("keeps all-active batch count independent from the filtered result", () => {
   const html = renderToStaticMarkup(<ListPage {...listProps} competitors={filterCompetitorFixtures} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(countActiveCompetitors(filterCompetitorFixtures)).toBe(2);
-  expect(html).toContain("采集选中（0）");
+  expect(html).toContain("批量操作（0）");
 });
 
 test.each([
@@ -275,9 +279,9 @@ test("renders loading, empty, error and normal list states", () => {
   expect(normal).toContain("123456789");
   expect(normal).toContain("查看 1688 商品");
   expect(normal).toContain("暂无变化记录");
-  expect(normal).toContain("采集选中（0）");
+  expect(normal).toContain("批量操作（0）");
   expect(normal).not.toContain("立即采集");
-  expect(normal).toContain("全选当前页可采集竞品");
+  expect(normal).toContain("全选当前页全部商品");
   expect(normal).toContain("监控中");
 });
 
@@ -303,15 +307,15 @@ test("list keeps lifecycle actions out of the row", () => {
   expect(list).toContain(">详情</button>");
   expect(list).not.toContain("更多");
   expect(list).not.toContain("删除竞品");
-  expect(list).toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
+  expect(list).not.toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
 });
 
 test("renders current-page selection counts and inactive checkbox semantics", () => {
   const second = { ...competitor, id: 2, offer_id: "987654321" };
   const inactive = { ...competitor, id: 3, is_active: false, title: "已停止商品" };
   const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor, second, inactive]} selectedIds={new Set([competitor.id])} status="ready" error={null} onRetry={noop} onAdd={noop} />);
-  expect(html).toContain("采集选中（1）");
-  expect(html).toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
+  expect(html).toContain("批量操作（1）");
+  expect(html).not.toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
   expect(html).toContain("checked=\"\"");
   expect(html).not.toContain("立即采集");
 });
@@ -655,8 +659,8 @@ test("renders group-first KPI and keeps backend group order and Attention levels
   expect(html).toContain("今日涉及变化竞品");
   expect(html).toContain(">9</strong>");
   expect(html).toContain("异常采集");
-  expect(html).toContain("添加竞品");
-  expect(html).toContain("立即采集");
+  expect(html).not.toContain("添加竞品");
+  expect(html).not.toContain("立即采集");
   expect(html).toContain("今日需要关注的商品组");
   const order = ["一般组", "建议组", "重点组"].map((name) => html.indexOf(name));
   expect(order.every((index) => index >= 0)).toBe(true);
@@ -756,10 +760,8 @@ test("dashboard all-zero trend still has a usable integer domain", () => {
   expect(scale.ticks).toEqual([0, 1, 2, 3, 4]);
 });
 
-test("renders batch state and quick action semantics", () => {
-  const onAdd = () => undefined;
-  const onCollect = () => undefined;
-  const running = renderDashboard({ batchState: { ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true }, onAdd, onCollect });
+test("renders batch state without dashboard quick actions", () => {
+  const running = renderDashboard({ batchState: { ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true } });
   expect(running).toContain("采集中 3 / 9");
   expect(running).toContain('style="width:33.33333333333333%"');
   const verification = renderDashboard({ batchState: { ...idleBatchState, status: "verification_required", total: 9, completed: 3 } });
@@ -768,6 +770,8 @@ test("renders batch state and quick action semantics", () => {
   expect(empty).toContain("当前无采集任务");
   expect(empty).toContain("今日采集统计仍会保留");
   expect(empty).toContain('disabled=""');
+  expect(empty).not.toContain("添加竞品");
+  expect(empty).not.toContain("立即采集");
 });
 
 test("renders detail entry actions on dashboard and competitor list", () => {
@@ -966,6 +970,112 @@ test("renders create and rename group dialogs with failure feedback", () => {
   expect(rename).toContain("该竞品组已存在");
   expect(rename).toContain('disabled=""');
   expect(getGroupNameErrorMessage("invalid_competitor_group_name")).toBe("请输入有效的竞品组名称");
+});
+
+test("batch group dialog distinguishes no target, unassigned, and a formal group", () => {
+  const initial = renderToStaticMarkup(<BatchGroupAssignmentDialog targetGroupId={undefined} groups={[group]} selectedCount={2} eligibleCount={1} ownCount={1} submitting={false} error={null} onChange={noop} onClose={noop} onSubmit={noop} />);
+  expect(initial).toContain("请选择竞品组");
+  expect(initial).toContain("1 个我方商品不会参与本次批量分组");
+  expect(initial).toContain('disabled=""');
+  expect(initial).toContain('value="__unassigned__">未分组');
+  const formal = renderToStaticMarkup(<BatchGroupAssignmentDialog targetGroupId={1} groups={[group]} selectedCount={1} eligibleCount={1} ownCount={0} submitting={false} error="更新失败" onChange={noop} onClose={noop} onSubmit={noop} />);
+  expect(formal).toContain('value="1" selected=""');
+  expect(formal).toContain("更新失败");
+});
+
+test("batch lifecycle dialogs expose stop and irreversible delete semantics", () => {
+  const stop = renderToStaticMarkup(<BatchLifecycleDialog action="stop" selectedCount={3} eligibleCount={2} ownCount={0} submitting={false} error={null} onClose={noop} onConfirm={noop} />);
+  expect(stop).toContain("停止监控 2 个商品？");
+  expect(stop).toContain("变化历史都会保留");
+  expect(stop).toContain(">确认停止</button>");
+
+  const deleteWithOwn = renderToStaticMarkup(<BatchLifecycleDialog action="delete" selectedCount={3} eligibleCount={2} ownCount={1} submitting={false} error={"删除失败"} onClose={noop} onConfirm={noop} />);
+  expect(deleteWithOwn).toContain("本次将永久删除 2 个直接竞品");
+  expect(deleteWithOwn).toContain("1 个我方商品不会参与批量删除");
+  expect(deleteWithOwn).toContain("此操作不可恢复");
+  expect(deleteWithOwn).toContain("删除失败");
+  expect(deleteWithOwn).toContain(">永久删除 2 个竞品</button>");
+  expect(deleteWithOwn).not.toContain("0 个我方商品");
+});
+
+test("reports completed batch mutation when authoritative refresh is incomplete", () => {
+  expect(getBatchRefreshNotice("已永久删除 2 个竞品", false)).toEqual({
+    message: "操作已完成，但部分数据刷新失败，请刷新页面后确认最新状态",
+    type: "error",
+  });
+  expect(getBatchRefreshNotice("已永久删除 2 个竞品", true)).toEqual({
+    message: "已永久删除 2 个竞品",
+    type: "success",
+  });
+});
+
+test("reports refresh failure through the real batch delete flow", async () => {
+  const server = await createServer({
+    root: fileURLToPath(new URL("..", import.meta.url)),
+    server: { host: "127.0.0.1", port: 0 },
+    clearScreen: false,
+  });
+  await server.listen();
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  let competitorReads = 0;
+  let groupSummaryReads = 0;
+  let deleteRequests = 0;
+  const listedCompetitor: Competitor = { ...competitor, title: "待删除商品" };
+  const dashboard = { date: "2026-09-29", stats: { monitored_competitors: 1, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] };
+  const attention = { date: "2026-09-29", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] };
+  const batchStatus = { status: "idle", outcome_code: null, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, items: [] };
+  const groupSummary = { groups: [], unassigned: { competitor_count: 1, active_count: 1, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } };
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const key = `${request.method()} ${new URL(request.url()).pathname}`;
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (key === "GET /api/dashboard/today") return json(dashboard);
+    if (key === "GET /api/dashboard/group-attention") return json(attention);
+    if (key === "GET /api/competitors/collect-batch/status") return json(batchStatus);
+    if (key === "GET /api/competitors") return json(++competitorReads === 1 ? [listedCompetitor] : []);
+    if (key === "GET /api/competitor-groups") return json([]);
+    if (key === "GET /api/competitor-groups/summary") return json(++groupSummaryReads === 1 ? { message: "refresh failed" } : groupSummary, 500);
+    if (key === "POST /api/competitors/delete-batch") {
+      deleteRequests += 1;
+      return json({ deleted_count: 1, competitor_ids: [listedCompetitor.id] });
+    }
+    return route.abort("blockedbyclient");
+  });
+
+  try {
+    const baseUrl = server.resolvedUrls?.local[0];
+    if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
+    await page.goto(baseUrl);
+    await page.getByRole("button", { name: "竞品列表" }).click();
+    await playwrightExpect(page.getByRole("heading", { name: "竞品列表" })).toBeVisible();
+    await page.getByRole("checkbox", { name: "选择 待删除商品" }).check();
+    await page.getByRole("button", { name: "批量操作（1）" }).click();
+    await page.getByRole("menuitem", { name: "删除竞品（1）" }).click();
+    await page.getByRole("button", { name: "永久删除 1 个竞品" }).click();
+
+    await playwrightExpect(page.getByRole("dialog")).not.toBeVisible();
+    await playwrightExpect(page.getByRole("status")).toContainText("操作已完成，但部分数据刷新失败，请刷新页面后确认最新状态");
+    await playwrightExpect(page.getByRole("status")).not.toContainText("已永久删除 1 个竞品");
+    await playwrightExpect(page.getByText("待删除商品")).not.toBeVisible();
+    await playwrightExpect(page.getByRole("button", { name: "批量操作（0）" })).toBeVisible();
+    expect(deleteRequests).toBe(1);
+  } finally {
+    await context.close();
+    await browser.close();
+    await server.close();
+  }
+});
+
+test("generic selection count includes inactive and own rows while lifecycle menu eligibility stays distinct", () => {
+  const inactive = { ...competitor, id: 2, offer_id: "inactive", title: "已停止商品", is_active: false };
+  const own = { ...competitor, id: 3, offer_id: "own", title: "我方商品", group_id: 1, group_role: "own" as const };
+  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor, inactive, own]} selectedIds={new Set([competitor.id, inactive.id, own.id])} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain("批量操作（3）");
+  expect(html).toContain('aria-label="选择 已停止商品" checked=""');
+  expect(html).toContain('aria-label="选择 我方商品" checked=""');
 });
 
 test("renders delete confirmation with the real competitor count and protects submitting state", () => {

@@ -421,6 +421,97 @@ def test_assignment_demotes_own_without_replacing_destination_own(
         assert session.get(Competitor, ids[0]).group_id is None
 
 
+def test_batch_group_assignment_updates_only_changed_competitors_and_deduplicates(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    group_a = test_client.post("/api/competitor-groups", json={"name": "A19"}).json()["id"]
+    group_b = test_client.post("/api/competitor-groups", json={"name": "X6"}).json()["id"]
+    ids = [
+        test_client.post(
+            "/api/competitors",
+            json={"url": f"https://detail.1688.com/offer/{offer}.html", "group_id": group_a if offer == "1" else None},
+        ).json()["id"]
+        for offer in ("1", "2", "3")
+    ]
+    before = {}
+    with session_factory() as session:
+        for competitor_id in ids:
+            before[competitor_id] = session.get(Competitor, competitor_id).updated_at
+
+    response = test_client.patch(
+        "/api/competitors/group-batch",
+        json={"competitor_ids": [ids[0], ids[1], ids[1], ids[2]], "group_id": group_a},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"updated_count": 2, "competitor_ids": [ids[1], ids[2]], "group_id": group_a}
+    with session_factory() as session:
+        assert session.get(Competitor, ids[0]).updated_at == before[ids[0]]
+        assert [session.get(Competitor, competitor_id).group_id for competitor_id in ids] == [group_a, group_a, group_a]
+
+    response = test_client.patch(
+        "/api/competitors/group-batch",
+        json={"competitor_ids": ids, "group_id": group_b},
+    )
+    assert response.json()["updated_count"] == 3
+
+
+def test_batch_group_assignment_supports_null_and_rejects_bool_ids_atomically(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    group_id = test_client.post("/api/competitor-groups", json={"name": "A19"}).json()["id"]
+    ids = [
+        test_client.post(
+            "/api/competitors",
+            json={"url": f"https://detail.1688.com/offer/{offer}.html", "group_id": group_id},
+        ).json()["id"]
+        for offer in ("11", "12")
+    ]
+
+    response = test_client.patch("/api/competitors/group-batch", json={"competitor_ids": ids, "group_id": None})
+    assert response.status_code == 200
+    assert response.json()["group_id"] is None
+    assert response.json()["updated_count"] == 2
+
+    response = test_client.patch("/api/competitors/group-batch", json={"competitor_ids": [True], "group_id": group_id})
+    assert response.status_code == 422
+    with session_factory() as session:
+        assert [session.get(Competitor, competitor_id).group_id for competitor_id in ids] == [None, None]
+
+
+def test_batch_group_assignment_rejects_missing_and_own_without_partial_update(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    group_id = test_client.post("/api/competitor-groups", json={"name": "A19"}).json()["id"]
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/21.html"}
+    ).json()["id"]
+    own_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/22.html", "group_id": group_id}
+    ).json()["id"]
+    assert test_client.put(f"/api/competitor-groups/{group_id}/own-product", json={"competitor_id": own_id}).status_code == 200
+
+    response = test_client.patch(
+        "/api/competitors/group-batch",
+        json={"competitor_ids": [competitor_id, own_id], "group_id": group_id},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "own_product_not_batch_assignable"
+    assert response.json()["competitor_ids"] == [own_id]
+    with session_factory() as session:
+        assert session.get(Competitor, competitor_id).group_id is None
+
+    response = test_client.patch(
+        "/api/competitors/group-batch",
+        json={"competitor_ids": [competitor_id, 999], "group_id": group_id},
+    )
+    assert response.status_code == 404
+    assert response.json()["competitor_ids"] == [999]
+
+
 def test_duplicate_offer_id_returns_409_without_new_record(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
@@ -682,3 +773,273 @@ def test_delete_rolls_back_when_history_delete_fails(
         assert session.get(Competitor, competitor_id) is not None
         assert session.scalar(select(ProductSnapshot)) is not None
         assert session.scalar(select(ChangeEvent)) is not None
+
+
+def test_batch_monitoring_updates_only_changed_ids_and_preserves_other_fields(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    ids = [
+        test_client.post(
+            "/api/competitors",
+            json={"url": f"https://detail.1688.com/offer/{offer}.html"},
+        ).json()["id"]
+        for offer in ("901", "902", "903")
+    ]
+    with session_factory() as session:
+        inactive = session.get(Competitor, ids[1])
+        assert inactive is not None
+        inactive.is_active = False
+        session.commit()
+        before = {
+            competitor_id: (
+                session.get(Competitor, competitor_id).updated_at,
+                session.get(Competitor, competitor_id).status,
+                session.get(Competitor, competitor_id).group_id,
+                session.get(Competitor, competitor_id).group_role,
+            )
+            for competitor_id in ids
+        }
+
+    response = test_client.patch(
+        "/api/competitors/monitoring-batch",
+        json={"competitor_ids": [ids[1], ids[0], ids[1], ids[2]], "is_active": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "updated_count": 2,
+        "competitor_ids": [ids[0], ids[2]],
+        "is_active": False,
+    }
+    with session_factory() as session:
+        for competitor_id in ids:
+            competitor = session.get(Competitor, competitor_id)
+            assert competitor is not None
+            assert competitor.is_active is False
+            assert (competitor.status, competitor.group_id, competitor.group_role) == before[competitor_id][1:]
+        assert session.get(Competitor, ids[1]).updated_at == before[ids[1]][0]
+
+    with session_factory() as session:
+        timestamp = session.get(Competitor, ids[1]).updated_at
+    no_op = test_client.patch(
+        "/api/competitors/monitoring-batch",
+        json={"competitor_ids": [ids[1], ids[1]], "is_active": False},
+    )
+    assert no_op.status_code == 200
+    assert no_op.json() == {"updated_count": 0, "competitor_ids": [], "is_active": False}
+    with session_factory() as session:
+        assert session.get(Competitor, ids[1]).updated_at == timestamp
+
+
+def test_batch_monitoring_supports_own_and_restore_without_collection_lock(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client = client[0]
+    group_id = test_client.post("/api/competitor-groups", json={"name": "监控组"}).json()["id"]
+    own_id = test_client.post(
+        "/api/competitors",
+        json={"url": "https://detail.1688.com/offer/904.html", "group_id": group_id},
+    ).json()["id"]
+    assert test_client.put(f"/api/competitor-groups/{group_id}/own-product", json={"competitor_id": own_id}).status_code == 200
+
+    COLLECTION_LOCK.acquire()
+    try:
+        stopped = test_client.patch(
+            "/api/competitors/monitoring-batch",
+            json={"competitor_ids": [own_id], "is_active": False},
+        )
+    finally:
+        COLLECTION_LOCK.release()
+
+    assert stopped.status_code == 200
+    assert stopped.json()["competitor_ids"] == [own_id]
+    resumed = test_client.patch(
+        "/api/competitors/monitoring-batch",
+        json={"competitor_ids": [own_id], "is_active": True},
+    )
+    assert resumed.status_code == 200
+    assert resumed.json() == {"updated_count": 1, "competitor_ids": [own_id], "is_active": True}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"competitor_ids": [], "is_active": False},
+        {"competitor_ids": [True], "is_active": False},
+        {"competitor_ids": [0], "is_active": False},
+        {"competitor_ids": [-1], "is_active": False},
+        {"competitor_ids": ["1"], "is_active": False},
+        {"competitor_ids": [1], "is_active": 0},
+        {"competitor_ids": [1], "is_active": 1},
+        {"competitor_ids": [1], "is_active": "false"},
+    ],
+)
+def test_batch_monitoring_rejects_non_strict_request_values(
+    client: tuple[TestClient, sessionmaker[Session]], body: dict[str, object]
+) -> None:
+    response = client[0].patch("/api/competitors/monitoring-batch", json=body)
+
+    assert response.status_code == 422
+
+
+def test_batch_monitoring_missing_id_does_not_update_other_competitors(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/905.html"}
+    ).json()["id"]
+
+    response = test_client.patch(
+        "/api/competitors/monitoring-batch",
+        json={"competitor_ids": [competitor_id, 999], "is_active": False},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["competitor_ids"] == [999]
+    with session_factory() as session:
+        assert session.get(Competitor, competitor_id).is_active is True
+
+
+def test_batch_delete_removes_history_atomically_and_keeps_group(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    group_id = test_client.post("/api/competitor-groups", json={"name": "删除后保留"}).json()["id"]
+    ids = [
+        test_client.post(
+            "/api/competitors",
+            json={"url": f"https://detail.1688.com/offer/{offer}.html", "group_id": group_id if offer == "906" else None},
+        ).json()["id"]
+        for offer in ("906", "907")
+    ]
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with session_factory() as session:
+        snapshots = [
+            ProductSnapshot(
+                competitor_id=competitor_id,
+                captured_at=now,
+                title="待删除商品",
+                shop_name="店铺",
+                product_status="unknown",
+                collection_source="html",
+                skus=[SkuSnapshot(sku_id=f"sku-{competitor_id}", sku_name="规格", stock=1, price=None)],
+            )
+            for competitor_id in ids
+        ]
+        session.add_all(snapshots)
+        session.flush()
+        session.add_all(
+            [
+                ChangeEvent(
+                    competitor_id=competitor_id,
+                    snapshot_id=snapshot.id,
+                    change_type="title_changed",
+                    detected_at=now,
+                )
+                for competitor_id, snapshot in zip(ids, snapshots, strict=True)
+            ]
+            + [
+                CollectionRun(
+                    competitor_id=competitor_id,
+                    started_at=now,
+                    finished_at=now,
+                    status="success",
+                )
+                for competitor_id in ids
+            ]
+        )
+        session.commit()
+
+    response = test_client.post("/api/competitors/delete-batch", json={"competitor_ids": [ids[0], ids[1], ids[0]]})
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted_count": 2, "competitor_ids": ids}
+    with session_factory() as session:
+        assert session.scalar(select(Competitor)) is None
+        assert session.scalar(select(ProductSnapshot)) is None
+        assert session.scalar(select(SkuSnapshot)) is None
+        assert session.scalar(select(ChangeEvent)) is None
+        assert session.scalar(select(CollectionRun)) is None
+        assert session.get(CompetitorGroup, group_id) is not None
+    assert test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/906.html", "group_id": group_id}
+    ).status_code == 201
+
+
+def test_batch_delete_own_and_missing_are_atomic_and_lock_is_required(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    group_id = test_client.post("/api/competitor-groups", json={"name": "删除保护"}).json()["id"]
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/908.html"}
+    ).json()["id"]
+    own_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/909.html", "group_id": group_id}
+    ).json()["id"]
+    assert test_client.put(f"/api/competitor-groups/{group_id}/own-product", json={"competitor_id": own_id}).status_code == 200
+
+    response = test_client.post("/api/competitors/delete-batch", json={"competitor_ids": [competitor_id, own_id]})
+    assert response.status_code == 409
+    assert response.json()["code"] == "own_product_not_batch_deletable"
+    assert response.json()["competitor_ids"] == [own_id]
+    with session_factory() as session:
+        assert session.get(Competitor, competitor_id) is not None
+        assert session.get(Competitor, own_id).group_role == "own"
+
+    missing = test_client.post("/api/competitors/delete-batch", json={"competitor_ids": [competitor_id, 999]})
+    assert missing.status_code == 404
+    assert missing.json()["competitor_ids"] == [999]
+    with session_factory() as session:
+        assert session.get(Competitor, competitor_id) is not None
+
+    COLLECTION_LOCK.acquire()
+    try:
+        locked = test_client.post("/api/competitors/delete-batch", json={"competitor_ids": [competitor_id]})
+    finally:
+        COLLECTION_LOCK.release()
+    assert locked.status_code == 409
+    assert locked.json()["code"] == "collection_in_progress"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"competitor_ids": []},
+        {"competitor_ids": [True]},
+        {"competitor_ids": [0]},
+        {"competitor_ids": [-1]},
+        {"competitor_ids": ["1"]},
+    ],
+)
+def test_batch_delete_rejects_non_strict_ids(
+    client: tuple[TestClient, sessionmaker[Session]], body: dict[str, object]
+) -> None:
+    response = client[0].post("/api/competitors/delete-batch", json=body)
+
+    assert response.status_code == 422
+
+
+def test_batch_delete_rolls_back_when_commit_fails(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    ids = [
+        test_client.post(
+            "/api/competitors", json={"url": f"https://detail.1688.com/offer/{offer}.html"}
+        ).json()["id"]
+        for offer in ("910", "911")
+    ]
+
+    with patch.object(Session, "commit", side_effect=RuntimeError("commit failed")):
+        response = test_client.post("/api/competitors/delete-batch", json={"competitor_ids": ids})
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "competitor_delete_failed",
+        "message": "竞品删除失败，请稍后重试",
+    }
+    with session_factory() as session:
+        assert [session.get(Competitor, competitor_id) is not None for competitor_id in ids] == [True, True]

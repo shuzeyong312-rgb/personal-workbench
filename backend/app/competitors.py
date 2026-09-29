@@ -5,7 +5,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -39,6 +39,37 @@ class MonitoringRequest(BaseModel):
 
 class GroupAssignmentRequest(BaseModel):
     group_id: int | None = None
+
+
+class BatchGroupAssignmentRequest(BaseModel):
+    competitor_ids: list[StrictInt] = Field(min_length=1)
+    group_id: StrictInt | None = None
+
+
+class BatchMonitoringRequest(BaseModel):
+    competitor_ids: list[StrictInt] = Field(min_length=1)
+    is_active: StrictBool
+
+
+class BatchGroupAssignmentResponse(BaseModel):
+    updated_count: int
+    competitor_ids: list[int]
+    group_id: int | None
+
+
+class BatchMonitoringResponse(BaseModel):
+    updated_count: int
+    competitor_ids: list[int]
+    is_active: bool
+
+
+class BatchDeleteRequest(BaseModel):
+    competitor_ids: list[StrictInt] = Field(min_length=1)
+
+
+class BatchDeleteResponse(BaseModel):
+    deleted_count: int
+    competitor_ids: list[int]
 
 
 class CompetitorResponse(BaseModel):
@@ -590,6 +621,40 @@ def update_monitoring(
     return competitor
 
 
+@router.patch("/monitoring-batch", response_model=BatchMonitoringResponse)
+def update_monitoring_batch(
+    payload: BatchMonitoringRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    competitor_ids = _unique_positive_ids(payload.competitor_ids)
+    competitors = {
+        competitor.id: competitor
+        for competitor in db.scalars(select(Competitor).where(Competitor.id.in_(competitor_ids))).all()
+    }
+    missing_ids = [competitor_id for competitor_id in competitor_ids if competitor_id not in competitors]
+    if missing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "competitor_not_found", "message": "部分竞品不存在", "competitor_ids": missing_ids},
+        )
+
+    updated_ids = [
+        competitor_id
+        for competitor_id in competitor_ids
+        if competitors[competitor_id].is_active != payload.is_active
+    ]
+    if not updated_ids:
+        return {"updated_count": 0, "competitor_ids": [], "is_active": payload.is_active}
+
+    now = datetime.now(timezone.utc)
+    for competitor_id in updated_ids:
+        competitor = competitors[competitor_id]
+        competitor.is_active = payload.is_active
+        competitor.updated_at = now
+    db.commit()
+    return {"updated_count": len(updated_ids), "competitor_ids": updated_ids, "is_active": payload.is_active}
+
+
 @router.patch("/{competitor_id}/group", response_model=CompetitorResponse)
 def update_competitor_group_assignment(
     competitor_id: int,
@@ -611,6 +676,58 @@ def update_competitor_group_assignment(
     return competitor
 
 
+@router.patch("/group-batch", response_model=BatchGroupAssignmentResponse)
+def update_competitor_group_batch(
+    payload: BatchGroupAssignmentRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    competitor_ids = _unique_positive_ids(payload.competitor_ids)
+    if payload.group_id is not None and db.get(CompetitorGroup, payload.group_id) is None:
+        raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
+
+    competitors = {
+        competitor.id: competitor
+        for competitor in db.scalars(select(Competitor).where(Competitor.id.in_(competitor_ids))).all()
+    }
+    missing_ids = [competitor_id for competitor_id in competitor_ids if competitor_id not in competitors]
+    if missing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "competitor_not_found", "message": "部分竞品不存在", "competitor_ids": missing_ids},
+        )
+
+    own_ids = [competitor_id for competitor_id in competitor_ids if competitors[competitor_id].group_role == "own"]
+    if own_ids:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "own_product_not_batch_assignable", "message": "我方商品不能批量设置竞品组", "competitor_ids": own_ids},
+        )
+
+    updated_ids = [
+        competitor_id
+        for competitor_id in competitor_ids
+        if competitors[competitor_id].group_id != payload.group_id
+    ]
+    now = datetime.now(timezone.utc)
+    for competitor_id in updated_ids:
+        competitor = competitors[competitor_id]
+        competitor.group_id = payload.group_id
+        competitor.updated_at = now
+    db.commit()
+    return {"updated_count": len(updated_ids), "competitor_ids": updated_ids, "group_id": payload.group_id}
+
+
+def _delete_competitor_history(db: Session, competitors: list[Competitor]) -> None:
+    competitor_ids = [competitor.id for competitor in competitors]
+    snapshot_ids = select(ProductSnapshot.id).where(ProductSnapshot.competitor_id.in_(competitor_ids))
+    db.execute(delete(ChangeEvent).where(ChangeEvent.competitor_id.in_(competitor_ids)))
+    db.execute(delete(CollectionRun).where(CollectionRun.competitor_id.in_(competitor_ids)))
+    db.execute(delete(SkuSnapshot).where(SkuSnapshot.product_snapshot_id.in_(snapshot_ids)))
+    db.execute(delete(ProductSnapshot).where(ProductSnapshot.competitor_id.in_(competitor_ids)))
+    for competitor in competitors:
+        db.delete(competitor)
+
+
 @router.delete("/{competitor_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_competitor(competitor_id: int, db: Session = Depends(get_db)) -> None:
     if db.get(Competitor, competitor_id) is None:
@@ -626,13 +743,66 @@ def delete_competitor(competitor_id: int, db: Session = Depends(get_db)) -> None
         competitor = db.get(Competitor, competitor_id)
         if competitor is None:
             raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
-        snapshot_ids = select(ProductSnapshot.id).where(ProductSnapshot.competitor_id == competitor_id)
-        db.execute(delete(ChangeEvent).where(ChangeEvent.competitor_id == competitor_id))
-        db.execute(delete(CollectionRun).where(CollectionRun.competitor_id == competitor_id))
-        db.execute(delete(SkuSnapshot).where(SkuSnapshot.product_snapshot_id.in_(snapshot_ids)))
-        db.execute(delete(ProductSnapshot).where(ProductSnapshot.competitor_id == competitor_id))
-        db.delete(competitor)
+        _delete_competitor_history(db, [competitor])
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise error(
+            "competitor_delete_failed",
+            "竞品删除失败，请稍后重试",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
+    finally:
+        COLLECTION_LOCK.release()
+
+
+@router.post("/delete-batch", response_model=BatchDeleteResponse)
+def delete_competitors_batch(
+    payload: BatchDeleteRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    competitor_ids = _unique_positive_ids(payload.competitor_ids)
+    if not COLLECTION_LOCK.acquire(blocking=False):
+        raise error(
+            "collection_in_progress",
+            "已有竞品正在采集，请稍后重试",
+            status.HTTP_409_CONFLICT,
+        )
+
+    try:
+        competitors_by_id = {
+            competitor.id: competitor
+            for competitor in db.scalars(select(Competitor).where(Competitor.id.in_(competitor_ids))).all()
+        }
+        missing_ids = [competitor_id for competitor_id in competitor_ids if competitor_id not in competitors_by_id]
+        if missing_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "competitor_not_found", "message": "部分竞品不存在", "competitor_ids": missing_ids},
+            )
+
+        own_ids = [
+            competitor_id
+            for competitor_id in competitor_ids
+            if competitors_by_id[competitor_id].group_role == "own"
+        ]
+        if own_ids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "own_product_not_batch_deletable",
+                    "message": "我方商品不能参与批量删除",
+                    "competitor_ids": own_ids,
+                },
+            )
+
+        competitors = [competitors_by_id[competitor_id] for competitor_id in competitor_ids]
+        _delete_competitor_history(db, competitors)
+        db.commit()
+        return {"deleted_count": len(competitor_ids), "competitor_ids": competitor_ids}
     except HTTPException:
         db.rollback()
         raise
