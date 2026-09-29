@@ -2,7 +2,9 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from math import ceil
 from threading import Event, Lock, RLock
+from time import monotonic
 from typing import Any, Callable
 
 from sqlalchemy import select
@@ -32,6 +34,8 @@ from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, 
 
 
 COLLECTION_LOCK = RLock()
+BATCH_COOLDOWN_SECONDS = 10 * 60
+AUTO_RESUME_MAX = 2
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,9 @@ class BatchRuntime:
         self.current_competitor_id: int | None = None
         self.browser_open = False
         self.runner_active = False
+        self.auto_resume_attempt = 0
+        self.auto_resume_max = AUTO_RESUME_MAX
+        self.cooldown_remaining_seconds = 0
         self.items: list[BatchItemResult] = []
         self.stop_event = Event()
         self.task: asyncio.Task[Any] | None = None
@@ -80,6 +87,9 @@ class BatchRuntime:
             self.current_competitor_id = None
             self.browser_open = False
             self.runner_active = True
+            self.auto_resume_attempt = 0
+            self.auto_resume_max = AUTO_RESUME_MAX
+            self.cooldown_remaining_seconds = 0
             self.items = []
             self.stop_event = Event()
             self.task = None
@@ -96,6 +106,36 @@ class BatchRuntime:
     def set_browser_open(self, value: bool) -> None:
         with self._lock:
             self.browser_open = value
+
+    def set_running(self) -> None:
+        with self._lock:
+            self.status = "running"
+            self.cooldown_remaining_seconds = 0
+
+    def begin_auto_resume(self) -> None:
+        with self._lock:
+            self.auto_resume_attempt += 1
+
+    def enter_cooldown(self, seconds: float) -> None:
+        with self._lock:
+            self.status = "cooling_down"
+            self.cooldown_remaining_seconds = max(0, ceil(seconds))
+
+    def wait_for_cooldown(self, seconds: float) -> bool:
+        deadline = monotonic() + max(0, seconds)
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                with self._lock:
+                    self.cooldown_remaining_seconds = 0
+                return True
+            with self._lock:
+                self.cooldown_remaining_seconds = max(0, ceil(remaining))
+                stop_event = self.stop_event
+            if stop_event.wait(min(remaining, 0.1)):
+                with self._lock:
+                    self.cooldown_remaining_seconds = 0
+                return False
 
     def set_current(self, competitor_id: int | None) -> None:
         with self._lock:
@@ -118,6 +158,7 @@ class BatchRuntime:
             self.outcome_code = outcome_code
             self.current_competitor_id = None
             self.runner_active = False
+            self.cooldown_remaining_seconds = 0
 
     def mark_verification(self) -> None:
         with self._lock:
@@ -136,6 +177,7 @@ class BatchRuntime:
         with self._lock:
             self.runner_active = False
             self.browser_open = False
+            self.cooldown_remaining_seconds = 0
 
     def request_stop(self) -> None:
         with self._lock:
@@ -164,6 +206,9 @@ class BatchRuntime:
                 "current_competitor_id": self.current_competitor_id,
                 "browser_open": self.browser_open,
                 "runner_active": self.runner_active,
+                "auto_resume_attempt": self.auto_resume_attempt,
+                "auto_resume_max": self.auto_resume_max,
+                "cooldown_remaining_seconds": self.cooldown_remaining_seconds,
                 "items": [
                     {
                         "competitor_id": item.competitor_id,
@@ -571,6 +616,8 @@ def run_batch_collection(
     session_factory: Callable[[], Session],
     competitor_ids: list[int],
     runtime: BatchRuntime = BATCH_RUNTIME,
+    *,
+    cooldown_seconds: float = BATCH_COOLDOWN_SECONDS,
 ) -> None:
     """Run one serial batch in one worker thread and one headed Context."""
     lock_acquired = False
@@ -594,67 +641,95 @@ def run_batch_collection(
             runtime.set_browser_open(True)
             move_context_offscreen(context)
 
+            stop_batch = False
             for competitor_id in runnable_ids:
-                if runtime.stop_requested():
-                    break
-                runtime.set_current(competitor_id)
-                try:
-                    with session_factory() as db:
-                        collection_result = collect_competitor(
-                            db,
-                            competitor_id,
-                            browser_context=context,
+                while True:
+                    if runtime.stop_requested():
+                        stop_batch = True
+                        break
+                    runtime.set_current(competitor_id)
+                    retry_current = False
+                    try:
+                        with session_factory() as db:
+                            collection_result = collect_competitor(
+                                db,
+                                competitor_id,
+                                browser_context=context,
+                            )
+                    except CollectionError as exc:
+                        if exc.code == "1688_verification_required":
+                            if runtime.snapshot()["auto_resume_attempt"] >= runtime.snapshot()["auto_resume_max"]:
+                                runtime.record(
+                                    BatchItemResult(
+                                        competitor_id=competitor_id,
+                                        status="verification_required",
+                                        error_code=exc.code,
+                                        message=exc.message,
+                                    )
+                                )
+                                runtime.mark_verification()
+                                verification_page = (
+                                    getattr(context, "pages", []) or [None]
+                                )[0]
+                                restore_context_window(context, verification_page)
+                                while not runtime.stop_requested():
+                                    try:
+                                        if not getattr(context, "pages", []):
+                                            break
+                                    except Exception:
+                                        break
+                                    runtime.wait_for_stop(0.25)
+                                stop_batch = True
+                                break
+
+                            runtime.begin_auto_resume()
+                            _close_quietly(context)
+                            context = None
+                            runtime.set_browser_open(False)
+                            runtime.enter_cooldown(cooldown_seconds)
+                            if not runtime.wait_for_cooldown(cooldown_seconds):
+                                stop_batch = True
+                                break
+                            runtime.set_running()
+                            context = _launch_context(playwright)
+                            runtime.set_browser_open(True)
+                            move_context_offscreen(context)
+                            retry_current = True
+                            continue
+                        runtime.record(
+                            _batch_error_item(competitor_id, exc.code, exc.message)
                         )
-                except CollectionError as exc:
-                    if exc.code == "1688_verification_required":
+                    except CompetitorNotFoundError:
+                        runtime.record(
+                            _batch_error_item(competitor_id, "competitor_not_found", "竞品不存在")
+                        )
+                    except Exception:
+                        runtime.finish("collect_failed")
+                        stop_batch = True
+                        break
+                    else:
                         runtime.record(
                             BatchItemResult(
-                                competitor_id=competitor_id,
-                                status="verification_required",
-                                error_code=exc.code,
-                                message=exc.message,
+                                competitor_id,
+                                "success",
+                                outcome=getattr(collection_result, "outcome", None),
                             )
                         )
-                        runtime.mark_verification()
-                        verification_page = (
-                            getattr(context, "pages", []) or [None]
-                        )[0]
-                        restore_context_window(context, verification_page)
-                        while not runtime.stop_requested():
-                            try:
-                                if not getattr(context, "pages", []):
-                                    break
-                            except Exception:
-                                break
-                            runtime.wait_for_stop(0.25)
-                        break
-                    runtime.record(
-                        _batch_error_item(competitor_id, exc.code, exc.message)
-                    )
-                except CompetitorNotFoundError:
-                    runtime.record(
-                        _batch_error_item(competitor_id, "competitor_not_found", "竞品不存在")
-                    )
-                except Exception:
-                    runtime.finish("collect_failed")
+                    finally:
+                        if not retry_current:
+                            runtime.set_current(None)
                     break
-                else:
-                    runtime.record(
-                        BatchItemResult(
-                            competitor_id,
-                            "success",
-                            outcome=getattr(collection_result, "outcome", None),
-                        )
-                    )
-                finally:
-                    runtime.set_current(None)
+                if stop_batch:
+                    break
 
     except Exception:
         runtime.finish("collect_failed")
     finally:
         _close_quietly(context)
         runtime.mark_runner_stopped()
-        if runtime.is_running():
+        if runtime.stop_requested() and runtime.snapshot()["status"] in {"running", "cooling_down"}:
+            runtime.finish("collect_failed")
+        elif runtime.is_running():
             runtime.finish(
                 "partial_failure" if runtime.has_failures() else "success"
             )

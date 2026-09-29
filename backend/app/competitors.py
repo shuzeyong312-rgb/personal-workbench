@@ -167,7 +167,7 @@ class BatchItemResponse(BaseModel):
 
 
 class BatchStatusResponse(BaseModel):
-    status: Literal["idle", "running", "completed", "verification_required"]
+    status: Literal["idle", "running", "cooling_down", "completed", "verification_required"]
     outcome_code: str | None
     total: int
     completed: int
@@ -178,6 +178,9 @@ class BatchStatusResponse(BaseModel):
     current_competitor_id: int | None
     browser_open: bool
     runner_active: bool
+    auto_resume_attempt: int
+    auto_resume_max: int
+    cooldown_remaining_seconds: int
     items: list[BatchItemResponse]
 
 

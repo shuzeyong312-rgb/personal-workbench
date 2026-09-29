@@ -7,7 +7,7 @@ type GroupCreateStatus = "initial" | "submitting" | "success" | "invalid" | "dup
 type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
-export type BatchStatus = "idle" | "running" | "completed" | "verification_required";
+export type BatchStatus = "idle" | "running" | "cooling_down" | "completed" | "verification_required";
 export type Page = "dashboard" | "competitors" | "detail" | "groups" | "group-detail";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
@@ -140,6 +140,9 @@ export type BatchState = {
   current_competitor_id: number | null;
   browser_open: boolean;
   runner_active: boolean;
+  auto_resume_attempt: number;
+  auto_resume_max: number;
+  cooldown_remaining_seconds: number;
   items: { competitor_id: number; status: "success" | "failed" | "verification_required"; error_code: string | null; message: string | null; outcome: "active" | "offline" | null }[];
 };
 
@@ -155,8 +158,15 @@ export const idleBatchState: BatchState = {
   current_competitor_id: null,
   browser_open: false,
   runner_active: false,
+  auto_resume_attempt: 0,
+  auto_resume_max: 2,
+  cooldown_remaining_seconds: 0,
   items: [],
 };
+
+export function formatBatchCooldown(seconds: number): string {
+  return `${Math.max(0, seconds)} 秒`;
+}
 
 export type CompetitorGroup = {
   id: number;
@@ -1266,7 +1276,7 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, b
   const selectedGroupCompetitors = selectedFilteredCompetitors.filter((item) => item.group_role === "competitor");
   const selectedGroupCount = selectedGroupCompetitors.length;
   const selectedOwnCount = selectedFilteredCompetitors.filter((item) => item.group_role === "own").length;
-  const batchBusy = batchState.runner_active || batchState.browser_open || batchState.status === "running";
+  const batchBusy = batchState.runner_active || batchState.browser_open || batchState.status === "running" || batchState.status === "cooling_down";
   const pageIds = pagedCompetitors.map((item) => item.id);
   const selectedPageCount = pageIds.filter((id) => selectedIds.has(id)).length;
   const allSelected = pageIds.length > 0 && selectedPageCount === pageIds.length;
@@ -1299,6 +1309,7 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, b
     <AppShell page="competitors" onNavigate={onNavigate || (() => undefined)} breadcrumb="竞品列表">
         <header className="page-header"><div><h1>竞品列表</h1><p className="page-description">查看当前已添加的 1688 竞品，并管理监控对象。</p></div><div className="page-actions"><div className="batch-menu"><button type="button" className="secondary-button batch-trigger" aria-haspopup="menu" aria-expanded={batchMenuOpen} onClick={() => setBatchMenuOpen((open) => !open)} disabled={batchBusy}>批量操作（{selectedCount}） <span aria-hidden="true">▼</span></button>{batchMenuOpen && <div className="batch-menu-popover" role="menu"><button type="button" role="menuitem" disabled={selectedActiveCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("selected", selectedActiveCompetitors.map((item) => item.id)); }}>采集选中（{selectedActiveCount}）</button>{selectedCount > selectedActiveCount && <span className="batch-menu-hint">已停止监控的商品不参与采集</span>}<button type="button" role="menuitem" disabled={selectedGroupCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("group", selectedFilteredCompetitors.map((item) => item.id)); }}>设置分组（{selectedGroupCount}）</button><span className="batch-menu-divider" role="separator" /><button type="button" role="menuitem" disabled={selectedActiveCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("stop", selectedFilteredCompetitors.map((item) => item.id)); }}>停止监控（{selectedActiveCount}）</button><button type="button" role="menuitem" disabled={selectedInactiveCompetitors.length === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("resume", selectedFilteredCompetitors.map((item) => item.id)); }}>恢复监控（{selectedInactiveCompetitors.length}）</button><span className="batch-menu-divider" role="separator" /><button type="button" role="menuitem" className="batch-menu-danger" disabled={selectedGroupCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("delete", selectedFilteredCompetitors.map((item) => item.id)); }}>删除竞品（{selectedGroupCount}）</button><span className="batch-menu-divider" role="separator" /><button type="button" role="menuitem" disabled={batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("all_active"); }}>采集全部监控中（{activeCompetitorCount}）</button></div>}</div><button className="primary-button" onClick={onAdd} disabled={batchBusy}>添加竞品</button></div></header>
         {batchState.status === "running" && <div className="batch-status-panel batch-status-running" role="status">采集中 {batchState.completed} / {batchState.total} · 成功 {batchState.succeeded} · 失败 {batchState.failed}</div>}
+        {batchState.status === "cooling_down" && <div className="batch-status-panel batch-status-cooling_down" role="status">1688 验证已触发，浏览器已自动关闭。将在 {formatBatchCooldown(batchState.cooldown_remaining_seconds)} 后自动继续采集（自动恢复 {batchState.auto_resume_attempt}/{batchState.auto_resume_max}）。<span>已完成 {batchState.completed} / {batchState.total}，剩余 {batchState.remaining}</span></div>}
         {batchState.status === "completed" && <div className="batch-status-panel" role="status">采集完成：成功 {batchState.succeeded}，失败 {batchState.failed}</div>}
         {batchState.status === "verification_required" && <div className="batch-status-panel batch-status-verification" role="alert">1688 需要人工验证，本次采集已停止。请在弹出的浏览器中完成处理，关闭浏览器后可重新发起采集。<span>已完成 {batchState.completed} / {batchState.total}，剩余 {batchState.remaining}</span></div>}
         <section className="filter-card" aria-label="搜索和筛选">
@@ -1405,12 +1416,12 @@ export function OwnProductDialog({ group, mode, competitors, loading, selectedId
 
 function CollectionOverview({ data, status, error, batchState, onRetry }: { data: DashboardData | null; status: DashboardStatus; error: string | null; batchState: BatchState; onRetry: () => void }) {
   const summary = status === "ready" ? data?.collection_summary : null;
-  const busy = batchState.status === "running" || batchState.runner_active || batchState.browser_open;
+  const busy = batchState.status === "running" || batchState.status === "cooling_down" || batchState.runner_active || batchState.browser_open;
   const progress = batchState.total > 0 ? Math.min(100, (batchState.completed / batchState.total) * 100) : 0;
-  return <section className="table-card collection-overview"><div className="table-heading"><div><h2>采集状态概览</h2><span>数据库记录与当前批次</span></div><span className={busy ? "overview-status overview-status-running" : batchState.status === "verification_required" ? "overview-status overview-status-warning" : "overview-status"}>{batchState.status === "running" ? "采集中" : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务"}</span></div>
+  return <section className="table-card collection-overview"><div className="table-heading"><div><h2>采集状态概览</h2><span>数据库记录与当前批次</span></div><span className={busy ? "overview-status overview-status-running" : batchState.status === "verification_required" ? "overview-status overview-status-warning" : "overview-status"}>{batchState.status === "running" ? "采集中" : batchState.status === "cooling_down" ? "冷却中" : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务"}</span></div>
     {status === "error" && <div className="dashboard-support-error" role="alert"><span>{error || "暂时无法获取采集统计和趋势。"}</span><button type="button" className="text-link-button" onClick={onRetry}>重试</button></div>}
     <div className="collection-summary-grid"><div><span>最近采集时间</span><strong>{summary?.last_collection_at ? formatDate(summary.last_collection_at) : "暂无采集记录"}</strong></div><div><span>今日成功</span><strong>{summary ? summary.success_runs : "—"}</strong></div><div><span>今日失败</span><strong className={summary?.failed_runs ? "collection-value-error" : ""}>{summary ? summary.failed_runs : "—"}</strong></div><div><span>平均耗时</span><strong>{formatDuration(summary?.average_duration_seconds ?? null)}</strong></div></div>
-    <div className={`collection-batch collection-batch-${batchState.status}`}><div className="collection-batch-heading"><strong>{batchState.status === "running" ? `采集中 ${batchState.completed} / ${batchState.total}` : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务"}</strong><span>{batchState.status === "running" ? `成功 ${batchState.succeeded} · 失败 ${batchState.failed}` : batchState.status === "completed" ? `成功 ${batchState.succeeded} / 失败 ${batchState.failed}` : batchState.status === "verification_required" ? `已完成 ${batchState.completed} / ${batchState.total}` : "今日采集统计仍会保留"}</span></div>{batchState.status === "running" && <div className="collection-progress" role="progressbar" aria-label={`采集进度 ${batchState.completed} / ${batchState.total}`} aria-valuemin={0} aria-valuemax={batchState.total} aria-valuenow={batchState.completed}><span style={{ width: `${progress}%` }} /></div>}</div>
+    <div className={`collection-batch collection-batch-${batchState.status}`}><div className="collection-batch-heading"><strong>{batchState.status === "running" ? `采集中 ${batchState.completed} / ${batchState.total}` : batchState.status === "cooling_down" ? "冷却中" : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务"}</strong><span>{batchState.status === "running" ? `成功 ${batchState.succeeded} · 失败 ${batchState.failed}` : batchState.status === "cooling_down" ? `冷却剩余 ${formatBatchCooldown(batchState.cooldown_remaining_seconds)} · 自动恢复 ${batchState.auto_resume_attempt}/${batchState.auto_resume_max} · 已完成 ${batchState.completed} · 剩余 ${batchState.remaining}` : batchState.status === "completed" ? `成功 ${batchState.succeeded} / 失败 ${batchState.failed}` : batchState.status === "verification_required" ? `已完成 ${batchState.completed} / ${batchState.total}` : "今日采集统计仍会保留"}</span></div>{batchState.status === "running" && <div className="collection-progress" role="progressbar" aria-label={`采集进度 ${batchState.completed} / ${batchState.total}`} aria-valuemin={0} aria-valuemax={batchState.total} aria-valuenow={batchState.completed}><span style={{ width: `${progress}%` }} /></div>}</div>
   </section>;
 }
 
@@ -1794,7 +1805,8 @@ function App() {
       const previous = batchStateRef.current;
       batchStateRef.current = next;
       setBatchState(next);
-      if (next.status === "completed" && previous.status === "running") {
+      const wasActiveBatch = previous.status === "running" || previous.status === "cooling_down";
+      if (next.status === "completed" && wasActiveBatch) {
         await Promise.all([loadCompetitors(), loadDashboard()]);
         setNotice({ message: `采集完成：成功 ${next.succeeded}，失败 ${next.failed}`, type: next.failed ? "error" : "success" });
       }
@@ -1818,7 +1830,7 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [batchState.status]);
   useEffect(() => {
-    if (batchState.status !== "running" && !(batchState.status === "verification_required" && batchState.browser_open)) return;
+    if (batchState.status !== "running" && batchState.status !== "cooling_down" && !(batchState.status === "verification_required" && batchState.browser_open)) return;
     const timer = window.setInterval(() => { void loadBatchStatus(); }, 1500);
     return () => window.clearInterval(timer);
   }, [batchState.status, batchState.browser_open]);

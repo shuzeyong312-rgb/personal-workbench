@@ -2,6 +2,7 @@ from collections.abc import Generator
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from threading import Thread
 from unittest.mock import Mock, patch
 
 import pytest
@@ -18,6 +19,7 @@ from app.collection.service import (
     CollectionError,
     run_batch_collection,
 )
+from app.collection.daily import run_daily_collection_cycle
 from app.database import get_db
 from app.main import app
 from app.collection.types import ProductData
@@ -80,6 +82,9 @@ def test_selected_batch_validates_as_a_whole_and_returns_202(
     assert response.status_code == 202
     assert response.json()["status"] == "running"
     assert response.json()["total"] == 2
+    assert response.json()["auto_resume_attempt"] == 0
+    assert response.json()["auto_resume_max"] == 2
+    assert response.json()["cooldown_remaining_seconds"] == 0
     start.assert_called_once()
     assert client[0].get("/api/competitors/collect-batch/status").json()["completed"] == 0
 
@@ -143,13 +148,15 @@ class FakeContext:
 
     def close(self) -> None:
         self.closed = True
+        self.pages.clear()
 
 
 class FakePlaywright:
-    def __init__(self, context: FakeContext) -> None:
-        self.context = context
+    def __init__(self, context: FakeContext | list[FakeContext]) -> None:
+        self.contexts = context if isinstance(context, list) else [context]
         self.chromium = self
         self.launch_count = 0
+        self.launch_kwargs: list[dict[str, object]] = []
 
     def __enter__(self) -> "FakePlaywright":
         return self
@@ -157,9 +164,10 @@ class FakePlaywright:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def launch_persistent_context(self, **_kwargs: object) -> FakeContext:
+    def launch_persistent_context(self, **kwargs: object) -> FakeContext:
         self.launch_count += 1
-        return self.context
+        self.launch_kwargs.append(kwargs)
+        return self.contexts[min(self.launch_count - 1, len(self.contexts) - 1)]
 
 
 def test_runner_reuses_one_browser_and_continues_after_ordinary_failure(
@@ -247,7 +255,7 @@ def test_batch_success_marks_each_saved_product_active(
         } == {"active"}
 
 
-def test_verification_stops_remaining_items_and_keeps_lock_until_context_cleanup(
+def test_verification_closes_context_and_enters_cooldown_without_completing_current_item(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     add_competitor(client[1], 1)
@@ -255,22 +263,182 @@ def test_verification_stops_remaining_items_and_keeps_lock_until_context_cleanup
     runtime = BatchRuntime()
     runtime.reserve([1, 2])
     context = FakeContext()
-    playwright = FakePlaywright(context)
-    collect = Mock(side_effect=[CollectionError("1688_verification_required", "需要验证")])
-
-    def restore(_context: object, _page: object | None) -> None:
-        context.pages.clear()
+    retry_context = FakeContext()
+    playwright = FakePlaywright([context, retry_context])
+    collect = Mock(
+        side_effect=[
+            CollectionError("1688_verification_required", "需要验证"),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        ]
+    )
+    thread = Thread(
+        target=run_batch_collection,
+        args=(client[1], [1, 2], runtime),
+        kwargs={"cooldown_seconds": 0.3},
+    )
 
     with patch("app.collection.service.sync_playwright", return_value=playwright), patch(
         "app.collection.service.move_context_offscreen"
-    ), patch("app.collection.service.restore_context_window", side_effect=restore), patch(
+    ), patch("app.collection.service.collect_competitor", collect):
+        thread.start()
+        for _ in range(100):
+            if runtime.snapshot()["status"] == "cooling_down":
+                break
+            runtime.wait_for_stop(0.01)
+        cooling = runtime.snapshot()
+        assert cooling["status"] == "cooling_down"
+        assert cooling["auto_resume_attempt"] == 1
+        assert cooling["cooldown_remaining_seconds"] > 0
+        assert cooling["completed"] == 0
+        assert cooling["remaining"] == 2
+        assert cooling["verification_required"] == 0
+        assert cooling["items"] == []
+        assert context.closed is True
+        assert collect.call_count == 1
+        assert not COLLECTION_LOCK.acquire(blocking=False)
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    snapshot = runtime.snapshot()
+    assert playwright.launch_count == 2
+    assert len(playwright.launch_kwargs) == 2
+    assert playwright.launch_kwargs[0]["user_data_dir"] == playwright.launch_kwargs[1]["user_data_dir"]
+    assert str(playwright.launch_kwargs[0]["user_data_dir"]).endswith(".browser-profile")
+    assert playwright.launch_kwargs[0]["channel"] == playwright.launch_kwargs[1]["channel"] == "chrome"
+    assert playwright.launch_kwargs[0]["headless"] == playwright.launch_kwargs[1]["headless"] is False
+    assert [call.args[1] for call in collect.call_args_list] == [1, 1, 2]
+    assert snapshot["status"] == "completed"
+    assert snapshot["completed"] == 2
+    assert snapshot["remaining"] == 0
+
+
+def test_second_verification_enters_second_cooldown_and_final_verification_is_manual(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    runtime = BatchRuntime()
+    runtime.reserve([1, 2])
+    first_context, second_context, final_context = FakeContext(), FakeContext(), FakeContext()
+    playwright = FakePlaywright([first_context, second_context, final_context])
+    collect = Mock(
+        side_effect=[
+            CollectionError("1688_verification_required", "需要验证 1"),
+            CollectionError("1688_verification_required", "需要验证 2"),
+            CollectionError("1688_verification_required", "需要验证 3"),
+        ]
+    )
+
+    with patch("app.collection.service.sync_playwright", return_value=playwright), patch(
+        "app.collection.service.move_context_offscreen"
+    ), patch("app.collection.service.restore_context_window", side_effect=lambda _context, _page: final_context.pages.clear()), patch(
         "app.collection.service.collect_competitor", collect
     ):
-        run_batch_collection(client[1], [1, 2], runtime)
+        run_batch_collection(client[1], [1, 2], runtime, cooldown_seconds=0)
 
     snapshot = runtime.snapshot()
     assert snapshot["status"] == "verification_required"
     assert snapshot["completed"] == 1
     assert snapshot["remaining"] == 1
-    assert collect.call_count == 1
+    assert snapshot["auto_resume_attempt"] == 2
+    assert snapshot["verification_required"] == 1
+    assert snapshot["items"] == [
+        {
+            "competitor_id": 1,
+            "status": "verification_required",
+            "error_code": "1688_verification_required",
+            "message": "需要验证 3",
+            "outcome": None,
+        }
+    ]
+    assert collect.call_count == 3
+    assert playwright.launch_count == 3
     assert runtime.is_busy() is False
+
+
+def test_shutdown_interrupts_cooldown_and_releases_lock(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    runtime.reserve([1])
+    context = FakeContext()
+    collect = Mock(side_effect=[CollectionError("1688_verification_required", "需要验证")])
+    thread = Thread(
+        target=run_batch_collection,
+        args=(client[1], [1], runtime),
+        kwargs={"cooldown_seconds": 30},
+    )
+
+    with patch("app.collection.service.sync_playwright", return_value=FakePlaywright(context)), patch(
+        "app.collection.service.move_context_offscreen"
+    ), patch("app.collection.service.collect_competitor", collect):
+        thread.start()
+        for _ in range(100):
+            if runtime.snapshot()["status"] == "cooling_down":
+                break
+            runtime.wait_for_stop(0.01)
+        assert runtime.snapshot()["status"] == "cooling_down"
+        runtime.request_stop()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert context.closed is True
+    assert runtime.is_busy() is False
+    assert runtime.snapshot()["cooldown_remaining_seconds"] == 0
+    assert COLLECTION_LOCK.acquire(blocking=False)
+    COLLECTION_LOCK.release()
+
+
+def test_cooling_down_rejects_all_other_collection_entrypoints(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    runtime.reserve([1])
+    context = FakeContext()
+    batch_collect = Mock(side_effect=[CollectionError("1688_verification_required", "需要验证")])
+    daily_collect = Mock()
+    thread = Thread(
+        target=run_batch_collection,
+        args=(client[1], [1], runtime),
+        kwargs={"cooldown_seconds": 30},
+    )
+
+    with patch("app.collection.service.sync_playwright", return_value=FakePlaywright(context)), patch(
+        "app.collection.service.move_context_offscreen"
+    ), patch("app.collection.service.collect_competitor", batch_collect):
+        thread.start()
+        for _ in range(100):
+            if runtime.snapshot()["status"] == "cooling_down":
+                break
+            runtime.wait_for_stop(0.01)
+        assert runtime.snapshot()["status"] == "cooling_down"
+
+        second_batch = client[0].post(
+            "/api/competitors/collect-batch",
+            json={"mode": "selected", "competitor_ids": [1]},
+        )
+        single = client[0].post("/api/competitors/1/collect")
+        daily = run_daily_collection_cycle(client[1], collect=daily_collect)
+        delete_batch = client[0].post(
+            "/api/competitors/delete-batch",
+            json={"competitor_ids": [1]},
+        )
+
+        assert second_batch.status_code == 409
+        assert second_batch.json()["code"] == "collection_in_progress"
+        assert single.status_code == 409
+        assert single.json()["code"] == "collection_in_progress"
+        assert daily.interrupted == 1
+        daily_collect.assert_not_called()
+        assert delete_batch.status_code == 409
+        assert delete_batch.json()["code"] == "collection_in_progress"
+        runtime.request_stop()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert runtime.is_busy() is False
+    assert COLLECTION_LOCK.acquire(blocking=False)
+    COLLECTION_LOCK.release()

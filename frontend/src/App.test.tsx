@@ -77,6 +77,24 @@ const filterGroups: CompetitorGroup[] = [
 
 const filter = (overrides: Partial<CompetitorFilters>): CompetitorFilters => ({ ...defaultCompetitorFilters, ...overrides });
 const filteredIds = (filters: CompetitorFilters) => filterCompetitors(filterCompetitorFixtures, filters).map((item) => item.id);
+const makeBatchState = (status: BatchState["status"], overrides: Partial<BatchState> = {}): BatchState => ({
+  status,
+  outcome_code: null,
+  total: 1,
+  completed: 0,
+  succeeded: 0,
+  failed: 0,
+  remaining: 1,
+  verification_required: 0,
+  current_competitor_id: 1,
+  browser_open: status === "running",
+  runner_active: status === "running" || status === "cooling_down",
+  auto_resume_attempt: status === "cooling_down" ? 1 : 0,
+  auto_resume_max: 2,
+  cooldown_remaining_seconds: 0,
+  items: [],
+  ...overrides,
+});
 
 test("paginates eleven competitors with a fixed page size and clamps invalid pages", () => {
   const items = Array.from({ length: 11 }, (_, index) => ({ ...competitor, id: index + 1, offer_id: String(index + 1) }));
@@ -340,6 +358,45 @@ test("renders completed and verification batch states", () => {
   const verification = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} batchState={{ ...idleBatchState, status: "verification_required", total: 2, completed: 1, remaining: 1, verification_required: 1, browser_open: true, runner_active: true }} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(verification).toContain("1688 需要人工验证，本次采集已停止");
   expect(verification).toContain("关闭浏览器后可重新发起采集");
+});
+
+test("renders cooling batch state from backend countdown and keeps controls busy", () => {
+  const cooling: BatchState = {
+    ...idleBatchState,
+    status: "cooling_down",
+    total: 3,
+    completed: 1,
+    remaining: 2,
+    auto_resume_attempt: 1,
+    auto_resume_max: 2,
+    cooldown_remaining_seconds: 73,
+    runner_active: true,
+  };
+  const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} batchState={cooling} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).toContain("1688 验证已触发，浏览器已自动关闭");
+  expect(html).toContain("73 秒");
+  expect(html).toContain("自动恢复 1/2");
+  expect(html).toContain("已完成 1 / 3，剩余 2");
+  expect((html.match(/type="checkbox"[^>]*disabled=""/g) ?? [])).toHaveLength(2);
+  expect(html).not.toContain("立即继续");
+});
+
+test("renders cooling state in dashboard collection overview", () => {
+  const cooling: BatchState = {
+    ...idleBatchState,
+    status: "cooling_down",
+    total: 3,
+    completed: 1,
+    remaining: 2,
+    auto_resume_attempt: 2,
+    auto_resume_max: 2,
+    cooldown_remaining_seconds: 9,
+    runner_active: true,
+  };
+  const html = renderDashboard({ batchState: cooling });
+  expect(html).toContain("冷却中");
+  expect(html).toContain("9 秒");
+  expect(html).toContain("自动恢复 2/2");
 });
 
 test("uses confirmation dialogs for stop and permanent delete", () => {
@@ -1068,6 +1125,125 @@ test("reports refresh failure through the real batch delete flow", async () => {
     await server.close();
   }
 });
+
+test("polls cooling batches through retry and refreshes authoritative data once on completion", async () => {
+  const server = await createServer({
+    root: fileURLToPath(new URL("..", import.meta.url)),
+    server: { host: "127.0.0.1", port: 0 },
+    clearScreen: false,
+  });
+  await server.listen();
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  let statusReads = 0;
+  let competitorReads = 0;
+  let todayReads = 0;
+  let attentionReads = 0;
+  const listedCompetitor: Competitor = { ...competitor, title: "自动恢复商品" };
+  const dashboard = { date: "2026-09-29", stats: { monitored_competitors: 1, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] };
+  const attention = { date: "2026-09-29", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] };
+  const statuses = [
+    makeBatchState("cooling_down", { cooldown_remaining_seconds: 17, auto_resume_attempt: 1 }),
+    makeBatchState("cooling_down", { cooldown_remaining_seconds: 17, auto_resume_attempt: 1 }),
+    makeBatchState("cooling_down", { cooldown_remaining_seconds: 11, auto_resume_attempt: 1 }),
+    makeBatchState("running", { auto_resume_attempt: 1 }),
+    makeBatchState("completed", { completed: 1, succeeded: 1, remaining: 0, current_competitor_id: null }),
+  ];
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const key = `${request.method()} ${new URL(request.url()).pathname}`;
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    if (key === "GET /api/competitors/collect-batch/status") return json(statuses[Math.min(statusReads++, statuses.length - 1)]);
+    if (key === "GET /api/dashboard/today") { todayReads += 1; return json(dashboard); }
+    if (key === "GET /api/dashboard/group-attention") { attentionReads += 1; return json(attention); }
+    if (key === "GET /api/competitors") { competitorReads += 1; return json([listedCompetitor]); }
+    if (key === "GET /api/competitor-groups") return json([]);
+    return route.abort("blockedbyclient");
+  });
+
+  try {
+    const baseUrl = server.resolvedUrls?.local[0];
+    if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
+    await page.goto(baseUrl);
+    await page.getByRole("button", { name: "竞品列表" }).click();
+    await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("17 秒");
+    await playwrightExpect(page.getByRole("button", { name: /批量操作/ })).toBeDisabled();
+    await page.waitForTimeout(500);
+    await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("17 秒");
+    await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("11 秒", { timeout: 4000 });
+    const refreshBaseline = { competitorReads, todayReads, attentionReads };
+    await playwrightExpect(page.locator(".batch-status-panel")).toContainText("采集完成：成功 1，失败 0", { timeout: 6000 });
+    await playwrightExpect.poll(() => statusReads, { timeout: 6000 }).toBeGreaterThanOrEqual(5);
+    await playwrightExpect.poll(() => competitorReads, { timeout: 3000 }).toBe(refreshBaseline.competitorReads + 1);
+    await playwrightExpect.poll(() => todayReads, { timeout: 3000 }).toBe(refreshBaseline.todayReads + 1);
+    await playwrightExpect.poll(() => attentionReads, { timeout: 3000 }).toBe(refreshBaseline.attentionReads + 1);
+    await playwrightExpect(page.locator(".toast")).toHaveCount(1);
+    await playwrightExpect(page.locator(".toast")).toHaveText("采集完成：成功 1，失败 0");
+  } finally {
+    await context.close();
+    await browser.close();
+    await server.close();
+  }
+}, 15000);
+
+test("refreshes after cooling_down completes directly and ignores historical completed on first load", async () => {
+  const server = await createServer({
+    root: fileURLToPath(new URL("..", import.meta.url)),
+    server: { host: "127.0.0.1", port: 0 },
+    clearScreen: false,
+  });
+  await server.listen();
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  let statusReads = 0;
+  let competitorReads = 0;
+  let todayReads = 0;
+  let attentionReads = 0;
+  const listedCompetitor: Competitor = { ...competitor, title: "直接完成商品" };
+  const dashboard = { date: "2026-09-29", stats: { monitored_competitors: 1, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] };
+  const attention = { date: "2026-09-29", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] };
+  const statuses = [
+    makeBatchState("cooling_down", { cooldown_remaining_seconds: 17, auto_resume_attempt: 1 }),
+    makeBatchState("cooling_down", { cooldown_remaining_seconds: 17, auto_resume_attempt: 1 }),
+    makeBatchState("completed", { completed: 1, succeeded: 1, remaining: 0, current_competitor_id: null }),
+  ];
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const key = `${request.method()} ${new URL(request.url()).pathname}`;
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    if (key === "GET /api/competitors/collect-batch/status") return json(statuses[Math.min(statusReads++, statuses.length - 1)]);
+    if (key === "GET /api/dashboard/today") { todayReads += 1; return json(dashboard); }
+    if (key === "GET /api/dashboard/group-attention") { attentionReads += 1; return json(attention); }
+    if (key === "GET /api/competitors") { competitorReads += 1; return json([listedCompetitor]); }
+    if (key === "GET /api/competitor-groups") return json([]);
+    return route.abort("blockedbyclient");
+  });
+
+  try {
+    const baseUrl = server.resolvedUrls?.local[0];
+    if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
+    await page.goto(baseUrl);
+    await page.getByRole("button", { name: "竞品列表" }).click();
+    await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("17 秒");
+    const refreshBaseline = { competitorReads, todayReads, attentionReads };
+    await playwrightExpect(page.locator(".batch-status-panel")).toContainText("采集完成：成功 1，失败 0", { timeout: 4000 });
+    await playwrightExpect.poll(() => competitorReads, { timeout: 3000 }).toBe(refreshBaseline.competitorReads + 1);
+    await playwrightExpect.poll(() => todayReads, { timeout: 3000 }).toBe(refreshBaseline.todayReads + 1);
+    await playwrightExpect.poll(() => attentionReads, { timeout: 3000 }).toBe(refreshBaseline.attentionReads + 1);
+    await playwrightExpect(page.locator(".toast")).toHaveCount(1);
+    await page.reload();
+    await playwrightExpect(page.locator(".collection-batch")).toContainText("最近批次完成");
+    await playwrightExpect(page.locator(".toast")).toHaveCount(0);
+  } finally {
+    await context.close();
+    await browser.close();
+    await server.close();
+  }
+}, 15000);
 
 test("generic selection count includes inactive and own rows while lifecycle menu eligibility stays distinct", () => {
   const inactive = { ...competitor, id: 2, offer_id: "inactive", title: "已停止商品", is_active: false };
