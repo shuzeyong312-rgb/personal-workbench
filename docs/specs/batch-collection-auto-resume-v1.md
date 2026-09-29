@@ -56,8 +56,17 @@ idle → running → completed
 3. 关闭当前验证 Browser/Context，设置 `browser_open=false`、`runner_active=true`，保持 `COLLECTION_LOCK`，状态进入 `cooling_down`。
 4. 冷却结束后使用同一个 persistent `.browser-profile` 重新启动 headed Browser/Context，首先采集该 `current_competitor_id`。
 5. 成功或普通失败时，当前 competitor 得到最终逻辑结果并只统计一次；成功后继续剩余队列，普通失败按原规则继续。
-6. 再次验证时重复关闭和冷却流程；验证再次发生后，`auto_resume_attempt` 加 1。
-7. `auto_resume_attempt` 表示已经进入过的自动恢复冷却次数，`auto_resume_max=2`。当第 2 次自动恢复重试仍触发验证时，不再进入新的自动循环，进入现有人工 `verification_required` 兜底。
+6. 自动恢复阶段的 verification attempt 不进入最终 `items`，不增加 `completed`，`verification_required=0`，`remaining` 继续包含当前 competitor，且 `outcome_code=null`。
+7. `auto_resume_attempt` 初始为 0，并按以下固定序列表示已经进入过的自动恢复次数：
+
+   ```text
+   第一次 verification → attempt=1 → cooling_down → retry #1
+   retry #1 再次 verification → attempt=2 → cooling_down → retry #2
+   retry #2 再次 verification → attempt 不变 → 人工 verification_required
+   ```
+
+   `auto_resume_max=2`。因此两次冷却期间前端分别显示“自动恢复 1/2”和“自动恢复 2/2”。
+8. `retry #2` 仍触发 verification 时，当前 competitor 作为最终 `verification_required` item 只记录一次，`completed` 增加 1，`verification_required=1`，`remaining` 只包含其后尚未启动的 competitor，`outcome_code=verification_required`；不再进入新的自动冷却循环。
 
 人工兜底时召回 Chrome 并 `bring_to_front()`，保持现有人工处理、手动关闭 Browser、Runner 仍活跃和锁在 Browser 关闭后释放的语义。本轮不判断人工验证是否完成，也不因页面变化自动恢复。
 
@@ -91,7 +100,7 @@ idle → running → completed
 
 现有 `idle` 状态继续有效。`cooldown_remaining_seconds` 在 `cooling_down` 时返回非负整数倒计时，在其他状态返回 0；倒计时只反映真实 Runner 状态，不由前端自行推算。`auto_resume_attempt` 和 `auto_resume_max` 在整个逻辑 batch 内保持可读；成功完成后仍保留最终 batch 状态，开启新的 POST 时才重置。
 
-始终满足 `completed + remaining = total`。`completed` 只统计成功或普通失败等最终逻辑结果，不统计验证 attempt；`CollectionRun` 的 attempt 记录不改变该约束。恢复成功后不改变 `total`，不重复计算已成功 competitor，不创建新的 POST batch。
+始终满足 `completed + remaining = total`。`completed` 只统计成功、普通失败或人工兜底时最终记录的 `verification_required` 结果；自动恢复阶段的 verification attempt 不统计，`CollectionRun` 的 attempt 记录不改变该约束。恢复成功后不改变 `total`，不重复计算已成功 competitor，不创建新的 POST batch。
 
 ### Frontend behavior
 
@@ -111,7 +120,8 @@ Backend 至少覆盖：
 - `cooling_down` 时 `completed` 不增加，`remaining` 包含当前触发验证的 competitor；
 - 冷却结束后优先重新采集同一 competitor；
 - 恢复成功后继续后续队列，`total`、`completed`、`remaining` 和最终 item 不重复；
-- 连续 verification 的 `auto_resume_attempt` 计数和 `auto_resume_max=2`；
+- 自动恢复阶段 verification 不进入最终 `items` 且保持 `completed` 不变、`verification_required=0`、`outcome_code=null`；连续 verification 按 0→1→2 计数，UI 显示 1/2、2/2；
+- `retry #2` 再次 verification 后只产生一个最终 `verification_required` item，并验证 `completed`、`verification_required`、`remaining` 和 `outcome_code` 的最终值；
 - 第 2 次自动恢复重试仍验证后进入原人工 `verification_required`，召回 Chrome，不再自动续采；
 - `cooling_down` 全程持有 `COLLECTION_LOCK`，第二个 batch、daily、单条采集和删除均被拒绝；
 - shutdown 能中断 cooldown、关闭资源并释放锁；
