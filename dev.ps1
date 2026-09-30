@@ -5,7 +5,7 @@ $BackendDir = Join-Path $Root 'backend'
 $FrontendDir = Join-Path $Root 'frontend'
 $Python = Join-Path $Root '.venv\Scripts\python.exe'
 $Vite = Join-Path $FrontendDir 'node_modules\.bin\vite.cmd'
-$BackendPort = 8100
+$BackendPort = 8200
 $FrontendPort = 5200
 $LogsDir = Join-Path $Root 'logs'
 
