@@ -118,12 +118,14 @@ V1 引入独立的 `ownership` 商品身份事实：
 - 保留现有 `POST /api/competitors` 路径以减少兼容面，但其产品语义从“直接添加竞品”改为“添加监控商品”。请求继续接受标准化 1688 URL 和可选 `group_id`；客户端不得传 `ownership` 或 `group_role`。
 - Dashboard、我方商品、竞品列表、竞品分组和未来采集任务页都调用同一添加入口语义。前端不为不同页面复制添加流程；入口按钮统一使用“添加监控商品”。
 - Backend 处理顺序固定为：校验 URL → 校验设置是否已配置 → 校验目标组存在 → 校验 Offer 是否重复 → 通过现有 Collector / Parser 取得并标准化真实商品 → 确认 `shop_name` → 在数据库事务中创建 Competitor 及其首次成功采集事实。
+- 这条添加前置采集属于正式采集，必须复用现有进程内 `COLLECTION_LOCK`。只读的 URL、设置、目标组和重复检查可以在加锁前完成；进入 Collector 前必须以非阻塞方式取得该锁。锁已被单商品采集、批量采集、daily collection 或其他现有正式采集占用时，立即返回稳定的 `409 collection_in_progress`，不继续访问 Collector，也不访问后续持久化创建边界，不创建 Competitor、ProductSnapshot、SkuSnapshot、CollectionRun 或 ChangeEvent。
+- 添加流程从 Collector 开始到保存完成期间持有同一把 `COLLECTION_LOCK`，因此现有单商品/批量采集在添加持锁期间也必须按 `collection_in_progress` 拒绝；不新增第二把锁、等待队列或并发模型。所有成功、采集失败、保存失败和异常路径都必须在 `finally` 中释放锁，确保下一次正式采集能够重新获取。
 - 外部采集阶段不得先提交 Competitor。失败时不保存 Competitor、ProductSnapshot、SkuSnapshot、ChangeEvent 或 CollectionRun；不得为了记录失败而留下没有监控对象的 CollectionRun。
-- 首次成功添加视为一次真实成功采集：创建一个 baseline ProductSnapshot、其 SkuSnapshot、成功 CollectionRun 和 Competitor 当前商品事实；首次 baseline 不生成普通 ChangeEvent。实现必须复用现有采集、标准化、快照和变化检测边界，不建立第二套 1688 采集系统。
+- 外部 Collector 执行期间不得持有长生命周期的数据库事务。真实采集成功后，才在一个数据库事务中原子创建 Competitor、baseline ProductSnapshot、其 SkuSnapshot、成功 CollectionRun 和当前商品事实；首次 baseline 不生成普通 ChangeEvent。实现必须复用现有采集、标准化、快照和变化检测边界，不建立第二套 1688 采集系统。
 - 未选择目标组时：`self` 保存为 `ownership = self, group_id = NULL, group_role = competitor`；`competitor` 保存为 `ownership = competitor, group_id = NULL, group_role = competitor`。
 - 选择目标组时：`competitor` 加入目标组并保持 `group_role = competitor`；`self` 只有在目标组没有 own 时才能加入并成为 own。目标组已有其他 own 时返回 `409 own_product_already_bound`（或等价稳定错误码），整个添加不创建任何监控记录，不自动覆盖或换组。
 - 成功响应必须至少包含 `ownership`、`group_id`、`group_role` 和真实商品信息，使前端可以展示准确分流反馈；不得通过商品 ID、列表来源或组摘要反推身份。
-- 失败错误沿用现有稳定错误分类，并新增 `own_shop_name_not_configured` 与 `shop_name_unavailable` 等明确身份前置错误。HTTP 错误、请求异常和真实采集业务错误必须区分；任何一种失败都不能被转换为 competitor 成功。
+- 失败错误沿用现有稳定错误分类，并新增 `own_shop_name_not_configured` 与 `shop_name_unavailable` 等明确身份前置错误。HTTP 错误、请求异常和真实采集业务错误必须区分；任何一种失败都不能被转换为 competitor 成功。首次添加时，如果 Collector 检测到商品已下架或页面失效且无法可靠提供非空 `shop_name`，统一返回 `422 shop_name_unavailable`，消息必须明确“无法确认店铺名称，未添加监控商品，请重试”；不得因存在 offline 证据而绕过身份识别。该错误不创建 Competitor、Snapshot、SkuSnapshot、CollectionRun 或 ChangeEvent；登录、验证、超时、解析等已有稳定错误仍沿用各自 contract。
 - 添加 Dialog 的交互保持：提交中禁用重复提交；任一 URL 识别失败时保持 Dialog 打开、保留失败 URL 和失败原因；混合结果只从输入框移除已成功 URL，失败 URL 继续可重试；不因部分成功静默关闭。
 - self 成功提示固定表达“已识别为我方商品「…」，已添加至我方商品”；competitor 成功提示“已添加监控商品「…」”或等价明确文案，不把结果描述为用户主动选择的竞品。
 
@@ -184,9 +186,10 @@ V1 引入独立的 `ownership` 商品身份事实：
 ### 9. 成功采集后的身份维护
 
 - 每一次成功采集得到新的非空 `shop_name` 后，都使用当前 `own_shop_name` 重新判定 ownership；不允许只在创建时判定一次。此时 legacy `group_role = own` fallback 不再覆盖真实 shop_name 事实。
-- `competitor → self`：若商品未分组，保留未分组 self；若所在组无 own，自动成为该组 own；若所在组已有其他 own，保留真实 self 身份并将该商品移至未分组，原 own 不变。
+- `competitor → self`：当前商品的非 NULL `shop_name` 精确匹配当前配置时，它是高于 NULL legacy fallback 的真实 self。若商品未分组，保留未分组 self；若所在组无 own，当前商品成为该组 own；若所在组的 own 是 `shop_name = NULL` 的 legacy fallback，则当前真实 self 成为该组 own，原 fallback 保留 `ownership = self`，但移至 `group_id = NULL, group_role = competitor`；若所在组已有基于非 NULL `shop_name` 精确匹配得到的真实 self，则保留现有 own，新识别的 self 移至 `group_id = NULL, group_role = competitor`。不能在每次采集时重新选择真实 self winner，避免组关系抖动；legacy fallback 永远不能覆盖后来取得的明确非 NULL `shop_name`。
 - `self → competitor`：ownership 改为 competitor；若商品仍在组内，保留 group_id 并成为直接竞品；若未分组则继续未分组 competitor。
 - `self → self` 和 `competitor → competitor` 不改变组关系；采集事实照常保存。
+- 上述 ownership、当前 `shop_name`、必要的 `group_id/group_role` 调整与本次成功采集事实保存属于同一数据库事务；事务提交前不得向客户端暴露部分状态。身份调整不修改既有 ProductSnapshot、SkuSnapshot、CollectionRun 或 ChangeEvent，也不制造历史身份事件。
 - 采集响应、批量采集结果或下一次列表刷新必须能表达身份变化和组冲突提示，例如“已识别为我方商品；因目标组已有我方基准商品，已移至未分组”。成功采集不能因身份冲突被伪装成失败，也不能静默覆盖组 own。
 - 身份变化不生成“ownership_changed”类型的 ChangeEvent；ChangeEvent 继续只表达已有 Snapshot 事实之间的客观商品变化。
 
@@ -213,9 +216,11 @@ V1 引入独立的 `ownership` 商品身份事实：
 - 标准化只处理空白：首尾/连续 Unicode 空白可匹配；大小写、全半角、简称、关键词和相似名称不匹配。
 - 添加 self：fake Collector 返回目标 Offer 的真实 shop_name，创建 self、baseline Snapshot/SKU/CollectionRun，返回 self，未产生 ChangeEvent，并按目标组空闲/未分组规则设置 group_role。
 - 添加 competitor：真实其他店铺进入 competitor；竞品列表可读到，self 列表不可读到。
-- 添加失败：无效 URL、重复 Offer、Offer ID 不一致、页面不可用、登录/验证、超时、解析失败、数据不完整、shop_name 缺失和保存失败均不创建半成品；错误码与错误类型不把失败归类为 competitor。
+- 添加前置采集复用现有 `COLLECTION_LOCK`：单商品/批量/daily collection 占锁时添加返回 `409 collection_in_progress`，Collector 不执行且数据库没有新增；添加持锁时其他正式采集同样返回 `collection_in_progress`；Collector 或保存异常后锁可再次获取。成功保存只在数据库事务中原子创建 Competitor、baseline Snapshot/SKU、成功 CollectionRun 和当前事实，不在外部采集期间持有长事务。
+- 添加失败：无效 URL、重复 Offer、Offer ID 不一致、登录/验证、超时、解析失败、数据不完整、shop_name 缺失和保存失败均不创建半成品；首次添加检测到 offline/页面失效但无可靠非空 `shop_name` 时稳定返回 `422 shop_name_unavailable`，不创建任何监控商品或历史行；错误码与错误类型不把失败归类为 competitor。已有监控商品后续采集检测为 offline 的生命周期语义不受此首次添加规则影响。
 - 添加到已有 own 的组被原子拒绝；没有覆盖原 own，也没有新商品、Snapshot 或 CollectionRun。
 - 后续成功采集的 competitor→self、self→competitor、self 未分组、空闲组、已有 own 冲突和配置缺失路径；冲突保留原 own、self 商品移出组、历史事实不变，并能从响应/结果看到提示。
+- 后续成功采集的 competitor→self 冲突优先级：真实 self 替代 NULL `shop_name` legacy own 并将 fallback 移出组；真实 self 与真实 self 冲突时保持现有 own 稳定并将新识别 self 移至未分组；两种组关系调整均与当前事实保存原子提交，历史 Snapshot/ChangeEvent 不变。
 - self 单条绑定、换组、解除和删除；目标组已有 own 返回 409 且无部分更新；解除后仍 self/未分组；停止/恢复保持历史；单条永久删除沿用锁、事务和级联规则；我方批量永久删除明确被拒绝。
 - ownership 合法状态的数据库约束：competitor 不得 own，self 未分组必须兼容 role，self 入组必须 own，同组最多一个 own；批量分组/批量删除按 ownership 保护未分组 self；我方页面批量菜单只有采集选中、停止监控、恢复监控。
 - 列表 contract：无参数 GET 返回 self + competitor；`ownership=competitor` 和 `ownership=self` 各自精确过滤；非法 ownership 返回稳定参数错误；`all_active` 采集范围和展示数量均为全部 active self + competitor，文案为“采集全部监控商品”。
