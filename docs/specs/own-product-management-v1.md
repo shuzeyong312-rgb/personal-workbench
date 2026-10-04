@@ -39,7 +39,7 @@ V1 引入独立的 `ownership` 商品身份事实：
 10. 作为运营者，我希望我方商品页面只显示 `ownership = self`，竞品列表只显示 `ownership = competitor`，以便两个列表的身份边界稳定。
 11. 作为运营者，我希望我方商品页面沿用现有搜索、状态筛选、采集状态筛选、分组筛选和分页，以便不学习第二套列表交互。
 12. 作为运营者，我希望从我方商品页面选择商品并采集选中商品，以便我方基准商品和竞品一样持续更新事实。
-13. 作为运营者，我希望停止、恢复和永久删除我方商品，以便按现有监控生命周期管理基准商品。
+13. 作为运营者，我希望停止、恢复和单条永久删除我方商品，以便按现有监控生命周期管理基准商品。
 14. 作为运营者，我希望停止监控只改变监控开关并保留历史，永久删除继续遵守现有锁、事务和历史级联删除规则。
 15. 作为运营者，我希望为单个我方商品绑定竞品组，以便建立它和直接竞品的比较关系。
 16. 作为运营者，我希望更换单个我方商品的竞品组，以便修正比较范围，而不是批量改变多个基准商品。
@@ -55,6 +55,7 @@ V1 引入独立的 `ownership` 商品身份事实：
 26. 作为运营者，我希望旧数据升级后人工确认过的 own 不会无故消失，历史快照和变化事件也不会被覆盖、清空或伪造。
 27. 作为运营者，我希望旧数据中同组多个可能的我方商品得到确定且可解释的冲突处理，以便升级后不留下需要手工修复的非法角色状态。
 28. 作为维护者，我希望沿用现有 API、Collector、Snapshot、ChangeEvent、CollectionRun 和前端测试 seam，以便本 Feature 不扩展成 TrackedProduct 全仓重构。
+29. 作为运营者，我希望在系统设置中查看和修改我方店铺名称，并在修改已有配置前看到重识别影响提示，以便明确配置变更可能带来的商品分流和竞品组基准变化。
 
 ## Implementation Decisions
 
@@ -101,6 +102,8 @@ V1 引入独立的 `ownership` 商品身份事实：
 - 不提供客户端设置 `ownership`、`group_role` 或批量重分类参数。保存设置后的重识别是 Backend 的确定性事务行为。
 - 未配置时新增监控商品返回 `409 own_shop_name_not_configured`，不访问后续创建持久化边界，也不创建半成品记录。前端 Dialog 保持打开并提示先在系统设置中配置我方店铺名称。
 - 未配置时已有商品仍可按现有采集链路采集并保存真实快照；若本次没有可用配置，采集不得猜测或改写 `ownership`。已有 `ownership` 作为最近一次可靠确认的身份事实保留，直到配置存在且再次成功识别。
+- 本 Feature 同时启用现有左侧“系统设置”入口并提供最小系统设置页：展示当前 `own_shop_name`，支持编辑和保存，并明确覆盖 loading、save、validation、error 和保存后的刷新状态。页面不实现其他设置项，不建立通用设置框架。
+- 当已有配置被修改时，Frontend 在发起 PUT 前必须让用户确认以下提示： “保存后将根据当前商品店铺名称重新识别我方商品与竞品，并可能调整竞品组中的我方基准商品。” 用户取消则不发请求；保存成功后刷新设置、我方商品、竞品列表、竞品组和相关 Dashboard 读数据。
 
 ### 3. 店铺名称标准化与身份识别
 
@@ -126,16 +129,18 @@ V1 引入独立的 `ownership` 商品身份事实：
 
 ### 5. 列表、导航与页面职责
 
-- `GET /api/competitors` 增加可选 `ownership=self|competitor` 过滤参数，并在返回商品对象中暴露 `ownership`。为兼容既有竞品消费者，未提供过滤参数时默认返回 `ownership = competitor`，不再把 self 混入竞品列表。
+- `GET /api/competitors` 增加可选 `ownership=self|competitor` 过滤参数，并在返回商品对象中暴露 `ownership`。无参数时保持现有兼容语义，返回全部监控商品（self + competitor）；`ownership=competitor` 只返回竞品；`ownership=self` 只返回我方商品；其他值返回稳定的参数校验错误，不静默退化为全量或 competitor。
+- 竞品列表必须显式请求 `GET /api/competitors?ownership=competitor`；我方商品页面必须显式请求 `GET /api/competitors?ownership=self`。页面分类不得依赖无参数全量结果再由前端猜测或过滤身份。
 - 搜索、商品状态、采集状态、竞品组筛选和分页沿用现有 Competitor List 的前端模式；本 Feature 不引入服务端搜索、排序、分页框架或全局状态库。
 - “我方商品”页面消费同一列表 contract 的 `ownership = self` 结果，至少展示现有竞品列表已有的监控事实：商品标题、店铺、Offer ID、分组、价格、SKU 数量、最近变化、最近采集、商品状态和监控状态；缺失事实继续显示“未采集/未知/—”，不补零。
-- 我方商品页面支持选择商品、采集选中、停止监控、恢复监控和永久删除。永久删除沿用现有 `COLLECTION_LOCK`、单事务、历史级联删除和失败回滚规则；停止/恢复不删除历史。
+- 我方商品页面的批量操作仅支持采集选中、停止监控、恢复监控。永久删除只提供单条操作，并沿用现有 `COLLECTION_LOCK`、单事务、历史级联删除和失败回滚规则；停止/恢复不删除历史。
 - 我方商品页面提供单条“绑定竞品组 / 更换竞品组 / 解除竞品组”。不能提供多个我方商品批量绑定到同一组的操作。解除后商品为 `ownership = self, group_id = NULL, group_role = competitor`，仍出现在我方商品页面。
 - 我方商品的单条分组操作复用现有商品分组 API seam，但对 self 采用 ownership-aware 语义：绑定到空闲组成为 own；目标组已有其他 own 时返回 409 且不变更；解除或移动到未分组保留 self 身份；不自动覆盖目标组 own。
 - 竞品列表只展示 `ownership = competitor`。删除“绑定为我方商品”“解除我方商品”等人工身份入口；普通竞品仍可按现有规则单条/批量设置竞品组、采集和生命周期操作。
-- 批量分组和批量永久删除的 Backend 保护条件使用 `ownership = self`，不能只检查 `group_role = own`，因为未分组 self 的兼容 `group_role` 是 competitor。批量操作不得部分改变身份或历史。
+- 我方商品不得批量绑定竞品组，也不得批量永久删除。Backend 对批量分组和批量删除仍必须按 `ownership = self` 拒绝 self，不能只检查 `group_role = own`，因为未分组 self 的兼容 `group_role` 是 competitor；拒绝不得部分改变身份或历史。
+- 如果 Feature A 阶段仍从现有 Dashboard/列表暴露 `all_active` 采集入口，其文案统一为“采集全部监控商品”，范围必须是全部 `is_active = true` 的 self + competitor，展示数量必须与 Backend `all_active` 实际请求范围一致。移动到“采集任务”页面属于独立 Feature B。
 - 左侧导航顺序为：竞品监控大屏、我方商品、竞品列表、竞品分组、采集任务。`采集任务` 的页面和 CollectionRun 管理不属于本 Spec；本轮只统一导航命名和入口语义，不实现采集任务页面。
-- Dashboard、我方商品、竞品列表、竞品分组共用同一个入口组件/状态语义即可；不新增批量添加 API、依赖或页面级复制流程。
+- Dashboard、我方商品、竞品列表、竞品分组共用同一个添加入口组件/状态语义即可；系统设置页只处理 `own_shop_name`，不新增批量添加 API、依赖或页面级复制流程。
 
 ### 6. 分组 API 与旧角色绑定兼容
 
@@ -148,20 +153,20 @@ V1 引入独立的 `ownership` 商品身份事实：
 ### 7. 数据迁移与冲突处理
 
 - 新增一条 Alembic migration，不修改历史 migration。迁移增加 `ownership`、设置持久化结构和必要约束/索引，使用仓库现有 SQLite batch/table-rebuild 方式；升级后不得残留临时表，不删除或重建历史 Snapshot/ChangeEvent 内容。
-- 设置项先确定当前配置；当前业务值为 `广州莓有科技有限公司`。若设置项已经存在，迁移不得覆盖；若缺失，插入该当前业务值。若实际部署无法得到配置，迁移必须 fail-closed：除已人工确认的 own 外，不按店铺名猜测 self。
+- 设置项先确定当前配置；当前业务值为 `广州莓有科技有限公司`。若设置项已经存在，迁移不得覆盖；若缺失，插入该当前业务值。若实际部署无法得到配置，迁移必须 fail-closed：非 NULL 的 `shop_name` 无法完成当前配置比较时不得据此猜测 self；只有 NULL shop_name 的旧人工 own 才可使用 legacy fallback。
 - ownership 回填规则按以下固定顺序执行：
 
-  1. 原有 `group_role = own` 是人工确认事实，先标记为 `ownership = self`，即使当前 `shop_name` 为空或与新配置不一致，也不无故丢失。
-  2. 原有 `group_role = competitor` 且当前 `shop_name` 非 NULL 时，按当前配置做标准化精确比较；相等标记为 self，不相等标记为 competitor。
-  3. `shop_name = NULL` 且原角色不是 own 时标记为 competitor；不得根据标题、URL、Offer ID、价格、组名或历史 Snapshot 猜测 self。
-  4. 回填后按 `ownership + group_id` 重建合法 `group_role`，不允许 self 留在组内但仍是 competitor role。
+  1. 当前 `shop_name` 非 NULL 时，它是最高优先级的当前身份事实：标准化后等于当前 `own_shop_name` 标记为 `ownership = self`，不等于则标记为 `ownership = competitor`；旧 `group_role` 不得覆盖明确的非匹配店铺名称。
+  2. 只有当前 `shop_name = NULL` 时，原有 `group_role = own` 才可作为 legacy 人工确认 fallback，标记为 `ownership = self`；NULL shop_name 的其他记录标记为 `ownership = competitor`。
+  3. 不得根据标题、URL、Offer ID、价格、组名或历史 Snapshot 猜测 self。回填后按 `ownership + group_id` 重建合法 `group_role`，不允许 self 留在组内但仍是 competitor role。
 
 - 同一组冲突处理固定如下，不静默覆盖：
 
-  - 组内已有一个原 `group_role = own` 时，该商品优先保留为 self/own；其他因 shop_name 精确匹配而得到 self 的商品不抢占该 own。
-  - 组内没有原 own、但有多个通过 shop_name 精确识别为 self 的商品时，按 `(created_at ASC, id ASC)` 选择唯一 winner 作为 self/own。
+  - 先只保留依据当前非 NULL shop_name 精确匹配得到的 self，以及 NULL shop_name 的 legacy own fallback；已知其他店铺的旧 own 已是 competitor，不得成为 winner，也不得抢占真实 self。
+  - 组内存在一个有效 legacy own fallback 且没有更高优先级的真实 self 时，该 fallback 可保留为 self/own；组内有多个真实 self 时，按 `(created_at ASC, id ASC)` 选择唯一 winner，不得让 legacy fallback 覆盖真实 self。
+  - 组内没有有效 legacy own 或真实 self 时，不生成 own；组内有多个通过 shop_name 精确识别为 self 的商品时，按 `(created_at ASC, id ASC)` 选择唯一 winner 作为 self/own。
   - 其余 self 商品保留 `ownership = self` 和全部历史事实，但移动为 `group_id = NULL, group_role = competitor`，在“我方商品”页面可见，等待用户单条绑定到合适的组。
-  - 如果历史数据库中出现多个原 own，仍按 `(created_at ASC, id ASC)` 保留一个，其他 own 同样转为 self/未分组；不得覆盖或删除任何商品事实。
+  - 如果历史数据库中出现多个 NULL shop_name 的原 own，按 `(created_at ASC, id ASC)` 保留一个 fallback，其他 own 同样转为 self/未分组；非 NULL 且已知不匹配配置的旧 own 全部按 competitor 处理。任何分支都不得覆盖或删除商品事实。
   - 迁移输出明确的冲突数量和商品 ID/winner 信息供升级日志核对；不新增持久化冲突状态，也不把冲突伪装成 competitor。
 
 - migration downgrade 只有在不存在 `ownership = self` 时才允许删除本 migration 的 ownership 结构；仍存在 self 时明确拒绝并保持 schema/data 不变，避免静默丢失商品身份。
@@ -169,16 +174,16 @@ V1 引入独立的 `ownership` 商品身份事实：
 
 ### 8. 配置修改与后续重新识别
 
-- 保存新的 `own_shop_name` 后，在同一数据库事务中对当前 `Competitor.shop_name` 非 NULL 的商品重新识别；不重新解析历史 HTML，也不重写历史 Snapshot.shop_name。
+- 保存新的 `own_shop_name` 后，在同一数据库事务中对当前 `Competitor.shop_name` 非 NULL 的商品重新识别；非 NULL shop_name 始终优先于 legacy role，不重新解析历史 HTML，也不重写历史 Snapshot.shop_name。
 - 当前 `shop_name = NULL` 的商品不因配置修改被猜测或自动反转身份：保留已有 ownership，等待下一次成功采集到 shop_name 后再识别。
 - 对有可靠当前 shop_name 的商品，新配置精确匹配则目标为 self，否则目标为 competitor。目标变更只修改当前 ownership、必要的 group/role 关系和 `updated_at`，不制造 ChangeEvent，不删除历史。
-- 重新识别后按组逐组维护唯一 own：仍为 self 的现有 own 优先；若原 own 已变为 competitor，则按 `(created_at ASC, id ASC)` 选择 self winner；其余 self 冲突商品移至未分组并保留 self。
+- 重新识别后按组逐组维护唯一 own：当前非 NULL shop_name 精确匹配得到的真实 self 优先；只有没有真实 self 候选时，NULL shop_name 的既有 self/own 才可作为 legacy fallback 保留。若原 own 已变为 competitor，则按 `(created_at ASC, id ASC)` 选择真实 self winner；其余 self 冲突商品（包括失去优先级的 NULL fallback）移至未分组并保留 self。
 - 配置保存返回成功设置状态，并以真实字段表达重识别结果（至少可由 Backend contract tests 验证重识别和冲突数）；页面不能显示“配置已成功”却继续按旧身份长期展示。
 - 配置缺失时不执行全量反转、不把商品批量改成 competitor，也不允许新增商品；这是 fail-closed，而不是一种新的 ownership 状态。
 
 ### 9. 成功采集后的身份维护
 
-- 每一次成功采集得到新的非空 `shop_name` 后，都使用当前 `own_shop_name` 重新判定 ownership；不允许只在创建时判定一次。
+- 每一次成功采集得到新的非空 `shop_name` 后，都使用当前 `own_shop_name` 重新判定 ownership；不允许只在创建时判定一次。此时 legacy `group_role = own` fallback 不再覆盖真实 shop_name 事实。
 - `competitor → self`：若商品未分组，保留未分组 self；若所在组无 own，自动成为该组 own；若所在组已有其他 own，保留真实 self 身份并将该商品移至未分组，原 own 不变。
 - `self → competitor`：ownership 改为 competitor；若商品仍在组内，保留 group_id 并成为直接竞品；若未分组则继续未分组 competitor。
 - `self → self` 和 `competitor → competitor` 不改变组关系；采集事实照常保存。
@@ -204,15 +209,17 @@ V1 引入独立的 `ownership` 商品身份事实：
 至少覆盖：
 
 - 设置 GET 的已配置/未配置 contract；PUT 的 trim、空值拒绝、保存后读取和已有设置不被迁移覆盖；未配置时添加返回稳定错误且没有 Competitor、Snapshot、CollectionRun。
+- 系统设置页的初始加载、保存中禁用重复提交、校验失败、读取/保存错误、首次配置直接保存和已有配置修改前的精确确认文案；取消确认不得发 PUT，保存成功后相关列表/分组/Dashboard 重新读取。页面不出现其他设置项。
 - 标准化只处理空白：首尾/连续 Unicode 空白可匹配；大小写、全半角、简称、关键词和相似名称不匹配。
 - 添加 self：fake Collector 返回目标 Offer 的真实 shop_name，创建 self、baseline Snapshot/SKU/CollectionRun，返回 self，未产生 ChangeEvent，并按目标组空闲/未分组规则设置 group_role。
 - 添加 competitor：真实其他店铺进入 competitor；竞品列表可读到，self 列表不可读到。
 - 添加失败：无效 URL、重复 Offer、Offer ID 不一致、页面不可用、登录/验证、超时、解析失败、数据不完整、shop_name 缺失和保存失败均不创建半成品；错误码与错误类型不把失败归类为 competitor。
 - 添加到已有 own 的组被原子拒绝；没有覆盖原 own，也没有新商品、Snapshot 或 CollectionRun。
 - 后续成功采集的 competitor→self、self→competitor、self 未分组、空闲组、已有 own 冲突和配置缺失路径；冲突保留原 own、self 商品移出组、历史事实不变，并能从响应/结果看到提示。
-- self 单条绑定、换组、解除和删除；目标组已有 own 返回 409 且无部分更新；解除后仍 self/未分组；停止/恢复保持历史；永久删除沿用锁、事务和级联规则。
-- ownership 合法状态的数据库约束：competitor 不得 own，self 未分组必须兼容 role，self 入组必须 own，同组最多一个 own；批量分组/批量删除按 ownership 保护未分组 self。
-- 迁移输入覆盖：既有 own、shop_name 精确等于 `广州莓有科技有限公司` 但 role 为 competitor、shop_name 为 NULL、其他店铺、同组多个 self 候选、同组多个旧 own。断言 winner/未分组结果确定、历史行未变、约束有效、downgrade 在存在 self 时拒绝且不改数据。
+- self 单条绑定、换组、解除和删除；目标组已有 own 返回 409 且无部分更新；解除后仍 self/未分组；停止/恢复保持历史；单条永久删除沿用锁、事务和级联规则；我方批量永久删除明确被拒绝。
+- ownership 合法状态的数据库约束：competitor 不得 own，self 未分组必须兼容 role，self 入组必须 own，同组最多一个 own；批量分组/批量删除按 ownership 保护未分组 self；我方页面批量菜单只有采集选中、停止监控、恢复监控。
+- 列表 contract：无参数 GET 返回 self + competitor；`ownership=competitor` 和 `ownership=self` 各自精确过滤；非法 ownership 返回稳定参数错误；`all_active` 采集范围和展示数量均为全部 active self + competitor，文案为“采集全部监控商品”。
+- 迁移输入覆盖：既有 own 且 shop_name 非 NULL 匹配、既有 own 且 shop_name 非 NULL 明确不匹配、shop_name 精确等于 `广州莓有科技有限公司` 但 role 为 competitor、shop_name 为 NULL、其他店铺、同组多个真实 self 候选、同组多个 NULL shop_name 旧 own。断言非 NULL shop_name 优先、已知其他店铺旧 own 不得成为 winner、NULL legacy fallback 规则和 winner/未分组结果确定、历史行未变、约束有效、downgrade 在存在 self 时拒绝且不改数据。
 - 修改配置后的已知 shop_name 重识别、NULL shop_name 保留身份、组冲突的稳定 winner 和历史不变。
 - Dashboard、Group Summary、Group Detail、Group Attention 对 self 的竞品统计排除；self 事件不进入 Changed Competitor、竞品排序或竞品变化数量；Group Detail 既有 own 事件分离语义不回归。
 
@@ -220,10 +227,10 @@ V1 引入独立的 `ownership` 商品身份事实：
 
 沿用当前 `App.test.tsx` 的 Vitest 静态渲染、交互和 API mock seam，并复用 Competitor List 的筛选/分页测试方式。至少覆盖：
 
-- 导航包含“我方商品”，顺序和“采集任务”命名正确；Dashboard、我方商品、竞品列表、竞品分组使用同一添加入口文案和 Dialog 语义。
-- self/competitor 列表分流、身份字段消费、我方页面列表事实、搜索/筛选/分页、选择和空状态；不通过 `group_role` 推导 ownership。
+- 导航包含“我方商品”，顺序和“采集任务”命名正确；Dashboard、我方商品、竞品列表、竞品分组使用同一添加入口文案和 Dialog 语义；系统设置入口启用并进入最小设置页。
+- self/competitor 列表分流、竞品列表显式请求 `ownership=competitor`、我方商品显式请求 `ownership=self`、无参数全量 contract 不被误用、身份字段消费、我方页面列表事实、搜索/筛选/分页、选择和空状态；不通过 `group_role` 推导 ownership。
 - 添加 Dialog 的成功提示、self 明确分流提示、失败保持打开、失败 URL 保留、混合输入只保留失败项、设置未配置提示、采集/验证/网络错误与普通 HTTP 业务错误分开。
-- 我方页面的采集选中、停止、恢复、永久删除和单条绑定/更换/解除竞品组；成功刷新列表/组/统计，409 冲突保留操作上下文并显示错误；不出现多个 self 批量绑定入口。
+- 我方页面的批量采集选中、批量停止、批量恢复，以及单条永久删除、单条绑定/更换/解除竞品组；成功刷新列表/组/统计，409 冲突保留操作上下文并显示错误；不出现批量绑定或批量永久删除入口。
 - 竞品列表不显示 self，不显示旧人工“绑定/解除我方商品”入口；批量操作对 self 的保护反馈稳定。
 
 ### Playwright
