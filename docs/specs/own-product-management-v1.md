@@ -38,7 +38,7 @@ V1 引入独立的 `ownership` 商品身份事实：
 9. 作为运营者，我希望一次粘贴多个链接时逐条处理，失败链接保留在 Dialog 中，成功链接不需要重复提交。
 10. 作为运营者，我希望我方商品页面只显示 `ownership = self`，竞品列表只显示 `ownership = competitor`，以便两个列表的身份边界稳定。
 11. 作为运营者，我希望我方商品页面沿用现有搜索、状态筛选、采集状态筛选、分组筛选和分页，以便不学习第二套列表交互。
-12. 作为运营者，我希望从我方商品页面选择商品并采集选中商品，以便我方基准商品和竞品一样持续更新事实。
+12. 作为运营者，我希望从竞品监控大屏点击“立即采集”后一次采集全部 active 的我方商品和竞品商品，以便采集入口集中、两类监控对象使用同一套全量采集语义。
 13. 作为运营者，我希望停止、恢复和单条永久删除我方商品，以便按现有监控生命周期管理基准商品。
 14. 作为运营者，我希望停止监控只改变监控开关并保留历史，永久删除继续遵守现有锁、事务和历史级联删除规则。
 15. 作为运营者，我希望为单个我方商品绑定竞品组，以便建立它和直接竞品的比较关系。
@@ -56,7 +56,7 @@ V1 引入独立的 `ownership` 商品身份事实：
 27. 作为运营者，我希望旧数据中同组多个可能的我方商品得到确定且可解释的冲突处理，以便升级后不留下需要手工修复的非法角色状态。
 28. 作为维护者，我希望沿用现有 API、Collector、Snapshot、ChangeEvent、CollectionRun 和前端测试 seam，以便本 Feature 不扩展成 TrackedProduct 全仓重构。
 29. 作为运营者，我希望在系统设置中查看和修改我方店铺名称，并在修改已有配置前看到重识别影响提示，以便明确配置变更可能带来的商品分流和竞品组基准变化。
-30. 作为运营者，我希望进入竞品监控大屏时直接看到当前我方店铺，并在同一紧凑信息行右侧看到“添加监控商品”主按钮，以便先确认当前分析基准再执行新增。
+30. 作为运营者，我希望进入竞品监控大屏时在页面右上操作区直接看到当前我方店铺，并同时看到“立即采集”和“添加监控商品”，以便在统一位置确认分析基准并执行全局采集或新增。
 
 ## Implementation Decisions
 
@@ -137,22 +137,22 @@ V1 引入独立的 `ownership` 商品身份事实：
 - 竞品列表必须显式请求 `GET /api/competitors?ownership=competitor`；我方商品页面必须显式请求 `GET /api/competitors?ownership=self`。页面分类不得依赖无参数全量结果再由前端猜测或过滤身份。
 - 搜索、商品状态、采集状态、竞品组筛选和分页沿用现有 Competitor List 的前端模式；本 Feature 不引入服务端搜索、排序、分页框架或全局状态库。
 - “我方商品”页面消费同一列表 contract 的 `ownership = self` 结果，至少展示现有竞品列表已有的监控事实：商品标题、店铺、Offer ID、分组、价格、SKU 数量、最近变化、最近采集、商品状态和监控状态；缺失事实继续显示“未采集/未知/—”，不补零。
-- 我方商品页面的批量操作仅支持采集选中、停止监控、恢复监控。永久删除只提供单条操作，并沿用现有 `COLLECTION_LOCK`、单事务、历史级联删除和失败回滚规则；停止/恢复不删除历史。
-- 我方商品页面提供单条“绑定竞品组 / 更换竞品组 / 解除竞品组”。不能提供多个我方商品批量绑定到同一组的操作。解除后商品为 `ownership = self, group_id = NULL, group_role = competitor`，仍出现在我方商品页面。
+- 我方商品页面不再提供任何采集入口；批量操作只保留停止监控、恢复监控。永久删除只提供单条操作，并沿用现有 `COLLECTION_LOCK`、单事务、历史级联删除和失败回滚规则；停止/恢复不删除历史。
+- 我方商品页面直接在“竞品组”列提供单条“绑定竞品组 / 更换竞品组 / 解除竞品组”入口：未分组显示“+ 绑定竞品组”，已分组显示当前组名并可进入更换/解除。绑定 Dialog 只选择现有竞品组，本轮不提供“+ 新建竞品组”。不能提供多个我方商品批量绑定到同一组的操作。解除后商品为 `ownership = self, group_id = NULL, group_role = competitor`，仍出现在我方商品页面。
 - 我方商品的单条分组操作复用现有商品分组 API seam，但对 self 采用 ownership-aware 语义：绑定到空闲组成为 own；目标组已有其他 own 时返回 409 且不变更；解除或移动到未分组保留 self 身份；不自动覆盖目标组 own。
-- 竞品列表只展示 `ownership = competitor`。删除“绑定为我方商品”“解除我方商品”等人工身份入口；普通竞品仍可按现有规则单条/批量设置竞品组、采集和生命周期操作。
+- 竞品列表只展示 `ownership = competitor`。删除“绑定为我方商品”“解除我方商品”等人工身份入口；竞品列表不再提供采集入口。普通竞品的“竞品组”列提供单条分组/换组入口，同时保留现有批量设置竞品组能力及生命周期操作。
 - 我方商品不得批量绑定竞品组，也不得批量永久删除。Backend 对批量分组和批量删除仍必须按 `ownership = self` 拒绝 self，不能只检查 `group_role = own`，因为未分组 self 的兼容 `group_role` 是 competitor；拒绝不得部分改变身份或历史。
-- 如果 Feature A 阶段仍从现有 Dashboard/列表暴露 `all_active` 采集入口，其文案统一为“采集全部监控商品”，范围必须是全部 `is_active = true` 的 self + competitor，展示数量必须与 Backend `all_active` 实际请求范围一致。移动到“采集任务”页面属于独立 Feature B。
+- Dashboard 新增“立即采集”次级按钮，直接复用现有批量采集 `all_active` 语义，范围固定为全部 `is_active = true` 的 self + competitor；不按当前页面、筛选或 ownership 缩小范围。展示数量/进度必须与 Backend `all_active` 实际范围一致。采集中、cooling_down、verification/auto-resume 等状态继续复用现有 batch runtime，运行期间禁用重复启动；无 active 商品时按钮不可触发。Backend 现有 selected/single collection 能力保留，但我方商品和竞品列表 UI 不再暴露采集入口。后续“采集任务”页面仍属于独立 Feature B。
 - 左侧导航顺序为：竞品监控大屏、我方商品、竞品列表、竞品分组、采集任务。`采集任务` 的页面和 CollectionRun 管理不属于本 Spec；本轮只统一导航命名，不实现采集任务页面。
-- 竞品监控大屏标题说明区与 KPI 卡片之间增加一条紧凑的当前上下文行：左侧显示 `我方店铺：{own_shop_name}`，右侧显示主按钮“添加监控商品”。该店铺信息不是 KPI，不新增第五张指标卡，也不在每个商品组重复强调。
-- Dashboard 通过现有设置 contract 获取当前 `own_shop_name`。未配置时显示“我方店铺：未配置”及“去系统设置”的明确入口；此时“添加监控商品”不可进入真实添加流程，用户应先完成店铺配置。
-- “添加监控商品”仅由 Dashboard 打开现有统一 Add Dialog；我方商品、竞品列表、竞品分组和采集任务页面不显示新增商品按钮。系统设置页只处理 `own_shop_name`，不新增批量添加 API、依赖或页面级复制流程。
+- 竞品监控大屏不再为店铺信息单独占用整行。将当前我方店铺和全局操作放到页面标题区右侧的空白操作区：显示 `我方店铺：{own_shop_name}`，其下或同一操作簇中放置次级按钮“立即采集”和主按钮“添加监控商品”。保持紧凑、右对齐，不新增 KPI 卡，也不在每个商品组重复强调店铺。
+- Dashboard 通过现有设置 contract 获取当前 `own_shop_name`。未配置时在同一右上操作区显示“我方店铺：未配置”及“去系统设置”的明确入口；此时“立即采集”和“添加监控商品”均不可进入需要已配置店铺身份的正常操作流程，用户应先完成店铺配置。
+- “添加监控商品”仅由 Dashboard 打开现有统一 Add Dialog；“立即采集”也仅由 Dashboard 暴露为全局采集入口。我方商品、竞品列表、竞品分组和采集任务页面不显示新增商品按钮，我方商品与竞品列表也不显示任何采集按钮/批量采集菜单。系统设置页只处理 `own_shop_name`，不新增批量添加 API、依赖或页面级复制流程。
 
 ### 6. 分组 API 与旧角色绑定兼容
 
 - `PATCH /api/competitors/{competitor_id}/group` 继续作为单商品组变更入口，但必须按 ownership 维护 `group_role`：competitor 始终为 competitor；self 进入组时只能成为 own，移出组时变为兼容的 competitor role。
 - 现有 `PUT /api/competitor-groups/{group_id}/own-product` 和 `DELETE /api/competitor-groups/{group_id}/own-product` 不作为新 UI 的身份来源，但为已存在客户端保留兼容路径。PUT 只能操作 `ownership = self` 且属于该组的商品；对 competitor 返回稳定 `ownership_mismatch`，禁止旧客户端重新制造人工 own。DELETE 对 self 解除组关系并保留 self 身份；不得把 self 留在组内作为 competitor。
-- 竞品分组页面可以只读展示 `own_product` 摘要和竞品统计；不再提供旧 Spec 中的“绑定我方商品/更换/解除”菜单。新绑定入口只在我方商品页面的单条操作中提供。
+- 竞品分组页面负责组本身和关系展示，可继续新增/改名/删除竞品组并只读展示 `own_product` 摘要和竞品统计；不再提供商品绑定、换组、解除或旧 Spec 中的“绑定我方商品”菜单。我方商品的分组关系只从我方商品页单条维护；竞品的分组关系从竞品列表单条或批量维护。
 - 更换、解除、转组、删组和删除商品不得改写 ProductSnapshot、SkuSnapshot、CollectionRun 或 ChangeEvent。删除组时所有成员 `group_id = NULL`、`group_role = competitor`，但 self 的 `ownership` 必须保留。
 - 组 Summary、Group Detail、Group Attention 使用 `ownership = competitor` 作为竞品成员资格的最终过滤条件，并继续使用当前 `group_role` 读取组内 own。对历史不一致行，读 API 不应把它们计为竞品；迁移/服务写入应修复到本 Spec 合法状态。
 
@@ -225,8 +225,8 @@ V1 引入独立的 `ownership` 商品身份事实：
 - 添加最终持久化重校验：fake Collector 期间修改 `own_shop_name` 后，最终按新配置分类；删除目标组后添加返回稳定 group-not-found 且不创建任何记录；目标组在 Collector 期间获得其他 own 时 self 添加返回 `409 own_product_already_bound` 且不创建任何记录；最终重复检查发现 Offer 已存在时返回稳定 duplicate contract 并原子失败。上述最终校验失败均不创建 Competitor、Snapshot、SkuSnapshot、CollectionRun 或 ChangeEvent。
 - 后续成功采集的 competitor→self、self→competitor、self 未分组、空闲组和配置缺失路径；组冲突必须分别按第 9 节验证：当前 own 为 `shop_name = NULL` 的 legacy fallback 时，新取得的真实 self 替代该 fallback，fallback 保留 self 身份但移至未分组；当前 own 为非 NULL `shop_name` 精确匹配得到的真实 self 时，保持现有 own 稳定，新识别的真实 self 移至未分组。两种组关系调整均与当前事实保存原子提交，历史 Snapshot/ChangeEvent 不变。
 - self 单条绑定、换组、解除和删除；目标组已有 own 返回 409 且无部分更新；解除后仍 self/未分组；停止/恢复保持历史；单条永久删除沿用锁、事务和级联规则；我方批量永久删除明确被拒绝。
-- ownership 合法状态的数据库约束：competitor 不得 own，self 未分组必须兼容 role，self 入组必须 own，同组最多一个 own；批量分组/批量删除按 ownership 保护未分组 self；我方页面批量菜单只有采集选中、停止监控、恢复监控。
-- 列表 contract：无参数 GET 返回 self + competitor；`ownership=competitor` 和 `ownership=self` 各自精确过滤；非法 ownership 返回稳定参数错误；`all_active` 采集范围和展示数量均为全部 active self + competitor，文案为“采集全部监控商品”。
+- ownership 合法状态的数据库约束：competitor 不得 own，self 未分组必须兼容 role，self 入组必须 own，同组最多一个 own；批量分组/批量删除按 ownership 保护未分组 self；我方页面批量菜单只有停止监控、恢复监控，不含采集入口。
+- 列表 contract：无参数 GET 返回 self + competitor；`ownership=competitor` 和 `ownership=self` 各自精确过滤；非法 ownership 返回稳定参数错误；Dashboard“立即采集”的 `all_active` 范围和展示数量均为全部 active self + competitor，列表页面不再暴露采集入口。
 - 迁移输入覆盖：既有 own 且 shop_name 非 NULL 匹配、既有 own 且 shop_name 非 NULL 明确不匹配、shop_name 精确等于 `广州莓有科技有限公司` 但 role 为 competitor、shop_name 为 NULL、其他店铺、同组多个真实 self 候选、同组多个 NULL shop_name 旧 own。断言非 NULL shop_name 优先、已知其他店铺旧 own 不得成为 winner、NULL legacy fallback 规则和 winner/未分组结果确定、历史行未变、约束有效、downgrade 在存在 self 时拒绝且不改数据。
 - 修改配置后的已知 shop_name 重识别、NULL shop_name 保留身份、组冲突的稳定 winner 和历史不变。
 - Dashboard、Group Summary、Group Detail、Group Attention 对 self 的竞品统计排除；self 事件不进入 Changed Competitor、竞品排序或竞品变化数量；Group Detail 既有 own 事件分离语义不回归。
@@ -235,18 +235,19 @@ V1 引入独立的 `ownership` 商品身份事实：
 
 沿用当前 `App.test.tsx` 的 Vitest 静态渲染、交互和 API mock seam，并复用 Competitor List 的筛选/分页测试方式。至少覆盖：
 
-- Dashboard 在 KPI 前显示紧凑上下文行：已配置时显示 `我方店铺：{own_shop_name}` 与右侧“添加监控商品”主按钮；未配置时显示“我方店铺：未配置”和“去系统设置”，且不能进入真实添加流程。
+- Dashboard 标题区右侧使用紧凑操作区：已配置时显示 `我方店铺：{own_shop_name}`，并同时显示次级“立即采集”和主按钮“添加监控商品”；不再在 KPI 前额外占一整行。未配置时显示“我方店铺：未配置”和“去系统设置”，且不能进入需要已配置店铺身份的正常操作流程。
 - 导航包含“我方商品”，顺序和“采集任务”命名正确；只有 Dashboard 展示“添加监控商品”入口，我方商品、竞品列表、竞品分组不显示添加按钮；Dashboard 能打开既有 Add Dialog；系统设置入口启用并进入最小设置页。
 - self/competitor 列表分流、竞品列表显式请求 `ownership=competitor`、我方商品显式请求 `ownership=self`、无参数全量 contract 不被误用、身份字段消费、我方页面列表事实、搜索/筛选/分页、选择和空状态；不通过 `group_role` 推导 ownership。
 - 添加 Dialog 的成功提示、self 明确分流提示、失败保持打开、失败 URL 保留、混合输入只保留失败项、设置未配置提示、采集/验证/网络错误与普通 HTTP 业务错误分开。
-- 我方页面的批量采集选中、批量停止、批量恢复，以及单条永久删除、单条绑定/更换/解除竞品组；成功刷新列表/组/统计，409 冲突保留操作上下文并显示错误；不出现批量绑定或批量永久删除入口。
-- 竞品列表不显示 self，不显示旧人工“绑定/解除我方商品”入口；批量操作对 self 的保护反馈稳定。
+- Dashboard“立即采集”只触发 `all_active`，范围为全部 active self + competitor，并正确展示/禁用运行状态；我方商品和竞品列表不出现单条或批量采集入口。
+- 我方页面的批量停止、批量恢复，以及单条永久删除；“竞品组”列提供单条绑定/更换/解除入口，成功刷新列表/组/统计，409 冲突保留操作上下文并显示错误；绑定 Dialog 只允许选择现有竞品组，不出现“+ 新建竞品组”，也不出现批量绑定或批量永久删除入口。
+- 竞品列表不显示 self，不显示旧人工“绑定/解除我方商品”入口或采集入口；“竞品组”列支持单条设置/更换，批量操作继续支持批量设置竞品组及既有生命周期操作，对 self 的保护反馈稳定。竞品分组页只管理组和展示关系，不承担商品归组操作。
 
 ### Playwright
 
 继续使用 fail-closed 的受控 API mock，与真实 Backend 和 1688 隔离，只增加高价值路径：
 
-1. 从 Dashboard“添加监控商品”入口提交 self → 出现在我方商品 → 单条绑定竞品组。
+1. 从 Dashboard“添加监控商品”入口提交 self → 出现在我方商品 → 通过“竞品组”列单条绑定现有竞品组。
 2. 从 Dashboard“添加监控商品”入口提交 competitor → 出现在竞品列表。
 
 不将每个后端状态重新做成 E2E；迁移、约束、统计排除和错误矩阵由 Backend contract tests 保护。
@@ -254,6 +255,7 @@ V1 引入独立的 `ownership` 商品身份事实：
 ## Out of Scope
 
 - 采集任务页面、CollectionRun 管理 UI、定时采集和调度器改造。
+- 在我方商品绑定竞品组 Dialog 中新增“+ 新建竞品组”；本轮只允许选择现有竞品组。
 - AI 分析、Own Competitive Position、Group Situation Summary、推荐、风险/竞争力评分、通知和报表导出。
 - 多店铺、多平台身份体系，以及 seller_id、member_id、shop_id 等平台身份模型。
 - 模糊店铺名匹配、相似度、关键词、简称或人工猜测。
