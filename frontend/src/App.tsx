@@ -8,7 +8,7 @@ type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
 export type BatchStatus = "idle" | "running" | "cooling_down" | "completed" | "verification_required";
-export type Page = "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "settings";
+export type Page = "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "settings";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
 type BatchAction = "selected" | "all_active" | "group" | "stop" | "resume" | "delete";
@@ -972,16 +972,20 @@ export function StatusBadge({ status }: { status: Competitor["status"] }) {
 type ShellProps = { page: Page; onNavigate: (page: Page) => void; breadcrumb: string; children: ReactNode };
 
 export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: Page) => void }) {
+  const [monitoringExpanded, setMonitoringExpanded] = useState(true);
   return <aside className="sidebar">
     <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>工作提效工具集</span></div></div>
     <nav aria-label="主导航">
       <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⌂</span>首页</button>
-      <div className="nav-group"><div className="nav-group-title"><span className="nav-icon" aria-hidden="true">⌁</span>竞品监控<span className="nav-chevron" aria-hidden="true">⌃</span></div>
-        <button className={"nav-item nav-child" + (page === "dashboard" ? " nav-active" : "")} onClick={() => onNavigate("dashboard")} aria-current={page === "dashboard" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
-        <button className={"nav-item nav-child" + (page === "own-products" ? " nav-active" : "")} onClick={() => onNavigate("own-products")} aria-current={page === "own-products" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />我方商品</button>
-        <button className={"nav-item nav-child" + (page === "competitors" || page === "detail" ? " nav-active" : "")} onClick={() => onNavigate("competitors")} aria-current={page === "competitors" || page === "detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品列表</button>
-        <button className={"nav-item nav-child" + (page === "groups" || page === "group-detail" ? " nav-active" : "")} onClick={() => onNavigate("groups")} aria-current={page === "groups" || page === "group-detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品分组</button>
-        <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />采集任务</button>
+      <div className={"nav-group" + (monitoringExpanded ? "" : " nav-group-collapsed")}>
+        <button type="button" className="nav-group-title" onClick={() => setMonitoringExpanded((expanded) => !expanded)} aria-expanded={monitoringExpanded} aria-controls="competitor-monitoring-nav"><span className="nav-icon" aria-hidden="true">⌁</span>竞品监控<span className="nav-chevron" aria-hidden="true">⌃</span></button>
+        <div className="nav-group-children" id="competitor-monitoring-nav" hidden={!monitoringExpanded}>
+          <button className={"nav-item nav-child" + (page === "dashboard" ? " nav-active" : "")} onClick={() => onNavigate("dashboard")} aria-current={page === "dashboard" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
+          <button className={"nav-item nav-child" + (page === "own-products" ? " nav-active" : "")} onClick={() => onNavigate("own-products")} aria-current={page === "own-products" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />我方商品</button>
+          <button className={"nav-item nav-child" + (page === "competitors" || page === "detail" ? " nav-active" : "")} onClick={() => onNavigate("competitors")} aria-current={page === "competitors" || page === "detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品列表</button>
+          <button className={"nav-item nav-child" + (page === "groups" || page === "group-detail" ? " nav-active" : "")} onClick={() => onNavigate("groups")} aria-current={page === "groups" || page === "group-detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品分组</button>
+          <button className={"nav-item nav-child" + (page === "collection-tasks" ? " nav-active" : "")} onClick={() => onNavigate("collection-tasks")} aria-current={page === "collection-tasks" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />采集任务</button>
+        </div>
       </div>
       <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">▣</span>自动上架</button><button className={"nav-item" + (page === "settings" ? " nav-active" : "")} onClick={() => onNavigate("settings")} aria-current={page === "settings" ? "page" : undefined}><span className="nav-icon" aria-hidden="true">⚙</span>系统设置</button>
     </nav>
@@ -1677,6 +1681,13 @@ export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups,
   </section></div>;
 }
 
+export function CollectionTasksPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  return <AppShell page="collection-tasks" onNavigate={onNavigate} breadcrumb="采集任务">
+    <header className="page-header"><div><h1>采集任务</h1><p className="page-description">统一查看采集进度、历史批次与异常结果。</p></div></header>
+    <section className="table-card"><div className="state-panel"><div className="empty-icon" aria-hidden="true">◷</div><strong>采集任务页面已预留</strong><span>后续将在这里集中展示当前采集任务、历史采集记录和失败原因。</span></div></section>
+  </AppShell>;
+}
+
 type SettingsPageProps = {
   configured: boolean;
   value: string;
@@ -2299,6 +2310,7 @@ function App() {
     {page === "dashboard" && <DashboardPage data={dashboard} attention={dashboardAttention} attentionStatus={dashboardAttentionStatus} attentionError={dashboardAttentionError} status={dashboardStatus} error={dashboardError} batchState={batchState} ownShopName={ownShopName} onAdd={openDashboardAddDialog} onCollect={() => void handleBatchAction("all_active")} onRetry={() => void loadDashboard()} onRetryAttention={() => void loadDashboardAttention()} onNavigate={navigate} onOpenGroupDetail={openGroupDetail} />}
     {page === "own-products" && <ListPage competitors={ownProducts} ownership="self" groups={groups} status={ownListStatus} error={ownListError} onRetry={() => void loadOwnProducts()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} paginationResetVersion={paginationResetVersion} />}
     {page === "competitors" && <ListPage competitors={competitors} ownership="competitor" groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} paginationResetVersion={paginationResetVersion} />}
+    {page === "collection-tasks" && <CollectionTasksPage onNavigate={navigate} />}
     {page === "settings" && <SettingsPage configured={settingsConfigured} value={settingsValue} status={settingsStatus} error={settingsError} saveError={settingsSaveError} submitting={settingsSubmitting} onChange={setSettingsValue} onRetry={() => void loadOwnShopName()} onSave={submitOwnShopName} onNavigate={navigate} />}
     {page === "groups" && <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} />}
     {page === "group-detail" && <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} />}

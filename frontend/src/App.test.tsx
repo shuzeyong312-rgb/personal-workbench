@@ -8,7 +8,7 @@ import { expect, test, vi } from "vitest";
 
 import { competitorPageSize, getBatchRefreshNotice, paginateCompetitors, updatePageSelection } from "./App";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -932,16 +932,29 @@ test.each([
   expect(formatChange(change)).toBe(expected);
 });
 
-test("marks the active sidebar page", () => {
+test("marks the active sidebar page and exposes the collapsible monitoring group", () => {
   const dashboard = renderToStaticMarkup(<Sidebar page="dashboard" onNavigate={noop} />);
   const competitors = renderToStaticMarkup(<Sidebar page="competitors" onNavigate={noop} />);
   const groups = renderToStaticMarkup(<Sidebar page="groups" onNavigate={noop} />);
+  const collectionTasks = renderToStaticMarkup(<Sidebar page="collection-tasks" onNavigate={noop} />);
+  expect(dashboard).toContain('aria-expanded="true"');
+  expect(dashboard).toContain('aria-controls="competitor-monitoring-nav"');
+  expect(dashboard).toContain('id="competitor-monitoring-nav"');
   expect(dashboard).toContain('class="nav-item nav-child nav-active" aria-current="page"');
   expect(dashboard).toContain("竞品监控大屏");
   expect(competitors).toContain('class="nav-item nav-child nav-active" aria-current="page"');
   expect(competitors).toContain("竞品列表");
-  expect(groups).toContain('竞品分组');
+  expect(groups).toContain("竞品分组");
   expect(groups).toContain('class="nav-item nav-child nav-active" aria-current="page"');
+  expect(collectionTasks).toContain("采集任务");
+  expect(collectionTasks).toContain('class="nav-item nav-child nav-active" aria-current="page"');
+});
+
+test("renders the collection tasks placeholder page", () => {
+  const html = renderToStaticMarkup(<CollectionTasksPage onNavigate={noop} />);
+  expect(html).toContain("<h1>采集任务</h1>");
+  expect(html).toContain("采集任务页面已预留");
+  expect(html).toContain("当前采集任务、历史采集记录和失败原因");
 });
 
 test.each([
