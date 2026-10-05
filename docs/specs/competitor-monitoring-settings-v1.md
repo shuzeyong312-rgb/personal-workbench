@@ -39,8 +39,8 @@
 | --- | ---: | ---: |
 | `item_interval_seconds` / `competitor_monitoring_item_interval_seconds` | 5 | 1–60 秒 |
 | `continuous_collection_count` / `competitor_monitoring_continuous_collection_count` | 10 | 1–50 次 |
-| `batch_rest_seconds` / `competitor_monitoring_batch_rest_seconds` | 120 | 0–1800 秒 |
-| `verification_cooldown_seconds` / `competitor_monitoring_verification_cooldown_seconds` | 600 | 60–3600 秒 |
+| `batch_rest_seconds` / `competitor_monitoring_batch_rest_seconds` | 120 | 0–1800 秒，且必须为 60 的整数倍 |
+| `verification_cooldown_seconds` / `competitor_monitoring_verification_cooldown_seconds` | 600 | 60–3600 秒，且必须为 60 的整数倍 |
 | `auto_resume_max` / `competitor_monitoring_auto_resume_max` | 2 | 0–5 次 |
 
 新增业务级接口：
@@ -51,7 +51,7 @@ PUT /api/settings/competitor-monitoring
 Content-Type: application/json
 ```
 
-GET 始终返回完整五项数值。某个 key 缺失、值不是严格十进制整数或值超出该字段范围时，返回该字段默认值；读取不得写回默认值，也不得因旧数据使设置页不可用。
+GET 始终返回完整五项数值。某个 key 缺失、值不是严格十进制整数、值超出该字段范围，或两个长时长字段不是 60 的整数倍时，返回该字段默认值；读取不得写回默认值，也不得因旧数据使设置页不可用。
 
 PUT body 必须完整且只包含五个 API 字段，例如：
 
@@ -65,7 +65,7 @@ PUT body 必须完整且只包含五个 API 字段，例如：
 }
 ```
 
-- 每项必须为 JSON integer，布尔值、浮点数、字符串、缺项、未知字段和越界值均为非法；返回 HTTP 422。
+- 每项必须为 JSON integer，布尔值、浮点数、字符串、缺项、未知字段和越界值均为非法；`batch_rest_seconds` 与 `verification_cooldown_seconds` 还必须为 60 的整数倍，否则返回 HTTP 422。
 - Backend 必须在修改任何 `SystemSetting` 前完成完整 body 校验；五个值在同一个数据库事务中 insert/update 并 commit。验证失败或保存异常时 rollback，不允许部分成功或部分可见。
 - 成功响应返回保存后的完整五项数值；失败响应使用安全、字段可定位的稳定错误信息，不回显数据库异常。
 - `GET` / `PUT /api/settings/own-shop-name`、我方店铺重识别和其既有事务语义不变。
@@ -79,7 +79,7 @@ PUT body 必须完整且只包含五个 API 字段，例如：
 
 竞品监控区域的加载、保存错误和成功反馈独立于基础设置。加载或保存竞品监控失败不得覆盖已成功加载的我方店铺区域，反之亦然。前端可以在输入层做范围提示和提交禁用，但 Backend 422 是权威校验；不得把运行中 Batch 配置写回或显示成“当前设置”。
 
-`batch_rest_seconds` 与 `verification_cooldown_seconds` 在前端以业务友好的“分钟”展示和编辑；提交时转换为 API 所需的整数秒。分钟输入必须能精确表达 API 已保存的秒值，不得静默截断或四舍五入；保存前转换结果仍须落在各自秒级范围。界面明确提示：**“设置仅影响下一次新启动的批量采集，当前运行任务不变。”**
+`batch_rest_seconds` 在前端按 0–30 的整数分钟展示和编辑，0 仍表示关闭主动批次休息；`verification_cooldown_seconds` 按 1–60 的整数分钟展示和编辑。两个字段提交时乘以 60 转为 API 所需的整数秒，因此前后端值可精确 round-trip；前端不允许小数分钟、截断或四舍五入。界面明确提示：**“设置仅影响下一次新启动的批量采集，当前运行任务不变。”**
 
 ### 3. Batch 配置快照与状态
 
@@ -128,10 +128,10 @@ Collection Tasks 继续只消费现有 Batch status polling，不新增任务 AP
 
 ### Settings API 与页面
 
-- GET 在五个 key 都缺失、部分缺失、旧值非法时返回各自默认值，且不写数据库；有效保存后完整 round-trip。
-- PUT 覆盖五项的边界值；缺项、未知字段、bool、浮点、字符串和每项越界均为 422，并证明原五项数据库值完全未变。
+- GET 在五个 key 都缺失、部分缺失、旧值非法，或两个长时长字段虽在范围内但不是 60 的整数倍时返回各自默认值，且不写数据库；有效保存后完整 round-trip。
+- PUT 覆盖五项的边界值；缺项、未知字段、bool、浮点、字符串、每项越界，以及两个长时长字段不是 60 的整数倍均为 422，并证明原五项数据库值完全未变。
 - 模拟提交期间的保存异常，证明事务 rollback 后不存在部分更新。
-- Settings 页使用左侧“基础设置”“竞品监控”模块导航和右侧当前模块内容；竞品监控加载/保存成功与失败状态独立；一次保存发出完整五项 body，范围与单位可见。两个长时长字段以分钟编辑、精确转换为秒，并显示“仅影响下一次新启动的批量采集，当前运行任务不变”。
+- Settings 页使用左侧“基础设置”“竞品监控”模块导航和右侧当前模块内容；竞品监控加载/保存成功与失败状态独立；一次保存发出完整五项 body，范围与单位可见。主动批次休息以 0–30 整数分钟编辑、风控冷却以 1–60 整数分钟编辑，提交时精确转换为秒，并显示“仅影响下一次新启动的批量采集，当前运行任务不变”。
 - 保留我方店铺 GET/PUT、重识别确认和既有页面行为回归测试。
 
 ### Batch service/runtime
