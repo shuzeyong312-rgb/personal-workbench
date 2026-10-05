@@ -4,7 +4,7 @@
 
 ## Problem Statement
 
-左侧“采集任务”目前仍是占位页面。用户已经可以从 Dashboard 或竞品列表发起批量采集，但缺少一个专门的运行中心来观察当前批次、识别 1688 验证和冷却异常，也不能从一个页面查看最近持久化的单商品采集尝试及其失败原因。
+左侧“采集任务”目前仍是占位页面。当前普通批量采集入口已经统一在 Dashboard；竞品列表和我方商品列表当前没有普通采集入口。但用户仍缺少一个专门的运行中心来观察当前批量采集、识别 1688 验证和冷却异常，也不能从一个页面查看最近持久化的单商品采集尝试及其失败原因。
 
 当前系统已经有两类不同事实：
 
@@ -18,8 +18,8 @@ V1 需要把这两类事实清楚地呈现给用户，但不为它们建立第�
 将左侧“采集任务”占位页升级为只读的采集运行中心：
 
 1. 页面顶部消费现有 `GET /api/competitors/collect-batch/status`，展示当前进程内 `BatchRuntime` 的真实状态、进度、当前商品、item 结果和异常。
-2. 当前商品只使用现有 `GET /api/competitors` 返回的竞品资料进行映射，复用 `title`、`offer_id`、`shop_name` 和 `ownership`，不新增 task product API。
-3. 页面下方新增只读 `GET /api/collection-runs`，从真实 `CollectionRun` 查询历史单商品采集尝试，并通过当前 `Competitor` JOIN 提供商品展示字段、身份和店铺信息。
+2. 当前商品和 batch item 只使用同一个现有 `GET /api/competitors` 返回的商品资料映射，复用 `title`、`offer_id`、`shop_name` 和 `ownership`，不新增 task product API。
+3. 页面下方以“采集记录”为历史区域，新增只读 `GET /api/collection-runs`，从真实 `CollectionRun` 查询历史单商品采集尝试，并通过当前 `Competitor` JOIN 提供当前商品展示字段、身份和店铺信息。
 4. 搜索、身份/状态筛选、排序和分页全部由 Backend 完成；Frontend 只渲染当前页，不下载完整历史后再本地分页。
 5. 当前批次区与历史记录区独立维护 loading、error 和 empty 状态。任一请求失败都不遮蔽另一块已经成功取得的内容。
 
@@ -27,15 +27,15 @@ V1 不新增持久化 `BatchJob`/`BatchTask`，不改变现有采集 Runner、�
 
 ## Goals and User Stories
 
-1. 作为采集用户，我希望进入“采集任务”后能看到当前批次状态，以便知道系统是否正在工作。
+1. 作为采集用户，我希望进入“采集任务”后能看到当前批量采集状态，以便知道批量运行是否正在工作。
 2. 作为采集用户，我希望看到 `completed / total`、成功数、失败数和剩余数，以便判断批次进度。
 3. 作为采集用户，我希望在运行中看到当前商品及已经完成的 item 结果，以便定位批次停留位置。
 4. 作为采集用户，我希望当前商品显示标题、Offer ID、店铺和身份，以便确认采集对象没有错位。
 5. 作为采集用户，我希望验证触发时看到明确的人工处理提示，以便知道为什么批次没有继续。
 6. 作为采集用户，我希望冷却状态展示后端返回的剩余时间和自动恢复次数，以便理解当前是否会继续运行。
 7. 作为采集用户，我希望批次完成后看到成功、失败、验证中止、结果码和逐商品结果，以便评估本批次结果。
-8. 作为采集用户，我希望 Backend 重启后页面显示“当前无采集任务”，而不是把历史记录伪装成最近 batch。
-9. 作为采集用户，我希望查看最近每一次单商品采集尝试，以便追溯实际发生过的成功或失败。
+8. 作为采集用户，我希望 Backend 重启后页面显示“当前无批量采集任务”，而不是把历史记录伪装成最近 batch。
+9. 作为采集用户，我希望在“采集记录”中查看最近每一次单商品采集尝试，以便追溯实际发生过的成功或失败。
 10. 作为采集用户，我希望按标题、Offer ID 或店铺搜索历史，以便快速找到目标商品。
 11. 作为采集用户，我希望按成功/失败和我方/竞品筛选历史，以便集中处理异常或查看某类商品。
 12. 作为采集用户，我希望历史表按最近开始时间排序，并能翻页，以便结果稳定、可持续浏览。
@@ -46,9 +46,13 @@ V1 不新增持久化 `BatchJob`/`BatchTask`，不改变现有采集 Runner、�
 
 ## Implementation Decisions
 
-### 1. 现有运行时 seam 与职责
+### 1. 现有运行时 seam、权威状态与职责
 
 - 当前批次唯一来源继续是 `GET /api/competitors/collect-batch/status` 和现有 `BatchRuntime`。
+- 该 status 接口始终是 `batchState` 的权威来源。Frontend 不得因为本地 timer 把 Backend 返回的 `completed` 改成 `idle`。
+- 当前 Frontend 中 completed 后约 4 秒的 Toast/视觉反馈可以继续消失，但不能触发 `batchStateRef.current = idleBatchState` 或 `setBatchState(idleBatchState)` 之类的事实重置；Feature 实现时必须移除或改造现有 completed → local idle 的 4 秒状态重置。
+- Backend Runtime 何时进入 `idle` 继续由 Backend contract 决定。开启新 batch 时由 Backend 返回新的 `running` 状态并覆盖旧 `completed`，而不是由 Frontend 本地清理旧状态模拟切换。
+- 进入“采集任务”页面时主动复用现有 `loadBatchStatus()` 做一次权威刷新。active batch 继续复用当前全局 polling，不创建第二个 polling loop；Collection Tasks 页面只能消费同一个全局 `batchState`。
 - 不新增第二套 runtime、queue、WebSocket、SSE、任务状态机或批次持久化模型。
 - 页面消费现有状态：`idle`、`running`、`cooling_down`、`verification_required`、`completed`。
 - 页面直接消费 Backend 返回的 `total`、`completed`、`succeeded`、`failed`、`remaining`、`verification_required`、`current_competitor_id`、`browser_open`、`runner_active`、`auto_resume_attempt`、`auto_resume_max`、`cooldown_remaining_seconds`、`items` 和 `outcome_code`。
@@ -61,11 +65,13 @@ V1 不新增持久化 `BatchJob`/`BatchTask`，不改变现有采集 Runner、�
 
 V1 只把现有左侧入口从占位页替换为运行中心。页面不新增“立即采集”按钮、不新增批次 POST、不迁移 Dashboard 的“立即采集”。Dashboard 现有入口保持原位置和行为。
 
-### 3. 当前任务区域
+### 3. 当前批量采集区域
+
+顶部区域统一命名为“当前批量采集”。`BatchRuntime` 只代表批量采集，不代表系统中所有采集活动；该区域的文案不得暗示 daily、single、add collector 等其他采集路径都由 BatchRuntime 覆盖。
 
 #### `idle`
 
-显示“当前无采集任务”。该状态只表示当前 `BatchRuntime` 没有批次，不推断历史是否为空，也不通过 `CollectionRun` 伪造最近批次。
+显示“当前无批量采集任务”。该状态只表示当前 `BatchRuntime` 没有批量采集，不推断历史是否为空，也不通过 `CollectionRun` 伪造最近批次。
 
 #### `running`
 
@@ -104,22 +110,31 @@ V1 只把现有左侧入口从占位页替换为运行中心。页面不新增�
 - `outcome_code`；
 - item 结果。
 
-`completed` 不是历史 batch。Backend 重启后 Runtime 回到 `idle`，页面必须尊重该事实，不用 CollectionRun 补造“最近一次批次”。
+`completed` 不是历史 batch。Backend 重启后 Runtime 回到 `idle`，页面必须尊重该事实，不用 CollectionRun 补造“最近一次批次”。Frontend 不得用 4 秒本地 timer 提前把该状态变成 idle；只要 status 接口仍返回 completed，页面继续展示该内存 batch。新 batch 启动并由 Backend 返回 running 后，才由新的权威状态覆盖旧 completed。
 
-### 4. 当前商品映射
+### 4. 当前商品与 batch item 映射
 
-status 只提供 `current_competitor_id`。页面优先复用现有 `GET /api/competitors` 的响应，将该 ID 映射为：
+`BatchRuntime.current_competitor_id` 和 `BatchRuntime.items[].competitor_id` 都只提供 ID。Frontend 必须对同一次现有 `GET /api/competitors` 响应建立 `productById`，并让所有 batch 商品展示共用这一个映射：
+
+- `current_competitor_id`；
+- `running` 的已完成 items；
+- `completed` 的 items；
+- `cooling_down` 和 `verification_required` 的当前商品。
+
+`productById` 映射字段为：
 
 - `title`；
 - `offer_id`；
 - `shop_name`；
 - `ownership`。
 
-映射不到时不得伪造商品名称、店铺或身份；显示可识别的缺失值，并保留真实 ID。不得为了补充名称而创建第二套 task product API。若 Spec Review 发现现有竞品列表 seam 在当前实现中无法安全复用，再单独提出调整，不在本 Spec 隐式扩大接口范围。
+现有 `GET /api/competitors` 不传 `ownership` 时返回 self + competitor，可安全作为 `productById` seam。映射不到时不得伪造商品名称、店铺或身份；如果商品在 batch 完成后被永久删除，必须保留真实 `competitor_id`，标题/店铺/身份显示缺失状态，不得从 CollectionRun、Snapshot 或其他位置猜测，也不得伪造历史商品信息。不得为 items 新增 API 或第二套 task product API。若 Spec Review 发现现有竞品列表 seam 在当前实现中无法安全复用，再单独提出调整，不在本 Spec 隐式扩大接口范围。
 
 ### 5. 历史 API：`GET /api/collection-runs`
 
-新增一个只读 API。它读取真实 `CollectionRun`，不创建或修改采集事实。
+新增一个只读 API。它读取真实 `CollectionRun`，不创建或修改采集事实。历史区域建议命名为“采集记录”。
+
+历史记录展示系统真实持久化的单商品采集尝试；这些记录可能由 batch、daily、单商品或其他现有正式采集路径产生。当前 `CollectionRun` 没有 source 字段，V1 不推断、不展示“采集来源”，也不允许根据时间或上下文猜测某条记录来自 batch、daily、manual 或 add collector。
 
 响应为分页对象：
 
@@ -131,6 +146,13 @@ status 只提供 `current_competitor_id`。页面优先复用现有 `GET /api/co
   "page_size": 20
 }
 ```
+
+响应始终包括以下字段，其中 `page_size` 始终为 Backend 固定值 20：
+
+- `items`；
+- `total`；
+- `page`；
+- `page_size: 20`。
 
 每个 item 至少包括：
 
@@ -147,25 +169,26 @@ status 只提供 `current_competitor_id`。页面优先复用现有 `GET /api/co
 - `error_message`；
 - `duration_seconds`。
 
-查询通过 `CollectionRun` JOIN 当前 `Competitor` 获取展示信息。`CollectionRun` 自身字段必须按数据库事实返回，不能被当前 Competitor 的新标题、店铺或身份覆盖，也不能推断出不存在的错误、结束时间或 batch 关系。
+查询通过 `CollectionRun` JOIN 当前 `Competitor` 获取展示信息。JOIN 得到的 `title`、`shop_name` 和 `ownership` 是“当前商品资料”，不是采集发生时的历史资料；`search` 和 `ownership` filter 同样基于当前 Competitor 字段。`CollectionRun` 自身字段必须按数据库事实返回，不能被当前 Competitor 的新标题、店铺或身份覆盖，也不能推断出不存在的错误、结束时间、source 或 batch 关系。
 
 当前删除语义必须先在真实模型和 FK 行为中确认：如果删除竞品时现有流程同时删除其 CollectionRun，则 V1 保持该语义；如果 FK 阻止删除，则保持该约束。不得凭空设计 orphan fallback、匿名商品或历史快照表来填补不存在的关联。
 
 #### 查询参数
 
-- `search`：可选；Backend 在 `title`、`offer_id`、`shop_name` 上执行匹配。空白输入按无搜索处理。
-- `status`：`all`、`success`、`failed`。`all` 返回现有 CollectionRun 状态；若真实存在 `running` 且未结束，必须按事实返回。
-- `ownership`：`all`、`self`、`competitor`。
-- `page`：从 1 开始；非法值返回稳定的参数错误，不静默使用不存在的页码。
-- `page_size`：V1 固定 20，或由 Backend 固定默认 20；不提供用户可调 page size。
+- `search`：可选 string；Backend 在当前 `title`、`offer_id`、`shop_name` 上执行匹配。trim 后为空按无搜索处理。
+- `status`：`all`、`success`、`failed`，默认 `all`；非法值返回 422。`all` 返回所有真实 CollectionRun 状态，包括 `running`。
+- `ownership`：`all`、`self`、`competitor`，默认 `all`；非法值返回 422。
+- `page`：integer，默认 1；`page < 1` 返回 422。V1 不接受用户可调 `page_size`。
+
+Backend 固定 `page_size = 20`。page 超过最后一页时保留请求中的 page，返回 `items=[]`，不 clamp、不报错。`total` 始终是应用 search/status/ownership 后、分页前的总数。
 
 排序固定为 `started_at DESC`，其次 `id DESC`。搜索、过滤、总数计算、排序和分页必须在 Backend 执行，禁止先返回完整历史再由 Frontend 分页。
 
 #### 时间与错误字段
 
 - 页面沿用项目现有时间展示规则。
-- `duration_seconds` 只有 `finished_at` 非空时才计算。
-- 真实存在的 running CollectionRun 若 `finished_at` 为空，耗时显示“进行中”或“—”，不得写入假结束时间。
+- `finished_at != null` 时，`duration_seconds` 固定为 `(finished_at - started_at).total_seconds()` 的非负数值。
+- `finished_at == null` 时，`duration_seconds` 固定为 `null`；Frontend 复用现有 duration formatter，显示“—”。
 - `error_type` 和 `error_message` 只展示现有稳定、已脱敏的内容。
 - API/UI 均不得输出 Cookie、Token、HTML、headers、浏览器 Profile、原始异常堆栈或其他未脱敏运行上下文。
 - 成功记录不要生成“无错误”等没有信息量的文案。
@@ -178,23 +201,25 @@ status 只提供 `current_competitor_id`。页面优先复用现有 `GET /api/co
 | --- | --- |
 | 状态 | `CollectionRun.status` 的用户可读状态 |
 | 商品 | 标题、Offer ID、店铺 |
-| 身份 | `self` 或 `competitor` |
+| 当前身份 | 当前 `Competitor.ownership`，即 `self` 或 `competitor` |
 | 开始时间 | `started_at` |
-| 耗时 | `duration_seconds`，或进行中/— |
+| 耗时 | `duration_seconds`，或— |
 | 结果 | 成功无额外噪音；失败显示简短原因 |
+
+历史状态的显示语义固定为：`success` → “成功”；`failed` → “失败”；`running` → “未完成”。`CollectionRun.status = running` 是数据库事实，但不能证明当前 collector 仍然活着；Backend 重启后 BatchRuntime 会回到 idle，数据库中仍可能存在未结束的 running record。因此历史 running 记录不得显示成“当前采集中”，只有当前批量采集区域的 BatchRuntime 状态可以表达实时 `running`、`cooling_down`、`verification_required` 或 `completed`。
 
 失败原因直接来自安全的 `error_type` / `error_message`。较长的 `error_message` 可以通过详情展开或 Dialog 查看，但不新增独立 Detail API；列表 contract 已包含所需字段。详情交互不得扩大可见字段集合。
 
-历史为空时显示“暂无采集记录”。该空状态只由 `GET /api/collection-runs` 的真实结果决定，不由当前任务区的 `idle` 状态决定。
+历史为空时显示“暂无采集记录”。该空状态只由 `GET /api/collection-runs` 的真实结果决定，不由当前批量采集区的 `idle` 状态决定。
 
 ### 7. 独立数据状态
 
-当前任务区和历史记录区分别处理：
+当前批量采集区和“采集记录”区分别处理：
 
 - loading：保留各自的加载状态，不阻塞另一块的展示；
 - error：显示可重试的局部错误，不清空另一块已经成功加载的数据；
-- empty：当前任务区使用 idle 语义，历史区使用“暂无采集记录”；
-- normal：当前任务和历史表分别按各自的 contract 渲染。
+- empty：当前批量采集区使用 idle 语义，历史区使用“暂无采集记录”；
+- normal：当前批量采集和“采集记录”分别按各自的 contract 渲染。
 
 当前 status 请求失败时，历史记录仍可独立展示；历史 API 请求失败时，当前 status 仍可独立展示。刷新或重试只重新请求对应的数据源，不借用另一个数据源猜测结果。
 
@@ -207,11 +232,12 @@ V1：
 - 不新增 migration；
 - 不新增 `batch_id`；
 - 不修改 `CollectionRun` 的“单商品一次采集尝试”语义；
+- 不新增或推断 CollectionRun 的 source；
 - 不通过 `started_at` 接近程度推断 historical batch；
 - 不改变现有 `BatchRuntime`、`COLLECTION_LOCK`、cooling 或 auto-resume 状态机；
 - 不改变单商品采集、daily scheduler 或 Dashboard 的既有数据写入行为。
 
-历史 API 是查询 seam，不能因为展示需求反向修改 CollectionRun 的事实字段或生命周期。
+历史 API 是查询 seam，不能因为展示需求反向修改 CollectionRun 的事实字段或生命周期。JOIN 的当前商品资料不等于采集时历史商品资料。
 
 ## Testing Decisions
 
@@ -225,14 +251,15 @@ V1：
 2. `status=success`、`status=failed` 和 `status=all` 过滤；
 3. `ownership=self`、`ownership=competitor` 和 `ownership=all` 过滤；
 4. `search` 分别匹配 title、offer_id、shop_name；
-5. page 从 1 开始、固定 page size 20、total/page/page_size 正确；
-6. 成功和失败记录的字段完整，失败原因来自真实 `error_type` / `error_message`；
-7. `finished_at` 存在时 `duration_seconds` 正确；
-8. `finished_at=NULL` 的 running CollectionRun 不假造结束时间，耗时为进行中或 — 的 contract 值；
-9. self 与 competitor 混合记录能正确 JOIN 当前 Competitor 展示信息；
-10. 查询不会改变任何 CollectionRun 字段或创建额外记录；
-11. 当前删除/FK 语义不会被 API 擅自改写；不实现未经证实的 orphan fallback；
-12. 不新增 migration，且 schema 与现有 migration 保持一致。
+5. page 从 1 开始、Backend 固定 page size 20、total/page/page_size 正确；page 超过最后一页时返回空 items 且保留请求 page；
+6. 非法 status、ownership 或 page 返回 422；
+7. 成功和失败记录的字段完整，失败原因来自真实 `error_type` / `error_message`；
+8. `finished_at` 存在时 `duration_seconds` 是非负差值；
+9. `finished_at=NULL` 的 running CollectionRun 返回 `duration_seconds=null`；
+10. self 与 competitor 混合记录能正确 JOIN 当前 Competitor 展示信息，且搜索/身份过滤基于当前字段；
+11. 查询不会改变任何 CollectionRun 字段或创建额外记录；
+12. 当前删除/FK 语义不会被 API 擅自改写；不实现未经证实的 orphan fallback；
+13. 不新增 migration，且 schema 与现有 migration 保持一致。
 
 现有 `GET /api/competitors/collect-batch/status` 与 BatchRuntime 的测试继续保护运行时事实；本 Feature 只补充页面所需的历史查询 contract，不把 batch 历史语义写进数据库测试。
 
@@ -240,20 +267,22 @@ V1：
 
 至少覆盖页面外部渲染和请求行为：
 
-1. `idle`；
+1. `idle`：显示“当前无批量采集任务”；
 2. `running`：计数、进度条、当前商品和已完成 item；
 3. `cooling_down`：验证提示、浏览器已关闭、Backend 倒计时、自动恢复 X/Y、completed/remaining 和当前商品；
 4. `verification_required`：人工验证提示、当前商品和已有进度，不出现绕过/跳过按钮；
-5. `completed`：汇总、`outcome_code` 和 item 结果；
-6. current competitor 信息通过现有竞品数据映射，缺失时不伪造名称；
-7. history loading、error、empty 和 normal；
-8. title/offer_id/shop_name 搜索、status/ownership 筛选和 Backend 分页参数；
-9. 下一页、上一页、第一页/最后一页边界及 total/page/page_size 展示；
-10. 失败记录展示安全的简短错误原因，成功记录不出现“无错误”噪音；
-11. `finished_at=NULL` 的记录显示进行中或 —；
-12. Backend status 与 history 其中一边失败时，另一边仍正常显示；
-13. idle 时显示“当前无采集任务”，历史为空时独立显示“暂无采集记录”；
-14. 状态 polling 消费 Backend 返回的 `cooldown_remaining_seconds`，不由 Frontend 自行推算。
+5. `completed`：汇总、`outcome_code` 和 item 结果；Backend 返回 completed 后等待超过 4 秒，Frontend 仍不得将其伪造为 idle；
+6. 进入 Collection Tasks 页面主动刷新一次 batch status，且不创建第二个 polling loop；
+7. current competitor 和 items 共用同一个 `productById`，映射成功时显示 title/offer_id/shop_name/ownership；
+8. 商品被删除或映射缺失时保留真实 competitor_id，并显示标题/店铺/身份缺失 fallback，不伪造资料；
+9. history loading、error、empty 和 normal；
+10. title/offer_id/shop_name 搜索、status/ownership 筛选和 Backend 分页参数；参数变化发送正确 query；
+11. 下一页、上一页、第一页/最后一页边界及 total/page/page_size 展示，page 超界显示 empty；
+12. 失败记录展示安全的简短错误原因，成功记录不出现“无错误”噪音；
+13. history `running` 显示“未完成”而非实时“当前采集中”，`finished_at=NULL` 显示“—”；
+14. Backend status 与 history 其中一边失败时，另一边仍正常显示；
+15. idle 时显示“当前无批量采集任务”，历史为空时独立显示“暂无采集记录”；
+16. 状态 polling 消费 Backend 返回的 `cooldown_remaining_seconds`，不由 Frontend 自行推算。
 
 ### Playwright
 
@@ -299,13 +328,15 @@ E2E 使用现有 fail-closed `/api/**` mock 约定和最小固定 fixture；不�
 
 ```text
 GET /api/competitors/collect-batch/status
-    → 当前进程内 BatchRuntime，可能因 Backend 重启回到 idle
+    → 当前进程内 BatchRuntime，可能因 Backend 重启回到 idle；始终是 batchState 权威来源
 
 GET /api/collection-runs
-    → 持久化 CollectionRun 单商品采集尝试
+    → 持久化 CollectionRun 单商品采集尝试，展示当前 Competitor 资料
 ```
 
-历史记录可以帮助用户定位单商品失败，但不能反推出某个 batch 的边界、顺序、总数或 outcome_code。只有 BatchRuntime 的 status 响应能提供当前/最近内存 batch 的这些信息。
+`GET /api/competitors` 不传 `ownership` 时返回 self + competitor，可安全作为当前商品和 batch item 的 `productById` seam。永久删除 Competitor 当前会同时删除该商品的 CollectionRun，因此 V1 使用当前 Competitor JOIN，不设计 orphan fallback；这些既有语义均不修改。
+
+历史记录可以帮助用户定位单商品失败，但不能反推出某个 batch 的边界、顺序、总数、outcome_code 或 source。只有 BatchRuntime 的 status 响应能提供当前/最近内存 batch 的这些信息；CollectionRun 的 JOIN 字段始终是当前商品资料。
 
 ### Spec 冻结流程
 
