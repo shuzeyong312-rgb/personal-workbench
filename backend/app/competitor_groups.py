@@ -145,7 +145,7 @@ def _summary_rows(db: Session) -> dict[int | None, dict[str, object]]:
         .outerjoin(prices, prices.c.competitor_id == Competitor.id)
         .outerjoin(ChangeEvent, ChangeEvent.competitor_id == Competitor.id)
         .group_by(Competitor.group_id)
-        .where(Competitor.group_role == "competitor")
+        .where(Competitor.ownership == "competitor")
     ).all()
     return {
         row.group_id: {
@@ -228,6 +228,7 @@ def summarize_competitor_groups(db: Session = Depends(get_db)) -> CompetitorGrou
         )
         for competitor in db.scalars(
             select(Competitor).where(
+                Competitor.ownership == "self",
                 Competitor.group_role == "own",
                 Competitor.group_id.in_([group.id for group in groups]),
             )
@@ -264,6 +265,8 @@ def bind_own_product(
     competitor = db.get(Competitor, payload.competitor_id)
     if competitor is None:
         raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
+    if competitor.ownership != "self":
+        raise error("ownership_mismatch", "只有我方商品可以绑定为竞品组基准", status.HTTP_409_CONFLICT)
     if competitor.group_id != group_id:
         raise error("competitor_not_in_group", "商品不属于该竞品组", status.HTTP_400_BAD_REQUEST)
 
@@ -275,16 +278,10 @@ def bind_own_product(
     )
     if current_own is not None and current_own.id == competitor.id:
         return {"competitor": competitor}
-    if current_own is not None and not payload.replace_existing:
+    if current_own is not None:
         raise error("own_product_already_bound", "该竞品组已绑定我方商品", status.HTTP_409_CONFLICT)
 
     try:
-        if current_own is not None:
-            db.execute(
-                update(Competitor)
-                .where(Competitor.id == current_own.id)
-                .values(group_role="competitor", updated_at=datetime.now(timezone.utc))
-            )
         db.execute(
             update(Competitor)
             .where(Competitor.id == competitor.id)
@@ -329,7 +326,7 @@ def unbind_own_product(group_id: int, db: Session = Depends(get_db)) -> None:
         db.execute(
             update(Competitor)
             .where(Competitor.group_id == group_id, Competitor.group_role == "own")
-            .values(group_role="competitor", updated_at=datetime.now(timezone.utc))
+            .values(group_id=None, group_role="competitor", updated_at=datetime.now(timezone.utc))
         )
         db.commit()
     except Exception as exc:

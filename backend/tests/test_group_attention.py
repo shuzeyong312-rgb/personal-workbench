@@ -57,6 +57,7 @@ def test_group_attention_endpoint_returns_eligible_group_first_read_model(
         own = _competitor(session, 1, group.id, "own")
         price = _competitor(session, 2, group.id, "competitor")
         _competitor(session, 3, unbound.id, "competitor")
+        _event(session, own, "price_increase", datetime(2026, 9, 20, 1), delta_rate=5)
         _event(session, price, "price_decrease", datetime(2026, 9, 20, 1), delta_rate=-6)
         session.commit()
 

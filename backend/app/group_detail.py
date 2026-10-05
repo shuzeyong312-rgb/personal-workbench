@@ -415,8 +415,8 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
     )
     member_ids = [member.id for member in members]
     member_by_id = {member.id: member for member in members}
-    own_member = next((member for member in members if member.group_role == "own"), None)
-    direct_members = [member for member in members if member.group_role == "competitor"]
+    own_member = next((member for member in members if member.ownership == "self" and member.group_role == "own"), None)
+    direct_members = [member for member in members if member.ownership == "competitor"]
 
     snapshots = _latest_snapshots(db, member_ids)
     snapshot_ids = [snapshot.id for snapshot in snapshots.values()]
@@ -484,7 +484,7 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
     changed_competitor_ids = {
         event.competitor_id
         for event in today_events
-        if member_by_id[event.competitor_id].group_role == "competitor"
+        if member_by_id[event.competitor_id].ownership == "competitor"
     }
     today_payload = []
     for event in today_events:
@@ -504,7 +504,7 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
     competitor_event_count = 0
     for event in period_events:
         member = member_by_id[event.competitor_id]
-        if member.group_role == "own":
+        if member.ownership == "self":
             own_event_count += 1
             continue
         competitor_event_count += 1
@@ -546,10 +546,10 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
         "competitors": competitors,
         "today": {
             "own_event_count": sum(
-                member_by_id[event.competitor_id].group_role == "own" for event in today_events
+                member_by_id[event.competitor_id].ownership == "self" for event in today_events
             ),
             "competitor_event_count": sum(
-                member_by_id[event.competitor_id].group_role == "competitor" for event in today_events
+                member_by_id[event.competitor_id].ownership == "competitor" for event in today_events
             ),
             "changed_competitor_count": len(changed_competitor_ids),
             "events": today_payload,

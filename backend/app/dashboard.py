@@ -55,6 +55,7 @@ class DashboardItemResponse(BaseModel):
 
 class DashboardStatsResponse(BaseModel):
     monitored_competitors: int
+    active_monitored_products: int
     changed_competitors: int
     change_events: int
     price_changed_competitors: int
@@ -276,6 +277,9 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
     business_date, start_utc, end_utc = business_day_bounds()
     trend_start_utc, _ = business_date_utc_bounds(business_date - timedelta(days=6))
     monitored_competitors = int(
+        db.scalar(select(func.count()).select_from(Competitor).where(Competitor.is_active.is_(True), Competitor.ownership == "competitor")) or 0
+    )
+    active_monitored_products = int(
         db.scalar(select(func.count()).select_from(Competitor).where(Competitor.is_active.is_(True))) or 0
     )
     rows = db.execute(
@@ -283,6 +287,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
         .join(ChangeEvent, ChangeEvent.competitor_id == Competitor.id)
         .where(
             Competitor.is_active.is_(True),
+            Competitor.ownership == "competitor",
             ChangeEvent.detected_at >= start_utc,
             ChangeEvent.detected_at < end_utc,
         )
@@ -399,6 +404,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
         .join(Competitor, Competitor.id == ChangeEvent.competitor_id)
         .where(
             Competitor.is_active.is_(True),
+            Competitor.ownership == "competitor",
             ChangeEvent.detected_at >= trend_start_utc,
             ChangeEvent.detected_at < end_utc,
         )
@@ -433,6 +439,7 @@ def get_today_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
         date=business_date,
         stats=DashboardStatsResponse(
             monitored_competitors=monitored_competitors,
+            active_monitored_products=active_monitored_products,
             changed_competitors=len(items),
             change_events=len(rows),
             price_changed_competitors=len(price_changed_competitors),

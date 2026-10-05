@@ -25,6 +25,7 @@ class DetailCompetitorResponse(BaseModel):
     url: str
     group_id: int | None
     group_role: Literal["competitor", "own"]
+    ownership: Literal["self", "competitor"]
     title: str | None
     shop_name: str | None
     main_image_url: str | None

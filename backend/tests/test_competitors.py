@@ -12,8 +12,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.collection.service import COLLECTION_LOCK
-from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
+from app.collection.service import BATCH_RUNTIME, COLLECTION_LOCK
+from app.collection.types import ProductData, SkuData
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot, SystemSetting
 
 
 @pytest.fixture()
@@ -25,14 +26,34 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
     )
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory() as session:
+        session.add(SystemSetting(key="own_shop_name", value="我方店铺"))
+        session.commit()
+
+    def fake_collect_product(_url: str, offer_id: str) -> ProductData:
+        shop_name = "我方店铺" if offer_id in {"22", "904", "909"} else "竞品店铺"
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        return ProductData(
+            offer_id=offer_id,
+            title=f"商品 {offer_id}",
+            shop_name=shop_name,
+            main_image_url=None,
+            price_min=None,
+            price_max=None,
+            product_status="active",
+            collection_source="html",
+            captured_at=now,
+            skus=[SkuData("sku-1", "规格", 1, None)],
+        )
 
     def override_get_db() -> Generator[Session, None, None]:
         with session_factory() as session:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
-        yield test_client, session_factory
+    with patch("app.competitors.collect_product", side_effect=fake_collect_product):
+        with TestClient(app) as test_client:
+            yield test_client, session_factory
     app.dependency_overrides.clear()
     engine.dispose()
 
@@ -51,7 +72,7 @@ def test_adds_competitor_and_normalizes_url(client: tuple[TestClient, sessionmak
     assert response.json()["url"] == "https://detail.1688.com/offer/123456789.html"
     assert response.json()["group_id"] is None
     assert response.json()["group_role"] == "competitor"
-    assert response.json()["status"] == "unknown"
+    assert response.json()["status"] == "active"
     assert response.json()["is_active"] is True
 
     with session_factory() as session:
@@ -119,7 +140,7 @@ def test_lists_all_competitors_in_created_at_and_id_desc_order(
         "url",
         "group_id",
         "group_role",
-        "group_role",
+        "ownership",
         "title",
         "shop_name",
         "main_image_url",
@@ -320,10 +341,6 @@ def test_updates_competitor_group_assignment_and_preserves_history(
         "/api/competitors",
         json={"url": "https://detail.1688.com/offer/123456789.html", "group_id": first_group_id},
     ).json()["id"]
-    assert test_client.put(
-        f"/api/competitor-groups/{first_group_id}/own-product",
-        json={"competitor_id": competitor_id},
-    ).status_code == 200
     now = datetime(2026, 9, 20, tzinfo=timezone.utc)
     with session_factory() as session:
         snapshot = ProductSnapshot(
@@ -399,7 +416,7 @@ def test_group_assignment_rejects_missing_competitor_and_group(
     assert missing_group.json()["code"] == "competitor_group_not_found"
 
 
-def test_assignment_demotes_own_without_replacing_destination_own(
+def test_assignment_moves_competitor_without_changing_ownership(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     test_client = client[0]
@@ -409,15 +426,12 @@ def test_assignment_demotes_own_without_replacing_destination_own(
         test_client.post("/api/competitors", json={"url": f"https://detail.1688.com/offer/{offer}.html", "group_id": group_id}).json()["id"]
         for offer, group_id in (("101", group_a), ("102", group_b))
     ]
-    assert test_client.put(f"/api/competitor-groups/{group_a}/own-product", json={"competitor_id": ids[0]}).status_code == 200
-    assert test_client.put(f"/api/competitor-groups/{group_b}/own-product", json={"competitor_id": ids[1]}).status_code == 200
-
     moved = test_client.patch(f"/api/competitors/{ids[0]}/group", json={"group_id": group_b})
     assert moved.status_code == 200
     assert moved.json()["group_role"] == "competitor"
     assert test_client.patch(f"/api/competitors/{ids[0]}/group", json={"group_id": None}).json()["group_role"] == "competitor"
     with client[1]() as session:
-        assert session.get(Competitor, ids[1]).group_role == "own"
+        assert session.get(Competitor, ids[1]).group_role == "competitor"
         assert session.get(Competitor, ids[0]).group_id is None
 
 
@@ -633,7 +647,7 @@ def test_inactive_competitor_cannot_be_collected(
     }
     collector.assert_not_called()
     with session_factory() as session:
-        assert session.scalar(select(CollectionRun)) is None
+        assert session.scalar(select(CollectionRun)) is not None
 
 
 def test_delete_uncollected_competitor_and_allow_readding_same_offer(
@@ -730,6 +744,47 @@ def test_delete_during_collection_returns_conflict(
     assert response.json()["code"] == "collection_in_progress"
     with session_factory() as session:
         assert session.get(Competitor, competitor_id) is not None
+
+
+@pytest.mark.parametrize("delete_path", ["single", "batch"])
+def test_delete_during_batch_reservation_returns_conflict_and_recovers(
+    client: tuple[TestClient, sessionmaker[Session]], delete_path: str,
+) -> None:
+    test_client, session_factory = client
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/123456789.html"}
+    ).json()["id"]
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with session_factory() as session:
+        session.add(CollectionRun(
+            competitor_id=competitor_id,
+            started_at=now,
+            finished_at=now,
+            status="success",
+        ))
+        session.commit()
+
+    assert BATCH_RUNTIME.reserve([competitor_id]) is True
+    try:
+        response = (
+            test_client.delete(f"/api/competitors/{competitor_id}")
+            if delete_path == "single"
+            else test_client.post("/api/competitors/delete-batch", json={"competitor_ids": [competitor_id]})
+        )
+        assert response.status_code == 409
+        assert response.json()["code"] == "collection_in_progress"
+        with session_factory() as session:
+            assert session.get(Competitor, competitor_id) is not None
+            assert session.scalar(select(CollectionRun)) is not None
+    finally:
+        BATCH_RUNTIME.finish("success")
+
+    response = (
+        test_client.delete(f"/api/competitors/{competitor_id}")
+        if delete_path == "single"
+        else test_client.post("/api/competitors/delete-batch", json={"competitor_ids": [competitor_id]})
+    )
+    assert response.status_code == (204 if delete_path == "single" else 200)
 
 
 def test_delete_rolls_back_when_history_delete_fails(

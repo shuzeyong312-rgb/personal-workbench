@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.collection.service import (
     COLLECTION_LOCK,
+    acquire_collection_slot,
     CollectionError,
     CollectionInProgressError,
     collect_competitor,
@@ -63,7 +64,7 @@ def run_daily_collection_cycle(
         if not initially_active:
             result.skipped += 1
             continue
-        if not COLLECTION_LOCK.acquire(blocking=False):
+        if not acquire_collection_slot(collection_lock=COLLECTION_LOCK):
             result.interrupted += 1
             logger.info("daily collection competitor=%s busy", competitor_id)
             break

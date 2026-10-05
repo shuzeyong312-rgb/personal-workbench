@@ -372,10 +372,10 @@ def get_group_attention(db: Session = Depends(get_db)) -> GroupAttentionResponse
     by_group: dict[int, list[Competitor]] = defaultdict(list)
     for member in members:
         by_group[member.group_id].append(member)
-    eligible = {group.id for group in groups if any(m.group_role == "own" for m in by_group[group.id])
-                and any(m.group_role == "competitor" for m in by_group[group.id])}
+    eligible = {group.id for group in groups if any(m.ownership == "self" and m.group_role == "own" for m in by_group[group.id])
+                and any(m.ownership == "competitor" for m in by_group[group.id])}
     monitored_count = len(eligible)
-    competitor_ids = {m.id for group_id in eligible for m in by_group[group_id] if m.group_role == "competitor"}
+    competitor_ids = {m.id for group_id in eligible for m in by_group[group_id] if m.ownership == "competitor"}
     rows = list(db.scalars(select(ChangeEvent).where(
         ChangeEvent.competitor_id.in_(competitor_ids), ChangeEvent.detected_at >= start_utc,
         ChangeEvent.detected_at < end_utc,
@@ -383,7 +383,7 @@ def get_group_attention(db: Session = Depends(get_db)) -> GroupAttentionResponse
     rows = [event for event in rows if event.change_type in EVENTS]
     snapshots, sku_before = _sku_sets(db, rows)
     events_by_group: dict[int, dict[int, list[ChangeEvent]]] = defaultdict(lambda: defaultdict(list))
-    competitor_to_group = {m.id: m.group_id for m in members if m.group_role == "competitor" and m.group_id in eligible}
+    competitor_to_group = {m.id: m.group_id for m in members if m.ownership == "competitor" and m.group_id in eligible}
     for event in rows:
         group_id = competitor_to_group.get(event.competitor_id)
         if group_id is not None:
@@ -393,7 +393,7 @@ def get_group_attention(db: Session = Depends(get_db)) -> GroupAttentionResponse
     for group in groups:
         if group.id not in eligible or not events_by_group[group.id]:
             continue
-        own = next(m for m in by_group[group.id] if m.group_role == "own")
+        own = next(m for m in by_group[group.id] if m.ownership == "self" and m.group_role == "own")
         comp_events = events_by_group[group.id]
         group_events = [event for comp in comp_events.values() for event in comp]
         changed_competitors.update(comp_events)

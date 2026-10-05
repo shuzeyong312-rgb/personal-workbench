@@ -31,6 +31,7 @@ from app.collection.parser_1688 import (
 from app.collection.types import ProductData, SkuData
 from app.changes import detect_changes
 from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
+from app.ownership import apply_collected_ownership
 
 
 COLLECTION_LOCK = RLock()
@@ -68,6 +69,8 @@ class BatchRuntime:
         self.items: list[BatchItemResult] = []
         self.stop_event = Event()
         self.task: asyncio.Task[Any] | None = None
+        self._reservation_sequence = 0
+        self._active_reservation: int | None = None
 
     def is_busy(self) -> bool:
         with self._lock:
@@ -77,6 +80,8 @@ class BatchRuntime:
         with self._lock:
             if self.runner_active or self.browser_open:
                 return False
+            self._reservation_sequence += 1
+            self._active_reservation = self._reservation_sequence
             self.status = "running"
             self.outcome_code = None
             self.total = len(competitor_ids)
@@ -94,6 +99,14 @@ class BatchRuntime:
             self.stop_event = Event()
             self.task = None
             return True
+
+    def reservation_token(self) -> int | None:
+        with self._lock:
+            return self._active_reservation
+
+    def owns_reservation(self, token: int | None) -> bool:
+        with self._lock:
+            return token is not None and token == self._active_reservation and self.runner_active
 
     def attach_task(self, task: asyncio.Task[Any]) -> None:
         with self._lock:
@@ -158,6 +171,7 @@ class BatchRuntime:
             self.outcome_code = outcome_code
             self.current_competitor_id = None
             self.runner_active = False
+            self._active_reservation = None
             self.cooldown_remaining_seconds = 0
 
     def mark_verification(self) -> None:
@@ -176,6 +190,7 @@ class BatchRuntime:
     def mark_runner_stopped(self) -> None:
         with self._lock:
             self.runner_active = False
+            self._active_reservation = None
             self.browser_open = False
             self.cooldown_remaining_seconds = 0
 
@@ -225,6 +240,26 @@ class BatchRuntime:
 BATCH_RUNTIME = BatchRuntime()
 
 
+def acquire_collection_slot(
+    *,
+    batch_reservation: int | None = None,
+    runtime: BatchRuntime = BATCH_RUNTIME,
+    collection_lock: Any | None = None,
+) -> bool:
+    """Acquire the collection lock under the batch reservation protocol."""
+    lock = COLLECTION_LOCK if collection_lock is None else collection_lock
+    if not lock.acquire(blocking=False):
+        return False
+    owns_batch_reservation = runtime.owns_reservation(batch_reservation)
+    if batch_reservation is None and runtime.is_busy():
+        lock.release()
+        return False
+    if batch_reservation is not None and not owns_batch_reservation:
+        lock.release()
+        return False
+    return True
+
+
 class CompetitorNotFoundError(LookupError):
     pass
 
@@ -269,6 +304,36 @@ def collection_failure_details(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, CollectionPartialDataError):
         return "collection_partial_data", "采集结果缺少必要商品信息"
     return "collection_failed", "采集失败，请稍后重试"
+
+
+def collect_product(
+    url: str,
+    offer_id: str,
+    *,
+    browser_context: object | None = None,
+) -> ProductData:
+    """Collect and validate a product before any new monitoring row exists."""
+    try:
+        if browser_context is None:
+            product = collect_1688_product(url, offer_id)
+        else:
+            product = collect_1688_product(url, offer_id, context=browser_context)
+        if isinstance(product, ProductData) and (not isinstance(product.shop_name, str) or not product.shop_name.strip()):
+            raise CollectionError(
+                "shop_name_unavailable",
+                "无法确认店铺名称，未添加监控商品，请重试",
+            )
+        return _normalize_product(product, offer_id)
+    except OfflineProductDetected as exc:
+        raise CollectionError(
+            "shop_name_unavailable",
+            "无法确认店铺名称，未添加监控商品，请重试",
+        ) from exc
+    except CollectionError:
+        raise
+    except Exception as exc:
+        code, message = collection_failure_details(exc)
+        raise CollectionError(code, message) from exc
 
 
 def _decimal(value: Decimal | None) -> Decimal | None:
@@ -399,13 +464,15 @@ def collect_competitor(
     competitor_id: int,
     *,
     browser_context: object | None = None,
+    batch_reservation: int | None = None,
+    batch_runtime: BatchRuntime = BATCH_RUNTIME,
 ) -> CollectionResult:
     competitor = db.get(Competitor, competitor_id)
     if competitor is None:
         raise CompetitorNotFoundError
     if not competitor.is_active:
         raise CollectionError("competitor_inactive", "该竞品已停止监控，无法立即采集")
-    if not COLLECTION_LOCK.acquire(blocking=False):
+    if not acquire_collection_slot(batch_reservation=batch_reservation, runtime=batch_runtime):
         raise CollectionInProgressError
 
     competitor_id_value = competitor.id
@@ -552,6 +619,7 @@ def collect_competitor(
             competitor.status = product.product_status
             competitor.last_collected_at = product.captured_at
             competitor.updated_at = now
+            apply_collected_ownership(db, competitor, product.shop_name)
 
             run.status = "success"
             run.finished_at = now
@@ -618,13 +686,15 @@ def run_batch_collection(
     runtime: BatchRuntime = BATCH_RUNTIME,
     *,
     cooldown_seconds: float = BATCH_COOLDOWN_SECONDS,
+    batch_reservation: int | None = None,
 ) -> None:
     """Run one serial batch in one worker thread and one headed Context."""
     lock_acquired = False
     context = None
     verification_page = None
     try:
-        if not COLLECTION_LOCK.acquire(blocking=False):
+        batch_reservation = batch_reservation or runtime.reservation_token()
+        if not acquire_collection_slot(batch_reservation=batch_reservation, runtime=runtime):
             runtime.finish("collection_in_progress")
             return
         lock_acquired = True
@@ -655,6 +725,8 @@ def run_batch_collection(
                                 db,
                                 competitor_id,
                                 browser_context=context,
+                                batch_reservation=batch_reservation,
+                                batch_runtime=runtime,
                             )
                     except CollectionError as exc:
                         if exc.code == "1688_verification_required":
@@ -741,9 +813,16 @@ def start_batch_task(
     session_factory: Callable[[], Session],
     competitor_ids: list[int],
     runtime: BatchRuntime = BATCH_RUNTIME,
+    batch_reservation: int | None = None,
 ) -> asyncio.Task[Any]:
     task = asyncio.create_task(
-        asyncio.to_thread(run_batch_collection, session_factory, competitor_ids, runtime)
+        asyncio.to_thread(
+            run_batch_collection,
+            session_factory,
+            competitor_ids,
+            runtime,
+            batch_reservation=batch_reservation,
+        )
     )
     runtime.attach_task(task)
     return task

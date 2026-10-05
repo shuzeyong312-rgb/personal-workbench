@@ -17,11 +17,14 @@ from app.collection.service import (
     CollectionResult,
     BATCH_RUNTIME,
     COLLECTION_LOCK,
+    acquire_collection_slot,
     collect_competitor,
+    collect_product,
     start_batch_task,
 )
 from app.database import get_db
 from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
+from app.ownership import get_own_shop_name, identify_ownership
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
@@ -79,6 +82,10 @@ class CompetitorResponse(BaseModel):
     url: str
     group_id: int | None
     group_role: Literal["competitor", "own"]
+    ownership: Literal["self", "competitor"]
+    title: str | None = None
+    shop_name: str | None = None
+    main_image_url: str | None = None
     status: str
     is_active: bool
     created_at: datetime
@@ -111,6 +118,7 @@ class CompetitorListResponse(BaseModel):
     url: str
     group_id: int | None
     group_role: Literal["competitor", "own"]
+    ownership: Literal["self", "competitor"]
     title: str | None
     shop_name: str | None
     main_image_url: str | None
@@ -369,6 +377,7 @@ def _competitor_payload(
         "url": competitor.url,
         "group_id": competitor.group_id,
         "group_role": competitor.group_role,
+        "ownership": competitor.ownership,
         "title": competitor.title,
         "shop_name": competitor.shop_name,
         "main_image_url": competitor.main_image_url,
@@ -414,10 +423,18 @@ def _collection_run_payload(result: CollectionResult) -> dict[str, object]:
 
 
 @router.get("", response_model=list[CompetitorListResponse])
-def list_competitors(db: Session = Depends(get_db)) -> list[dict[str, object]]:
+def list_competitors(
+    ownership: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[dict[str, object]]:
+    if ownership is not None and ownership not in {"self", "competitor"}:
+        raise error("invalid_ownership", "ownership 必须是 self 或 competitor", status.HTTP_422_UNPROCESSABLE_CONTENT)
+    query = select(Competitor)
+    if ownership is not None:
+        query = query.where(Competitor.ownership == ownership)
     competitors = list(
         db.scalars(
-            select(Competitor).order_by(
+            query.order_by(
                 Competitor.created_at.desc(),
                 Competitor.id.desc(),
             )
@@ -527,32 +544,38 @@ async def collect_batch(
             ).all()
         )
 
-    if not BATCH_RUNTIME.reserve(competitor_ids):
+    if not acquire_collection_slot():
         raise error(
             "collection_in_progress",
             "已有竞品正在采集，请稍后重试",
             status.HTTP_409_CONFLICT,
         )
+    reservation_token: int | None = None
+    try:
+        if not BATCH_RUNTIME.reserve(competitor_ids):
+            raise error(
+                "collection_in_progress",
+                "已有竞品正在采集，请稍后重试",
+                status.HTTP_409_CONFLICT,
+            )
+        reservation_token = BATCH_RUNTIME.reservation_token()
+        if not competitor_ids:
+            BATCH_RUNTIME.finish("success")
+            return BATCH_RUNTIME.snapshot()
 
-    if not COLLECTION_LOCK.acquire(blocking=False):
-        BATCH_RUNTIME.finish("collection_in_progress")
-        raise error(
-            "collection_in_progress",
-            "已有竞品正在采集，请稍后重试",
-            status.HTTP_409_CONFLICT,
-        )
-    COLLECTION_LOCK.release()
+        bind = db.get_bind()
 
-    if not competitor_ids:
-        BATCH_RUNTIME.finish("success")
-        return BATCH_RUNTIME.snapshot()
+        def session_factory() -> Session:
+            return Session(bind=bind)
 
-    bind = db.get_bind()
+    finally:
+        COLLECTION_LOCK.release()
 
-    def session_factory() -> Session:
-        return Session(bind=bind)
-
-    start_batch_task(session_factory, competitor_ids)
+    try:
+        start_batch_task(session_factory, competitor_ids, batch_reservation=reservation_token)
+    except Exception:
+        BATCH_RUNTIME.finish("collect_failed")
+        raise
     return BATCH_RUNTIME.snapshot()
 
 
@@ -572,39 +595,96 @@ def create_competitor(payload: CreateCompetitorRequest, db: Session = Depends(ge
             status.HTTP_400_BAD_REQUEST,
         ) from exc
 
+    if get_own_shop_name(db) is None:
+        raise error(
+            "own_shop_name_not_configured",
+            "请先在系统设置中配置我方店铺名称",
+            status.HTTP_409_CONFLICT,
+        )
+
     if payload.group_id is not None and db.get(CompetitorGroup, payload.group_id) is None:
         raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
 
     if db.scalar(select(Competitor).where(Competitor.platform == "1688", Competitor.offer_id == offer_id)):
         raise error("competitor_already_exists", "该 1688 商品已经添加", status.HTTP_409_CONFLICT)
 
-    now = datetime.now(timezone.utc)
-    competitor = Competitor(
-        platform="1688",
-        offer_id=offer_id,
-        url=normalized_url,
-        group_id=payload.group_id,
-        status="unknown",
-        is_active=True,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(competitor)
+    bind = db.get_bind()
+    db.rollback()
+    if not acquire_collection_slot():
+        raise error("collection_in_progress", "已有商品正在采集，请稍后重试", status.HTTP_409_CONFLICT)
+
     try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        existing = db.scalar(
-            select(Competitor).where(
-                Competitor.platform == "1688",
-                Competitor.offer_id == offer_id,
-            )
-        )
-        if existing:
-            raise error("competitor_already_exists", "该 1688 商品已经添加", status.HTTP_409_CONFLICT)
-        raise
-    db.refresh(competitor)
-    return competitor
+        try:
+            product = collect_product(normalized_url, offer_id)
+        except CollectionError as exc:
+            raise error(
+                exc.code,
+                exc.message,
+                _COLLECTION_STATUS_CODES.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR),
+            ) from exc
+
+        with Session(bind=bind, expire_on_commit=False) as final_db:
+            final_shop_name = get_own_shop_name(final_db)
+            if final_shop_name is None:
+                raise error("own_shop_name_not_configured", "请先在系统设置中配置我方店铺名称", status.HTTP_409_CONFLICT)
+            if final_db.scalar(select(Competitor).where(Competitor.platform == "1688", Competitor.offer_id == offer_id)):
+                raise error("competitor_already_exists", "该 1688 商品已经添加", status.HTTP_409_CONFLICT)
+            if payload.group_id is not None and final_db.get(CompetitorGroup, payload.group_id) is None:
+                raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
+
+            resolved_ownership = identify_ownership(product.shop_name, final_shop_name)
+            if resolved_ownership is None:
+                raise error("shop_name_unavailable", "无法确认店铺名称，未添加监控商品，请重试", status.HTTP_422_UNPROCESSABLE_CONTENT)
+            if resolved_ownership == "self" and payload.group_id is not None:
+                current_own = final_db.scalar(select(Competitor).where(Competitor.group_id == payload.group_id, Competitor.group_role == "own"))
+                if current_own is not None:
+                    raise error("own_product_already_bound", "该竞品组已绑定我方商品", status.HTTP_409_CONFLICT)
+
+            now = datetime.now(timezone.utc)
+            try:
+                competitor = Competitor(
+                    platform="1688", offer_id=offer_id, url=normalized_url,
+                    group_id=payload.group_id, group_role="own" if resolved_ownership == "self" and payload.group_id is not None else "competitor",
+                    ownership=resolved_ownership, title=product.title, shop_name=product.shop_name,
+                    main_image_url=product.main_image_url, status=product.product_status, is_active=True,
+                    created_at=now, updated_at=now, last_collected_at=product.captured_at,
+                )
+                final_db.add(competitor)
+                final_db.flush()
+                snapshot = ProductSnapshot(
+                    competitor_id=competitor.id, captured_at=product.captured_at, title=product.title,
+                    shop_name=product.shop_name, main_image_url=product.main_image_url, image_urls=product.image_urls,
+                    price_min=product.price_min, price_max=product.price_max, min_order_quantity=product.min_order_quantity,
+                    product_status=product.product_status, collection_source=product.collection_source,
+                    skus=[SkuSnapshot(sku_id=sku.sku_id, sku_name=sku.sku_name, stock=sku.stock, price=sku.price) for sku in product.skus],
+                )
+                final_db.add(snapshot)
+                final_db.add(CollectionRun(competitor_id=competitor.id, started_at=now, finished_at=now, status="success"))
+                final_db.commit()
+            except IntegrityError as exc:
+                final_db.rollback()
+                existing = final_db.scalar(select(Competitor).where(Competitor.platform == "1688", Competitor.offer_id == offer_id))
+                if existing:
+                    raise error("competitor_already_exists", "该 1688 商品已经添加", status.HTTP_409_CONFLICT) from exc
+                if resolved_ownership == "self" and payload.group_id is not None:
+                    current_own = final_db.scalar(
+                        select(Competitor).where(
+                            Competitor.group_id == payload.group_id,
+                            Competitor.ownership == "self",
+                            Competitor.group_role == "own",
+                        )
+                    )
+                    if current_own is not None:
+                        raise error("own_product_already_bound", "该竞品组已绑定我方商品", status.HTTP_409_CONFLICT) from exc
+                raise error(
+                    "collection_save_failed",
+                    "商品数据保存失败，请稍后重试",
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                ) from exc
+            final_db.refresh(competitor)
+            return competitor
+    finally:
+        COLLECTION_LOCK.release()
 
 
 @router.patch("/{competitor_id}/monitoring", response_model=CompetitorResponse)
@@ -670,11 +750,49 @@ def update_competitor_group_assignment(
     if payload.group_id is not None and db.get(CompetitorGroup, payload.group_id) is None:
         raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
 
-    if competitor.group_id != payload.group_id and competitor.group_role == "own":
+    if competitor.group_id == payload.group_id:
+        db.refresh(competitor)
+        return competitor
+    if competitor.ownership == "self":
+        if payload.group_id is None:
+            competitor.group_id = None
+            competitor.group_role = "competitor"
+        else:
+            current_own = db.scalar(
+                select(Competitor).where(
+                    Competitor.group_id == payload.group_id,
+                    Competitor.group_role == "own",
+                    Competitor.id != competitor.id,
+                )
+            )
+            if current_own is not None:
+                raise error("own_product_already_bound", "该竞品组已绑定我方商品", status.HTTP_409_CONFLICT)
+            competitor.group_id = payload.group_id
+            competitor.group_role = "own"
+    else:
+        competitor.group_id = payload.group_id
         competitor.group_role = "competitor"
-    competitor.group_id = payload.group_id
     competitor.updated_at = datetime.now(timezone.utc)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if competitor.ownership == "self" and payload.group_id is not None:
+            current_own = db.scalar(
+                select(Competitor).where(
+                    Competitor.group_id == payload.group_id,
+                    Competitor.ownership == "self",
+                    Competitor.group_role == "own",
+                    Competitor.id != competitor_id,
+                )
+            )
+            if current_own is not None:
+                raise error("own_product_already_bound", "该竞品组已绑定我方商品", status.HTTP_409_CONFLICT) from exc
+        raise error(
+            "competitor_group_update_failed",
+            "竞品组更新失败，请稍后重试",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
     db.refresh(competitor)
     return competitor
 
@@ -699,7 +817,7 @@ def update_competitor_group_batch(
             detail={"code": "competitor_not_found", "message": "部分竞品不存在", "competitor_ids": missing_ids},
         )
 
-    own_ids = [competitor_id for competitor_id in competitor_ids if competitors[competitor_id].group_role == "own"]
+    own_ids = [competitor_id for competitor_id in competitor_ids if competitors[competitor_id].ownership == "self"]
     if own_ids:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -735,7 +853,7 @@ def _delete_competitor_history(db: Session, competitors: list[Competitor]) -> No
 def delete_competitor(competitor_id: int, db: Session = Depends(get_db)) -> None:
     if db.get(Competitor, competitor_id) is None:
         raise error("competitor_not_found", "竞品不存在", status.HTTP_404_NOT_FOUND)
-    if not COLLECTION_LOCK.acquire(blocking=False):
+    if not acquire_collection_slot():
         raise error(
             "collection_in_progress",
             "已有竞品正在采集，请稍后重试",
@@ -768,7 +886,7 @@ def delete_competitors_batch(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     competitor_ids = _unique_positive_ids(payload.competitor_ids)
-    if not COLLECTION_LOCK.acquire(blocking=False):
+    if not acquire_collection_slot():
         raise error(
             "collection_in_progress",
             "已有竞品正在采集，请稍后重试",
@@ -790,7 +908,7 @@ def delete_competitors_batch(
         own_ids = [
             competitor_id
             for competitor_id in competitor_ids
-            if competitors_by_id[competitor_id].group_role == "own"
+            if competitors_by_id[competitor_id].ownership == "self"
         ]
         if own_ids:
             raise HTTPException(
@@ -829,6 +947,7 @@ _COLLECTION_STATUS_CODES = {
     "collection_parse_failed": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "collection_partial_data": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "offer_id_mismatch": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "shop_name_unavailable": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "collection_save_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "collection_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
 }

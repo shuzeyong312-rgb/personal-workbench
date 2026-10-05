@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint, event, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -21,9 +21,12 @@ class Competitor(Base):
         UniqueConstraint("platform", "offer_id", name="uq_competitors_platform_offer_id"),
         CheckConstraint("status IN ('unknown', 'active', 'offline')", name="ck_competitors_status"),
         CheckConstraint("group_role IN ('competitor', 'own')", name="ck_competitors_group_role"),
+        CheckConstraint("ownership IN ('self', 'competitor')", name="ck_competitors_ownership"),
         CheckConstraint(
-            "group_id IS NOT NULL OR group_role = 'competitor'",
-            name="ck_competitors_own_requires_group",
+            "(ownership = 'competitor' AND group_role = 'competitor') OR "
+            "(ownership = 'self' AND ((group_id IS NULL AND group_role = 'competitor') OR "
+            "(group_id IS NOT NULL AND group_role = 'own')))" ,
+            name="ck_competitors_ownership_role",
         ),
         Index(
             "uq_competitors_group_own",
@@ -37,6 +40,7 @@ class Competitor(Base):
     group_id: Mapped[int | None] = mapped_column(
         ForeignKey("competitor_groups.id", name="fk_competitors_group_id_competitor_groups"), nullable=True
     )
+    ownership: Mapped[str] = mapped_column(String(16), nullable=False, default="competitor", server_default="competitor")
     group_role: Mapped[str] = mapped_column(String(16), nullable=False, default="competitor", server_default="competitor")
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
     offer_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -49,6 +53,29 @@ class Competitor(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+@event.listens_for(Competitor, "before_insert")
+def _preserve_legacy_own_fixture_state(_mapper, _connection, target: Competitor) -> None:
+    # Existing ORM callers that still construct the pre-ownership own role are
+    # upgraded to the equivalent ownership fact before the database constraint runs.
+    if target.group_role == "own" and target.ownership != "self":
+        target.ownership = "self"
+
+
+@event.listens_for(Competitor, "before_update")
+def _preserve_legacy_own_update_state(_mapper, _connection, target: Competitor) -> None:
+    # Keep pre-ownership ORM fixtures valid while all product-facing write
+    # paths continue to derive group_role from ownership explicitly.
+    if target.group_role == "own" and target.ownership != "self":
+        target.ownership = "self"
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class ProductSnapshot(Base):

@@ -8,7 +8,7 @@ type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
 export type BatchStatus = "idle" | "running" | "cooling_down" | "completed" | "verification_required";
-export type Page = "dashboard" | "competitors" | "detail" | "groups" | "group-detail";
+export type Page = "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "settings";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
 type BatchAction = "selected" | "all_active" | "group" | "stop" | "resume" | "delete";
@@ -45,6 +45,7 @@ const lifecycleErrorMessages: Record<string, string> = {
 const groupAssignmentErrorMessages: Record<string, string> = {
   competitor_not_found: "竞品不存在",
   competitor_group_not_found: "竞品组不存在",
+  own_product_already_bound: "该竞品组已绑定我方商品，请刷新后重试。",
 };
 
 export type Competitor = {
@@ -54,6 +55,7 @@ export type Competitor = {
   url: string;
   group_id: number | null;
   group_role: GroupRole;
+  ownership: "self" | "competitor";
   title: string | null;
   shop_name: string | null;
   main_image_url: string | null;
@@ -69,7 +71,7 @@ export type Competitor = {
   latest_change: Change | null;
 };
 
-type LifecycleCompetitor = Pick<Competitor, "id" | "title" | "offer_id" | "is_active" | "group_role">;
+type LifecycleCompetitor = Pick<Competitor, "id" | "title" | "offer_id" | "is_active" | "group_role" | "ownership">;
 
 export type CompetitorFilters = {
   search: string;
@@ -234,6 +236,7 @@ export type DashboardData = {
   date: string;
   stats: {
     monitored_competitors: number;
+    active_monitored_products?: number;
     changed_competitors: number;
     change_events: number;
     price_changed_competitors: number;
@@ -300,7 +303,7 @@ export type DailyTrendPoint = {
 
 export type CompetitorDetail = {
   range_days: number;
-  competitor: Omit<Competitor, "latest_snapshot" | "latest_change">;
+  competitor: Omit<Competitor, "latest_snapshot" | "latest_change"> & { ownership: "self" | "competitor" };
   latest_snapshot: {
     id: number;
     captured_at: string;
@@ -502,33 +505,53 @@ export function mergeCompetitorUrlText(currentValue: string, clipboardValue: str
   return [...new Set([...parseCompetitorUrls(currentValue), ...parseCompetitorUrls(clipboardValue)])].join("\n");
 }
 
-export type AddFailure = { url: string; code: "invalid_competitor_url" | "competitor_already_exists" | "competitor_group_not_found" | "server-error"; reason: string };
+export type AddFailureCode = "invalid_competitor_url" | "competitor_already_exists" | "competitor_group_not_found" | "own_shop_name_not_configured" | "shop_name_unavailable" | "own_product_already_bound" | "collection_in_progress" | "1688_login_required" | "1688_verification_required" | "collection_timeout" | "collection_parse_failed" | "collection_partial_data" | "offer_id_mismatch" | "collection_save_failed" | "collection_failed" | "validation-error" | "http-error" | "network-error" | "timeout" | "server-error";
+export type AddFailure = { url: string; code: AddFailureCode; reason: string };
 export type AddSubmissionResult = { succeeded: string[]; failures: AddFailure[] };
 
 export function getAddFailureReason(code?: string): string {
   if (code === "invalid_competitor_url") return "链接格式无效";
   if (code === "competitor_already_exists") return "已存在";
   if (code === "competitor_group_not_found") return "竞品组不存在";
+  if (code === "own_shop_name_not_configured") return "请先在系统设置中配置我方店铺名称";
+  if (code === "shop_name_unavailable") return "无法确认店铺名称，未添加监控商品，请重试";
+  if (code === "own_product_already_bound") return "该竞品组已绑定我方商品";
+  if (code === "collection_in_progress") return "已有商品正在采集，请稍后重试";
+  if (code === "1688_login_required") return "1688 登录状态已失效，请重新登录后再试";
+  if (code === "1688_verification_required") return "1688 当前需要完成安全验证";
+  if (code === "collection_timeout" || code === "timeout") return "商品页面加载超时，请稍后重试";
+  if (code === "collection_parse_failed") return "无法解析该商品页面，请稍后重试";
+  if (code === "collection_partial_data") return "商品数据不完整，暂时无法采集";
+  if (code === "offer_id_mismatch") return "采集到的商品与当前链接不匹配";
+  if (code === "collection_save_failed") return "商品数据保存失败，请稍后重试";
+  if (code === "validation-error") return "请求参数无效，请检查后重试";
+  if (code === "http-error") return "服务器请求失败，请稍后重试";
+  if (code === "network-error") return "无法连接服务，请检查后端是否正常运行后重试";
   return "服务暂时不可用，请稍后重试";
 }
 
 type CompetitorRequest = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export async function addCompetitorsSequentially(urls: readonly string[], groupId: number | null, request: CompetitorRequest = fetch, onProgress?: (completed: number, total: number) => void): Promise<AddSubmissionResult> {
+export async function addCompetitorsSequentially(urls: readonly string[], groupId: number | null, request: CompetitorRequest = fetch, onProgress?: (completed: number, total: number) => void, onSuccess?: (url: string, body: { ownership?: "self" | "competitor"; title?: string | null }) => void): Promise<AddSubmissionResult> {
   const succeeded: string[] = [];
   const failures: AddFailure[] = [];
   for (const url of urls) {
     try {
       const response = await request("/api/competitors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, group_id: groupId }) });
-      if (response.ok) succeeded.push(url);
+      if (response.ok) {
+        succeeded.push(url);
+        try { onSuccess?.(url, await response.json() as { ownership?: "self" | "competitor"; title?: string | null }); } catch { onSuccess?.(url, {}); }
+      }
       else {
         let code: string | undefined;
         try { code = (await response.json() as { code?: string }).code; } catch { /* use the stable fallback below */ }
-        const failureCode = code === "invalid_competitor_url" || code === "competitor_already_exists" || code === "competitor_group_not_found" ? code : "server-error";
+        const knownCode = code && ["invalid_competitor_url", "competitor_already_exists", "competitor_group_not_found", "own_shop_name_not_configured", "shop_name_unavailable", "own_product_already_bound", "collection_in_progress", "1688_login_required", "1688_verification_required", "collection_timeout", "collection_parse_failed", "collection_partial_data", "offer_id_mismatch", "collection_save_failed", "collection_failed"] .includes(code) ? code as AddFailureCode : undefined;
+        const failureCode: AddFailureCode = knownCode || (response.status >= 400 && response.status < 500 ? response.status === 400 || response.status === 422 ? "validation-error" : "http-error" : "server-error");
         failures.push({ url, code: failureCode, reason: getAddFailureReason(failureCode) });
       }
-    } catch {
-      failures.push({ url, code: "server-error", reason: getAddFailureReason() });
+    } catch (error) {
+      const failureCode: AddFailureCode = error instanceof DOMException && error.name === "AbortError" ? "timeout" : "network-error";
+      failures.push({ url, code: failureCode, reason: getAddFailureReason(failureCode) });
     }
     onProgress?.(succeeded.length + failures.length, urls.length);
   }
@@ -955,11 +978,12 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
       <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⌂</span>首页</button>
       <div className="nav-group"><div className="nav-group-title"><span className="nav-icon" aria-hidden="true">⌁</span>竞品监控<span className="nav-chevron" aria-hidden="true">⌃</span></div>
         <button className={"nav-item nav-child" + (page === "dashboard" ? " nav-active" : "")} onClick={() => onNavigate("dashboard")} aria-current={page === "dashboard" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
+        <button className={"nav-item nav-child" + (page === "own-products" ? " nav-active" : "")} onClick={() => onNavigate("own-products")} aria-current={page === "own-products" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />我方商品</button>
         <button className={"nav-item nav-child" + (page === "competitors" || page === "detail" ? " nav-active" : "")} onClick={() => onNavigate("competitors")} aria-current={page === "competitors" || page === "detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品列表</button>
         <button className={"nav-item nav-child" + (page === "groups" || page === "group-detail" ? " nav-active" : "")} onClick={() => onNavigate("groups")} aria-current={page === "groups" || page === "group-detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品分组</button>
-        <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />采集记录</button>
+        <button className="nav-item nav-child nav-disabled" disabled><span className="nav-dot" aria-hidden="true" />采集任务</button>
       </div>
-      <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">▣</span>自动上架</button><button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⚙</span>系统设置</button>
+      <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">▣</span>自动上架</button><button className={"nav-item" + (page === "settings" ? " nav-active" : "")} onClick={() => onNavigate("settings")} aria-current={page === "settings" ? "page" : undefined}><span className="nav-icon" aria-hidden="true">⚙</span>系统设置</button>
     </nav>
     <div className="sidebar-note"><strong>让工作更高效</strong><span>v1.0.0</span></div>
   </aside>;
@@ -974,10 +998,11 @@ function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
 
 export function ConfirmDialog({ action, competitor, submitting, error, onClose, onConfirm }: { action: "stop" | "delete"; competitor: LifecycleCompetitor; submitting: boolean; error: string | null; onClose: () => void; onConfirm: () => void }) {
   const isDelete = action === "delete";
+  const isSelf = competitor.ownership === "self";
   const productLabel = competitor.title?.trim() || competitor.offer_id;
   return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="lifecycle-dialog-title">
-    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="lifecycle-dialog-title">{isDelete ? "永久删除竞品" : "停止监控"}</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
-    {isDelete ? <p className="dialog-description">删除后，该竞品的历史快照、SKU、变化记录和采集记录都会永久删除，无法恢复。<br />当前商品：{productLabel}</p> : <p className="dialog-description">停止后将不再自动采集该竞品，但历史数据会保留，之后可以恢复监控。</p>}
+    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="lifecycle-dialog-title">{isDelete ? `永久删除${isSelf ? "我方商品" : "竞品"}` : "停止监控"}</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
+    {isDelete ? <p className="dialog-description">删除后，该商品的历史快照、SKU、变化记录和采集记录都会永久删除，无法恢复。<br />当前商品：{productLabel}</p> : <p className="dialog-description">停止后将不再自动采集该商品，但历史数据会保留，之后可以恢复监控。</p>}
     {error && <div className="feedback feedback-server-error" role="alert">{error}</div>}
     <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="button" className={isDelete ? "danger-button" : "primary-button"} onClick={onConfirm} disabled={submitting}>{isDelete ? "确认删除" : "停止监控"}</button></div>
   </section></div>;
@@ -1000,10 +1025,6 @@ function GroupMoreMenu({ ownProduct, onRename, onDelete, onOwnProduct }: { ownPr
   return <div className="group-more-menu">
     <button type="button" className="detail-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((current) => !current)}>更多</button>
     {open && <div className="group-more-popover" role="menu">
-      {ownProduct ? <>
-        <button type="button" role="menuitem" onClick={() => { setOpen(false); onOwnProduct("replace"); }}>更换我方商品</button>
-        <button type="button" role="menuitem" onClick={() => { setOpen(false); onOwnProduct("unbind"); }}>解除我方商品</button>
-      </> : <button type="button" role="menuitem" onClick={() => { setOpen(false); onOwnProduct("bind"); }}>绑定我方商品</button>}
       <button type="button" role="menuitem" onClick={() => { setOpen(false); onRename(); }}>重命名竞品组</button>
       <button type="button" role="menuitem" className="more-menu-danger" onClick={() => { setOpen(false); onDelete(); }}>删除竞品组</button>
     </div>}
@@ -1244,7 +1265,8 @@ type ListPageProps = {
   status: ListStatus;
   error: string | null;
   onRetry: () => void;
-  onAdd: () => void;
+  onAdd?: () => void;
+  ownership?: "self" | "competitor";
   batchState?: BatchState;
   selectedIds?: Set<number>;
   onToggleSelected?: (competitorId: number) => void;
@@ -1252,13 +1274,18 @@ type ListPageProps = {
   onReconcileSelection?: (visibleIds: number[]) => void;
   onBatchAction?: (mode: BatchAction, selectedCompetitorIds?: number[]) => void;
   onOpenDetail?: (competitorId: number) => void;
+  onOpenGroupAssignment?: (competitor: Competitor) => void;
   onNavigate?: (page: Page) => void;
   initialGroupFilter?: InitialGroupFilter;
   navigationVersion?: number;
   paginationResetVersion?: number;
 };
 
-export function ListPage({ competitors, groups, status, error, onRetry, onAdd, batchState = idleBatchState, selectedIds = new Set<number>(), onToggleSelected = noop, onToggleAll = noop, onReconcileSelection = noop, onBatchAction = noop, onOpenDetail, onNavigate, initialGroupFilter = null, navigationVersion = 0, paginationResetVersion = 0 }: ListPageProps) {
+function isSelfProduct(competitor: Competitor): boolean {
+  return competitor.ownership === "self";
+}
+
+export function ListPage({ competitors, groups, status, error, onRetry, onAdd = noop, ownership = "competitor", batchState = idleBatchState, selectedIds = new Set<number>(), onToggleSelected = noop, onToggleAll = noop, onReconcileSelection = noop, onBatchAction = noop, onOpenDetail, onOpenGroupAssignment = noop, onNavigate, initialGroupFilter = null, navigationVersion = 0, paginationResetVersion = 0 }: ListPageProps) {
   const [batchMenuOpen, setBatchMenuOpen] = useState(false);
   const [filters, setFilters] = useState<CompetitorFilters>(defaultCompetitorFilters);
   const [currentPage, setCurrentPage] = useState(1);
@@ -1267,15 +1294,15 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, b
   const pagination = paginateCompetitors(filteredCompetitors, currentPage);
   const pagedCompetitors = pagination.items;
   const collectedCount = filteredCompetitors.filter((item) => item.last_collected_at !== null).length;
-  const activeCompetitorCount = countActiveCompetitors(competitors);
   const selectedFilteredCompetitors = filteredCompetitors.filter((item) => selectedIds.has(item.id));
   const selectedCount = selectedFilteredCompetitors.length;
   const selectedActiveCompetitors = selectedFilteredCompetitors.filter((item) => item.is_active);
   const selectedActiveCount = selectedActiveCompetitors.length;
   const selectedInactiveCompetitors = selectedFilteredCompetitors.filter((item) => !item.is_active);
-  const selectedGroupCompetitors = selectedFilteredCompetitors.filter((item) => item.group_role === "competitor");
+  const selfPage = ownership === "self";
+  const selectedGroupCompetitors = selectedFilteredCompetitors.filter((item) => !isSelfProduct(item));
   const selectedGroupCount = selectedGroupCompetitors.length;
-  const selectedOwnCount = selectedFilteredCompetitors.filter((item) => item.group_role === "own").length;
+  const selectedOwnCount = selectedFilteredCompetitors.filter(isSelfProduct).length;
   const batchBusy = batchState.runner_active || batchState.browser_open || batchState.status === "running" || batchState.status === "cooling_down";
   const pageIds = pagedCompetitors.map((item) => item.id);
   const selectedPageCount = pageIds.filter((id) => selectedIds.has(id)).length;
@@ -1306,8 +1333,8 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, b
     setCurrentPage(1);
   }, [paginationResetVersion]);
   return (
-    <AppShell page="competitors" onNavigate={onNavigate || (() => undefined)} breadcrumb="竞品列表">
-        <header className="page-header"><div><h1>竞品列表</h1><p className="page-description">查看当前已添加的 1688 竞品，并管理监控对象。</p></div><div className="page-actions"><div className="batch-menu"><button type="button" className="secondary-button batch-trigger" aria-haspopup="menu" aria-expanded={batchMenuOpen} onClick={() => setBatchMenuOpen((open) => !open)} disabled={batchBusy}>批量操作（{selectedCount}） <span aria-hidden="true">▼</span></button>{batchMenuOpen && <div className="batch-menu-popover" role="menu"><button type="button" role="menuitem" disabled={selectedActiveCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("selected", selectedActiveCompetitors.map((item) => item.id)); }}>采集选中（{selectedActiveCount}）</button>{selectedCount > selectedActiveCount && <span className="batch-menu-hint">已停止监控的商品不参与采集</span>}<button type="button" role="menuitem" disabled={selectedGroupCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("group", selectedFilteredCompetitors.map((item) => item.id)); }}>设置分组（{selectedGroupCount}）</button><span className="batch-menu-divider" role="separator" /><button type="button" role="menuitem" disabled={selectedActiveCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("stop", selectedFilteredCompetitors.map((item) => item.id)); }}>停止监控（{selectedActiveCount}）</button><button type="button" role="menuitem" disabled={selectedInactiveCompetitors.length === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("resume", selectedFilteredCompetitors.map((item) => item.id)); }}>恢复监控（{selectedInactiveCompetitors.length}）</button><span className="batch-menu-divider" role="separator" /><button type="button" role="menuitem" className="batch-menu-danger" disabled={selectedGroupCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("delete", selectedFilteredCompetitors.map((item) => item.id)); }}>删除竞品（{selectedGroupCount}）</button><span className="batch-menu-divider" role="separator" /><button type="button" role="menuitem" disabled={batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("all_active"); }}>采集全部监控中（{activeCompetitorCount}）</button></div>}</div><button className="primary-button" onClick={onAdd} disabled={batchBusy}>添加竞品</button></div></header>
+    <AppShell page={ownership === "self" ? "own-products" : "competitors"} onNavigate={onNavigate || (() => undefined)} breadcrumb={ownership === "self" ? "我方商品" : "竞品列表"}>
+        <header className="page-header"><div><h1>{selfPage ? "我方商品" : "竞品列表"}</h1><p className="page-description">{selfPage ? "查看已识别为我方店铺的监控商品，并管理采集与竞品组关系。" : "查看当前已添加的 1688 竞品，并管理监控对象。"}</p></div><div className="page-actions"><div className="batch-menu"><button type="button" className="secondary-button batch-trigger" aria-haspopup="menu" aria-expanded={batchMenuOpen} onClick={() => setBatchMenuOpen((open) => !open)} disabled={batchBusy}>批量操作（{selectedCount}） <span aria-hidden="true">▼</span></button>{batchMenuOpen && <div className="batch-menu-popover" role="menu">{!selfPage && <><button type="button" role="menuitem" disabled={selectedGroupCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("group", selectedFilteredCompetitors.map((item) => item.id)); }}>设置分组（{selectedGroupCount}）</button><span className="batch-menu-divider" role="separator" /></>}<button type="button" role="menuitem" disabled={selectedActiveCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("stop", selectedFilteredCompetitors.map((item) => item.id)); }}>停止监控（{selectedActiveCount}）</button><button type="button" role="menuitem" disabled={selectedInactiveCompetitors.length === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("resume", selectedFilteredCompetitors.map((item) => item.id)); }}>恢复监控（{selectedInactiveCompetitors.length}）</button>{!selfPage && <><span className="batch-menu-divider" role="separator" /><button type="button" role="menuitem" className="batch-menu-danger" disabled={selectedGroupCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("delete", selectedFilteredCompetitors.map((item) => item.id)); }}>删除竞品（{selectedGroupCount}）</button></>}</div>}</div></div></header>
         {batchState.status === "running" && <div className="batch-status-panel batch-status-running" role="status">采集中 {batchState.completed} / {batchState.total} · 成功 {batchState.succeeded} · 失败 {batchState.failed}</div>}
         {batchState.status === "cooling_down" && <div className="batch-status-panel batch-status-cooling_down" role="status">1688 验证已触发，浏览器已自动关闭。将在 {formatBatchCooldown(batchState.cooldown_remaining_seconds)} 后自动继续采集（自动恢复 {batchState.auto_resume_attempt}/{batchState.auto_resume_max}）。<span>已完成 {batchState.completed} / {batchState.total}，剩余 {batchState.remaining}</span></div>}
         {batchState.status === "completed" && <div className="batch-status-panel" role="status">采集完成：成功 {batchState.succeeded}，失败 {batchState.failed}</div>}
@@ -1320,21 +1347,21 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd, b
           <button type="button" className="text-button" onClick={resetFilters}>重置</button>
         </section>
         <section className="stats-strip" aria-label="列表统计">
-          <div className="stat-total"><strong>共 {status === "ready" ? filteredCompetitors.length : "—"} 个竞品</strong></div>
+          <div className="stat-total"><strong>共 {status === "ready" ? filteredCompetitors.length : "—"} 个{selfPage ? "我方商品" : "竞品"}</strong></div>
           <div className="stat-item"><span>已采集数量</span><strong>{status === "ready" ? collectedCount : "—"}</strong></div>
           <div className="stat-item"><span>未采集数量</span><strong>{status === "ready" ? filteredCompetitors.length - collectedCount : "—"}</strong></div>
         </section>
         <section className="table-card">
-          <div className="table-heading"><div><h2>全部竞品</h2><span>按添加时间倒序展示</span></div><span className="table-count">{status === "ready" ? filteredCompetitors.length + " 个商品" : status === "loading" ? "加载中" : "—"}</span></div>
-          {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载竞品列表…</strong></div>}
+          <div className="table-heading"><div><h2>{selfPage ? "全部我方商品" : "全部竞品"}</h2><span>按添加时间倒序展示</span></div><span className="table-count">{status === "ready" ? filteredCompetitors.length + " 个商品" : status === "loading" ? "加载中" : "—"}</span></div>
+          {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>{selfPage ? "正在加载我方商品…" : "正在加载竞品列表…"}</strong></div>}
           {status === "error" && <div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品列表。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div>}
-          {status === "ready" && competitors.length === 0 && <div className="state-panel"><div className="empty-icon">+</div><strong>还没有添加竞品</strong><span>添加一个 1688 商品链接，开始建立你的监控列表。</span><button className="primary-button" onClick={onAdd}>添加竞品</button></div>}
-          {status === "ready" && competitors.length > 0 && filteredCompetitors.length === 0 && <div className="state-panel"><strong>没有找到符合条件的竞品</strong><span>请调整搜索词或筛选条件</span><button type="button" className="secondary-button" onClick={resetFilters}>重置筛选</button></div>}
+          {status === "ready" && competitors.length === 0 && <div className="state-panel"><div className="empty-icon">+</div><strong>{selfPage ? "还没有我方商品" : "还没有添加竞品"}</strong><span>{selfPage ? "从竞品监控大屏添加商品后，识别为我方店铺的商品会出现在这里。" : "从竞品监控大屏添加一个 1688 商品链接，开始建立你的监控列表。"}</span></div>}
+          {status === "ready" && competitors.length > 0 && filteredCompetitors.length === 0 && <div className="state-panel"><strong>{selfPage ? "没有找到符合条件的我方商品" : "没有找到符合条件的竞品"}</strong><span>请调整搜索词或筛选条件</span><button type="button" className="secondary-button" onClick={resetFilters}>重置筛选</button></div>}
           {status === "ready" && filteredCompetitors.length > 0 && <div className="table-scroll"><table><thead><tr><th className="selection-column"><input ref={selectAllRef} type="checkbox" aria-label="全选当前页全部商品" checked={allSelected} disabled={pageIds.length === 0 || batchBusy} onChange={(event) => onToggleAll(event.target.checked, pageIds)} /></th><th>商品信息</th><th>店铺名称</th><th>竞品组</th><th>当前价格</th><th>SKU 数量</th><th>最近变化</th><th>最近采集时间</th><th>商品状态</th><th>监控状态</th><th>操作</th></tr></thead><tbody>
-            {pagedCompetitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={selectedIds.has(competitor.id)} disabled={batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"} {competitor.group_role === "own" && <span className="own-role-badge">我方</span>}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td>{getCompetitorGroupLabel(competitor.group_id, groups)}</td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button></td></tr>) }
+             {pagedCompetitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={selectedIds.has(competitor.id)} disabled={batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"} {isSelfProduct(competitor) && <span className="own-role-badge">我方</span>}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td><div className="list-group-cell"><span>{getCompetitorGroupLabel(competitor.group_id, groups)}</span><button type="button" className="text-button" onClick={() => onOpenGroupAssignment(competitor)}>{competitor.group_id === null ? "+ 绑定竞品组" : "更换/解除"}</button></div></td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button></td></tr>) }
           </tbody></table></div>}
         </section>
-        <div className="pagination-bar"><span>共 {filteredCompetitors.length} 个竞品</span><button type="button" disabled={pagination.page === 1} onClick={() => setCurrentPage((page) => page - 1)}>上一页</button><span className="page-number" aria-current="page">{pagination.page}</span><button type="button" disabled={pagination.page === pagination.totalPages} onClick={() => setCurrentPage((page) => page + 1)}>下一页</button><span>第 {pagination.page} / {pagination.totalPages} 页</span></div>
+        <div className="pagination-bar"><span>共 {filteredCompetitors.length} 个{selfPage ? "我方商品" : "竞品"}</span><button type="button" disabled={pagination.page === 1} onClick={() => setCurrentPage((page) => page - 1)}>上一页</button><span className="page-number" aria-current="page">{pagination.page}</span><button type="button" disabled={pagination.page === pagination.totalPages} onClick={() => setCurrentPage((page) => page + 1)}>下一页</button><span>第 {pagination.page} / {pagination.totalPages} 页</span></div>
     </AppShell>
   );
 }
@@ -1349,6 +1376,9 @@ type DashboardPageProps = {
   batchState?: BatchState;
   onRetry: () => void;
   onNavigate: (page: Page) => void;
+  ownShopName?: string | null;
+  onAdd?: () => void;
+  onCollect?: () => void;
   onOpenGroupDetail?: (groupId: number) => void;
   onRetryAttention: () => void;
 };
@@ -1425,11 +1455,13 @@ function CollectionOverview({ data, status, error, batchState, onRetry }: { data
   </section>;
 }
 
-export function DashboardPage({ data, attention, attentionStatus, attentionError, status, error, batchState = idleBatchState, onRetry, onRetryAttention, onNavigate, onOpenGroupDetail }: DashboardPageProps) {
+export function DashboardPage({ data, attention, attentionStatus, attentionError, status, error, batchState = idleBatchState, onRetry, onRetryAttention, onNavigate, ownShopName = null, onAdd = noop, onCollect = noop, onOpenGroupDetail }: DashboardPageProps) {
   const attentionValue = (field: keyof GroupAttentionData["kpis"]) => attentionStatus === "ready" && attention ? attention.kpis[field] : "—";
   const failedCollections = status === "ready" && data ? data.stats.failed_collections : "—";
+  const collectionBusy = batchState.status === "running" || batchState.status === "cooling_down" || batchState.runner_active || batchState.browser_open;
+  const collectionAvailable = status === "ready" && (data?.stats.active_monitored_products ?? 0) > 0;
   return <AppShell page="dashboard" onNavigate={onNavigate} breadcrumb="竞品监控大屏">
-    <header className="page-header dashboard-page-header"><div><h1>竞品监控大屏</h1><p className="page-description">先看今天值得关注的商品组，再查看采集状态与近期趋势。</p></div></header>
+    <header className="page-header dashboard-page-header"><div><h1>竞品监控大屏</h1><p className="page-description">先看今天值得关注的商品组，再查看采集状态与近期趋势。</p></div><div className="dashboard-header-actions"><span className="dashboard-shop-context">我方店铺：{ownShopName || "未配置"}</span>{ownShopName ? <><button type="button" className="secondary-button" onClick={onCollect} disabled={collectionBusy || !collectionAvailable}>立即采集</button><button type="button" className="primary-button" onClick={onAdd}>添加监控商品</button></> : <button type="button" className="text-link-button" onClick={() => onNavigate("settings")}>去系统设置</button>}</div></header>
     <section className="dashboard-stats" aria-label="商品组关注统计"><DashboardStatCard label="监控商品组" value={attentionValue("monitored_product_groups")} kind="groups" tone="blue" /><DashboardStatCard label="今日有变化商品组" value={attentionValue("changed_product_groups_today")} kind="changed-groups" tone="purple" /><DashboardStatCard label="今日涉及变化竞品" value={attentionValue("changed_competitors_today")} kind="competitors" tone="green" /><DashboardStatCard label="异常采集" value={failedCollections} kind="error" tone="orange" /></section>
     <section className="table-card dashboard-attention-section"><div className="table-heading"><div><h2>今日需要关注的商品组</h2><span>{attentionStatus === "ready" && attention ? attention.date : "今日"}</span></div><span className="table-count">{attentionStatus === "ready" && attention ? `${attention.groups.length} 个商品组` : "—"}</span></div>
       {attentionStatus === "loading" && <div className="dashboard-attention-state"><div className="spinner" /><strong>正在加载商品组关注信息…</strong></div>}
@@ -1566,7 +1598,7 @@ function DetailOverview({ data, groups, onChangeGroup }: { data: CompetitorDetai
         <div><dt>offerId</dt><dd>{competitor.offer_id}</dd></div>
         <div><dt>起批量</dt><dd>{latestSnapshot?.min_order_quantity == null ? "—" : `${latestSnapshot.min_order_quantity}件起批`}</dd></div>
         <div><dt>所属竞品组</dt><dd className="detail-group-value"><span className="detail-group-badge">{getCompetitorGroupLabel(competitor.group_id, groups)}</span><button type="button" className="detail-group-edit" onClick={onChangeGroup}>修改</button></dd></div>
-        <div><dt>角色</dt><dd>{competitor.group_role === "own" ? "我方商品" : "直接竞品"}</dd></div>
+        <div><dt>身份</dt><dd>{competitor.ownership === "self" ? "我方商品" : "直接竞品"}</dd></div>
       </dl>
     </div>
     <div className="detail-overview-stats">
@@ -1589,8 +1621,9 @@ function SalesPlaceholderCard() {
 export function DetailPage({ data, groups, status, error, days, rangeLoading = false, onRetry, onRangeChange, onBack, onChangeGroup, onLifecycleAction, lifecycleSubmitting = false, onNavigate }: DetailPageProps) {
   if (status === "loading") return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel"><div className="spinner" /><strong>正在加载竞品详情…</strong></div></AppShell>;
   if (status === "error" || data === null) return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品详情。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div></AppShell>;
+  const isSelf = data.competitor.ownership === "self";
   return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情">
-    <header className="page-header detail-page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、变化趋势、SKU 信息和历史记录。</p></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={onBack}>返回竞品列表</button>{data.competitor.is_active ? <button type="button" className="secondary-button" onClick={() => onLifecycleAction?.("stop", data.competitor)} disabled={lifecycleSubmitting}>停止监控</button> : <button type="button" className="primary-button" onClick={() => onLifecycleAction?.("resume", data.competitor)} disabled={lifecycleSubmitting}>恢复监控</button>}<button type="button" className="detail-danger-button" onClick={() => onLifecycleAction?.("delete", data.competitor)} disabled={lifecycleSubmitting}>删除竞品</button></div></header>
+    <header className="page-header detail-page-header"><div><h1>{isSelf ? "我方商品详情" : "竞品详情"}</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={onBack}>返回{isSelf ? "我方商品" : "竞品列表"}</button>{data.competitor.is_active ? <button type="button" className="secondary-button" onClick={() => onLifecycleAction?.("stop", data.competitor)} disabled={lifecycleSubmitting}>停止监控</button> : <button type="button" className="primary-button" onClick={() => onLifecycleAction?.("resume", data.competitor)} disabled={lifecycleSubmitting}>恢复监控</button>}<button type="button" className="detail-danger-button" onClick={() => onLifecycleAction?.("delete", data.competitor)} disabled={lifecycleSubmitting}>删除{isSelf ? "我方商品" : "竞品"}</button></div></header>
      <DetailOverview data={data} groups={groups} onChangeGroup={onChangeGroup} />
     <section className="detail-trends"><div className="detail-trends-header"><div><h2>趋势数据</h2><span>价格和库存来自每日最终 ProductSnapshot</span></div><div className="range-selector" role="group" aria-label="趋势时间范围" aria-busy={rangeLoading}><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)} disabled={rangeLoading}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)} disabled={rangeLoading}>近 30 天</button>{rangeLoading && <span className="range-loading-indicator" role="status">更新中…</span>}</div></div><div className="detail-trend-grid"><DetailTrendCard kind="price" title="价格趋势" description="最低价 / 最高价" trend={data.daily_trend} /><DetailTrendCard kind="stock" title="库存趋势" description="全部 SKU 库存总和" trend={data.daily_trend} /><SalesPlaceholderCard /></div></section>
     <div className="detail-lower-grid">
@@ -1636,17 +1669,42 @@ export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups,
   }
 
   return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="dialog-title">添加竞品</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={busy}>×</button></div>
-    <p className="dialog-description">添加 1688 商品链接，系统会保存监控对象。</p>
-    <form onSubmit={onSubmit}><div className="dialog-field-header"><label htmlFor="competitor-url">1688 商品链接</label><button type="button" className="text-button clipboard-add-button" onClick={() => void handleClipboardAdd()} disabled={busy}>从剪贴板添加</button></div><textarea id="competitor-url" rows={5} value={url} onChange={(event) => { setClipboardFeedback(null); onUrlChange(event.target.value); }} placeholder={"https://detail.1688.com/offer/123456789.html\nhttps://detail.1688.com/offer/987654321.html"} autoComplete="off" spellCheck={false} autoCapitalize="none" autoCorrect="off" disabled={busy} /><p className="hint">每行一个链接，支持一次添加多个竞品；仅支持 detail.1688.com/offer/{"{offerId}"}.html</p>{clipboardFeedback && <p className={"clipboard-feedback clipboard-feedback-" + clipboardFeedback.kind} role="status" aria-live="polite">{clipboardFeedback.message}</p>}<label htmlFor="competitor-group">竞品组</label><select id="competitor-group" value={groupId === null ? "" : String(groupId)} onChange={(event) => onGroupChange(event.target.value ? Number(event.target.value) : null)} disabled={busy}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><label htmlFor="new-competitor-group">新增竞品组</label><div className="group-create-controls"><input id="new-competitor-group" type="text" value={newGroupName} onChange={(event) => onNewGroupNameChange(event.target.value)} placeholder="输入商品型号作为组名，例如 A19" maxLength={64} disabled={busy} /><button type="button" className="secondary-button" onClick={onCreateGroup} disabled={busy || groupCreateStatus === "submitting"}>{groupCreateStatus === "submitting" ? "创建中…" : "创建"}</button></div><div className={getGroupFeedbackClass(groupCreateStatus)} role="status" aria-live="polite">{groupCreateStatus === "success" && "竞品组已创建并已选中。"}{groupCreateStatus === "invalid" && "请输入有效的竞品组名称"}{groupCreateStatus === "duplicate" && "该竞品组已存在"}{groupCreateStatus === "server-error" && "竞品组创建失败，请稍后重试。"}</div><div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>取消</button><button type="submit" className="primary-button" disabled={busy || urlCount === 0}>{busy ? (progress.total ? `正在添加 ${progress.completed} / ${progress.total}…` : "正在添加…") : urlCount > 1 ? `添加 ${urlCount} 个竞品` : "添加竞品"}</button></div></form>
-    <div className={"feedback feedback-" + status} role="status" aria-live="polite">{status === "partial" && `已添加 ${succeededCount} 个，${failures.length} 个未添加`}{status === "failed" && `未添加 ${failures.length} 个竞品`}{status === "invalid" && "链接无效：请输入指定格式的 1688 商品链接。"}{status === "duplicate" && "该 1688 商品已经添加。"}{status === "server-error" && "服务暂时不可用，请稍后重试。"}</div>
+    <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="dialog-title">添加监控商品</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={busy}>×</button></div>
+    <p className="dialog-description">添加 1688 商品链接，系统会先确认真实店铺，再自动分流到我方商品或竞品列表。</p>
+    <form onSubmit={onSubmit}><div className="dialog-field-header"><label htmlFor="competitor-url">1688 商品链接</label><button type="button" className="text-button clipboard-add-button" onClick={() => void handleClipboardAdd()} disabled={busy}>从剪贴板添加</button></div><textarea id="competitor-url" rows={5} value={url} onChange={(event) => { setClipboardFeedback(null); onUrlChange(event.target.value); }} placeholder={"https://detail.1688.com/offer/123456789.html\nhttps://detail.1688.com/offer/987654321.html"} autoComplete="off" spellCheck={false} autoCapitalize="none" autoCorrect="off" disabled={busy} /><p className="hint">每行一个链接，支持一次添加多个监控商品；仅支持 detail.1688.com/offer/{"{offerId}"}.html</p>{clipboardFeedback && <p className={"clipboard-feedback clipboard-feedback-" + clipboardFeedback.kind} role="status" aria-live="polite">{clipboardFeedback.message}</p>}<label htmlFor="competitor-group">竞品组</label><select id="competitor-group" value={groupId === null ? "" : String(groupId)} onChange={(event) => onGroupChange(event.target.value ? Number(event.target.value) : null)} disabled={busy}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><label htmlFor="new-competitor-group">新增竞品组</label><div className="group-create-controls"><input id="new-competitor-group" type="text" value={newGroupName} onChange={(event) => onNewGroupNameChange(event.target.value)} placeholder="输入商品型号作为组名，例如 A19" maxLength={64} disabled={busy} /><button type="button" className="secondary-button" onClick={onCreateGroup} disabled={busy || groupCreateStatus === "submitting"}>{groupCreateStatus === "submitting" ? "创建中…" : "创建"}</button></div><div className={getGroupFeedbackClass(groupCreateStatus)} role="status" aria-live="polite">{groupCreateStatus === "success" && "竞品组已创建并已选中。"}{groupCreateStatus === "invalid" && "请输入有效的竞品组名称"}{groupCreateStatus === "duplicate" && "该竞品组已存在"}{groupCreateStatus === "server-error" && "竞品组创建失败，请稍后重试。"}</div><div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>取消</button><button type="submit" className="primary-button" disabled={busy || urlCount === 0}>{busy ? (progress.total ? `正在添加 ${progress.completed} / ${progress.total}…` : "正在添加…") : urlCount > 1 ? `添加 ${urlCount} 个监控商品` : "添加监控商品"}</button></div></form>
+    <div className={"feedback feedback-" + status} role="status" aria-live="polite">{status === "partial" && `已添加 ${succeededCount} 个，${failures.length} 个未添加`}{status === "failed" && `未添加 ${failures.length} 个监控商品`}{status === "invalid" && "链接无效：请输入指定格式的 1688 商品链接。"}{status === "duplicate" && "该 1688 商品已经添加。"}{status === "server-error" && "服务暂时不可用，请稍后重试。"}</div>
     {failures.length > 0 && <div className="add-failures" role="status" aria-live="polite"><strong>未添加：</strong><ul>{failures.map((failure) => <li key={failure.url}>{failure.url} — {failure.reason}</li>)}</ul></div>}
   </section></div>;
+}
+
+type SettingsPageProps = {
+  configured: boolean;
+  value: string;
+  status: ListStatus;
+  error: string | null;
+  saveError: string | null;
+  submitting: boolean;
+  onChange: (value: string) => void;
+  onRetry: () => void;
+  onSave: (event: FormEvent<HTMLFormElement>) => void;
+  onNavigate: (page: Page) => void;
+};
+
+export function SettingsPage({ configured, value, status, error, saveError, submitting, onChange, onRetry, onSave, onNavigate }: SettingsPageProps) {
+  return <AppShell page="settings" onNavigate={onNavigate} breadcrumb="系统设置">
+    <header className="page-header"><div><h1>系统设置</h1><p className="page-description">配置用于自动识别我方商品的店铺名称。</p></div></header>
+    <section className="table-card settings-card"><div className="table-heading"><div><h2>我方店铺</h2><span>仅支持精确店铺名称匹配（首尾空白和连续空白会标准化）。</span></div></div>
+      {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载系统设置…</strong></div>}
+      {status === "error" && <div className="state-panel state-error"><strong>设置加载失败</strong><span>{error || "暂时无法读取系统设置。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></div>}
+      {status === "ready" && <form className="settings-form" onSubmit={onSave}><label htmlFor="own-shop-name">我方店铺名称</label><input id="own-shop-name" value={value} onChange={(event) => onChange(event.target.value)} maxLength={255} disabled={submitting} placeholder="请输入 1688 店铺名称" />{!configured && <p className="hint">尚未配置。配置后才能从大屏添加监控商品。</p>}{saveError && <div className="feedback feedback-server-error" role="alert">{saveError}</div>}<div className="dialog-actions"><button type="submit" className="primary-button" disabled={submitting || !value.trim()}>{submitting ? "保存中…" : "保存设置"}</button><button type="button" className="secondary-button" onClick={() => onNavigate("dashboard")} disabled={submitting}>返回大屏</button></div></form>}
+    </section>
+  </AppShell>;
 }
 
 function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
+  const [ownProducts, setOwnProducts] = useState<Competitor[]>([]);
   const [groups, setGroups] = useState<CompetitorGroup[]>([]);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [dashboardStatus, setDashboardStatus] = useState<DashboardStatus>("loading");
@@ -1657,6 +1715,16 @@ function App() {
   const [listStatus, setListStatus] = useState<ListStatus>("ready");
   const [listError, setListError] = useState<string | null>(null);
   const [listLoaded, setListLoaded] = useState(false);
+  const [ownListStatus, setOwnListStatus] = useState<ListStatus>("ready");
+  const [ownListError, setOwnListError] = useState<string | null>(null);
+  const [ownListLoaded, setOwnListLoaded] = useState(false);
+  const [ownShopName, setOwnShopName] = useState<string | null>(null);
+  const [settingsValue, setSettingsValue] = useState("");
+  const [settingsConfigured, setSettingsConfigured] = useState(false);
+  const [settingsStatus, setSettingsStatus] = useState<ListStatus>("loading");
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
+  const [settingsSubmitting, setSettingsSubmitting] = useState(false);
   const [groupSummary, setGroupSummary] = useState<CompetitorGroupsSummary | null>(null);
   const [groupStatus, setGroupStatus] = useState<GroupStatus>("loading");
   const [groupError, setGroupError] = useState<string | null>(null);
@@ -1715,7 +1783,7 @@ function App() {
   const [groupDeleteDialog, setGroupDeleteDialog] = useState<CompetitorGroupSummary | null>(null);
   const [groupDeleteSubmitting, setGroupDeleteSubmitting] = useState(false);
   const [groupDeleteError, setGroupDeleteError] = useState<string | null>(null);
-  const [groupAssignmentDialog, setGroupAssignmentDialog] = useState<{ competitorId: number; groupId: number | null } | null>(null);
+  const [groupAssignmentDialog, setGroupAssignmentDialog] = useState<{ competitorId: number; groupId: number | null; ownership: "self" | "competitor"; fromDetail: boolean } | null>(null);
   const [groupAssignmentSubmitting, setGroupAssignmentSubmitting] = useState(false);
   const [groupAssignmentError, setGroupAssignmentError] = useState<string | null>(null);
   const [ownProductDialog, setOwnProductDialog] = useState<{ group: CompetitorGroupSummary; mode: OwnProductAction } | null>(null);
@@ -1725,11 +1793,33 @@ function App() {
   const [ownProductLoading, setOwnProductLoading] = useState(false);
   const [ownProductError, setOwnProductError] = useState<string | null>(null);
   const ownProductSubmittingRef = useRef(false);
+  const currentProducts = page === "own-products" ? ownProducts : competitors;
 
   async function loadCompetitors(): Promise<boolean> {
     setListStatus("loading"); setListError(null);
-    try { const [competitorsResponse, groupsResponse] = await Promise.all([fetch("/api/competitors"), fetch("/api/competitor-groups")]); if (!competitorsResponse.ok || !groupsResponse.ok) throw new Error("request failed"); const [competitorData, groupData] = await Promise.all([competitorsResponse.json(), groupsResponse.json()]); const nextCompetitors = competitorData as Competitor[]; setCompetitors(nextCompetitors); setSelectedIds((current) => new Set([...current].filter((id) => nextCompetitors.some((item) => item.id === id)))); setGroups(groupData as CompetitorGroup[]); setListStatus("ready"); setListLoaded(true); return true; }
+    try { const [competitorsResponse, groupsResponse] = await Promise.all([fetch("/api/competitors?ownership=competitor"), fetch("/api/competitor-groups")]); if (!competitorsResponse.ok || !groupsResponse.ok) throw new Error("request failed"); const [competitorData, groupData] = await Promise.all([competitorsResponse.json(), groupsResponse.json()]); const nextCompetitors = competitorData as Competitor[]; setCompetitors(nextCompetitors); setSelectedIds((current) => new Set([...current].filter((id) => nextCompetitors.some((item) => item.id === id)))); setGroups(groupData as CompetitorGroup[]); setListStatus("ready"); setListLoaded(true); return true; }
     catch { setListError("暂时无法获取竞品列表，请检查服务是否正常运行。"); setListStatus("error"); return false; }
+  }
+  async function loadOwnProducts(): Promise<boolean> {
+    setOwnListStatus("loading"); setOwnListError(null);
+    try {
+      const [response, groupsResponse] = await Promise.all([fetch("/api/competitors?ownership=self"), fetch("/api/competitor-groups")]);
+      if (!response.ok || !groupsResponse.ok) throw new Error("request failed");
+      const [next, groupData] = await Promise.all([response.json() as Promise<Competitor[]>, groupsResponse.json() as Promise<CompetitorGroup[]>]);
+      setOwnProducts(next); setGroups(groupData); setOwnListStatus("ready"); setOwnListLoaded(true); return true;
+    } catch { setOwnListError("暂时无法获取我方商品，请检查服务是否正常运行。"); setOwnListStatus("error"); return false; }
+  }
+  async function loadCurrentProducts(): Promise<boolean> {
+    return page === "own-products" ? loadOwnProducts() : loadCompetitors();
+  }
+  async function loadOwnShopName(): Promise<boolean> {
+    setSettingsStatus("loading"); setSettingsError(null);
+    try {
+      const response = await fetch("/api/settings/own-shop-name");
+      if (!response.ok) throw new Error("request failed");
+      const body = await response.json() as { configured: boolean; own_shop_name: string | null };
+      setSettingsConfigured(body.configured); setOwnShopName(body.own_shop_name); setSettingsValue(body.own_shop_name || ""); setSettingsStatus("ready"); return true;
+    } catch { setSettingsError("暂时无法获取系统设置，请检查服务是否正常运行。"); setSettingsStatus("error"); return false; }
   }
   async function loadDashboardAttention(): Promise<boolean> {
     setDashboardAttentionStatus("loading"); setDashboardAttentionError(null);
@@ -1807,14 +1897,16 @@ function App() {
       setBatchState(next);
       const wasActiveBatch = previous.status === "running" || previous.status === "cooling_down";
       if (next.status === "completed" && wasActiveBatch) {
-        await Promise.all([loadCompetitors(), loadDashboard()]);
-        setNotice({ message: `采集完成：成功 ${next.succeeded}，失败 ${next.failed}`, type: next.failed ? "error" : "success" });
+        const refreshSucceeded = (await Promise.all([loadCurrentProducts(), loadDashboard()])).every(Boolean);
+        setNotice(refreshSucceeded
+          ? { message: `采集完成：成功 ${next.succeeded}，失败 ${next.failed}`, type: next.failed ? "error" : "success" }
+          : { message: batchRefreshFailureMessage, type: "error" });
       }
     } catch {
       if (notifyOnError) setNotice({ message: "无法读取批量采集状态，请稍后重试。", type: "error" });
     }
   }
-  useEffect(() => { void loadDashboard(); }, []);
+  useEffect(() => { void loadDashboard(); void loadOwnShopName(); }, []);
   useEffect(() => { void loadBatchStatus(); }, []);
   useEffect(() => {
     if (!notice) return;
@@ -1841,7 +1933,9 @@ function App() {
     setPage(nextPage);
     if (nextPage === "dashboard") void loadDashboard();
     if (nextPage === "competitors" && !listLoaded) void loadCompetitors();
+    if (nextPage === "own-products" && !ownListLoaded) void loadOwnProducts();
     if (nextPage === "groups" && !groupLoaded) void loadGroups();
+    if (nextPage === "settings" && settingsStatus !== "ready") void loadOwnShopName();
   }
   function openDetail(competitorId: number) { setSelectedCompetitorId(competitorId); setDetailDays(7); setDetailRangeLoading(false); setPage("detail"); void loadDetail(competitorId, 7); }
   function openGroupDetail(groupId: number) { latestGroupDetailRequestId.current += 1; setSelectedGroupId(groupId); setGroupDetail(null); setGroupDetailDays(7); setGroupDetailRangeLoading(false); setGroupDetailRangeError(null); setGroupDetailStatus("loading"); setPage("group-detail"); void loadGroupDetail(groupId, 7); }
@@ -1853,7 +1947,30 @@ function App() {
     setDetailRangeLoading(false);
   }
   function openDialog() { setNotice(null); setUrl(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true); }
+  function openDashboardAddDialog() {
+    if (!ownShopName) { navigate("settings"); return; }
+    openDialog();
+  }
   function closeDialog() { if (addStatus !== "submitting") { setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupCreateStatus("initial"); } }
+  async function submitOwnShopName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (settingsSubmitting || !settingsValue.trim()) return;
+    if (settingsConfigured && settingsValue.trim() !== ownShopName) {
+      const confirmed = window.confirm("保存后将根据当前商品店铺名称重新识别我方商品与竞品，并可能调整竞品组中的我方基准商品。");
+      if (!confirmed) return;
+    }
+    setSettingsSubmitting(true); setSettingsSaveError(null);
+    try {
+      const response = await fetch("/api/settings/own-shop-name", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ own_shop_name: settingsValue }) });
+      let body: { configured?: boolean; own_shop_name?: string | null; message?: string; code?: string } = {};
+      try { body = await response.json() as typeof body; } catch { /* use the stable fallback below */ }
+      if (!response.ok) throw new Error(body.message || "我方店铺名称保存失败，请稍后重试");
+      setSettingsConfigured(Boolean(body.configured)); setOwnShopName(body.own_shop_name || null); setSettingsValue(body.own_shop_name || "");
+      const refreshSucceeded = (await Promise.all([loadOwnShopName(), loadDashboard(), loadGroups(), loadCompetitors(), loadOwnProducts()])).every(Boolean);
+      setNotice(getBatchRefreshNotice("我方店铺设置已保存，商品身份已重新识别。", refreshSucceeded));
+    } catch (error) { setSettingsSaveError(error instanceof Error ? error.message : "我方店铺名称保存失败，请稍后重试"); }
+    finally { setSettingsSubmitting(false); }
+  }
   async function handleCreateGroup() {
     setGroupCreateStatus("submitting");
     try {
@@ -1879,8 +1996,9 @@ function App() {
         setGroupNameError(getGroupNameErrorMessage(body.code, body.message));
         return;
       }
-      setGroupNameDialog(null); setGroupName(""); setNotice({ message: isRename ? "竞品组已重命名。" : "竞品组已创建。", type: "success" });
-      await loadGroups();
+      setGroupNameDialog(null); setGroupName("");
+      const refreshSucceeded = await loadGroups();
+      setNotice(getBatchRefreshNotice(isRename ? "竞品组已重命名。" : "竞品组已创建。", refreshSucceeded));
     } catch {
       setGroupNameError("竞品组操作失败，请稍后重试");
     } finally { setGroupNameSubmitting(false); }
@@ -1898,8 +2016,9 @@ function App() {
         setGroupDeleteError(getGroupNameErrorMessage(body.code, body.message));
         return;
       }
-      setGroupDeleteDialog(null); setNotice({ message: "竞品组已删除，竞品已移至未分组。", type: "success" });
-      await Promise.all([loadGroups(), loadCompetitors(), loadDashboard()]);
+      setGroupDeleteDialog(null);
+      const refreshSucceeded = (await Promise.all([loadGroups(), loadCompetitors(), loadDashboard()])).every(Boolean);
+      setNotice(getBatchRefreshNotice("竞品组已删除，竞品已移至未分组。", refreshSucceeded));
     } catch {
       setGroupDeleteError("竞品组删除失败，请稍后重试");
     } finally { setGroupDeleteSubmitting(false); }
@@ -1958,13 +2077,16 @@ function App() {
     }
     const message = ownProductDialog.mode === "unbind" ? "我方商品已解除绑定。" : ownProductDialog.mode === "replace" ? "我方商品已更换。" : "我方商品已绑定。";
     setOwnProductDialog(null); setOwnProductSelectedId(null); setOwnProductConfirming(false); setNotice({ message, type: "success" });
-    try { await Promise.all([loadGroups(), loadCompetitors()]); }
-    finally { ownProductSubmittingRef.current = false; setOwnProductSubmitting(false); }
+    try {
+      const refreshSucceeded = (await Promise.all([loadGroups(), loadCompetitors(), loadOwnProducts(), loadDashboard()])).every(Boolean);
+      setNotice(getBatchRefreshNotice(message, refreshSucceeded));
+    } finally { ownProductSubmittingRef.current = false; setOwnProductSubmitting(false); }
   }
-  function openGroupAssignmentDialog() {
-    if (!detail) return;
+  function openGroupAssignmentDialog(competitor?: Competitor) {
+    const target = competitor ?? detail?.competitor;
+    if (!target) return;
     setGroupAssignmentError(null);
-    setGroupAssignmentDialog({ competitorId: detail.competitor.id, groupId: detail.competitor.group_id });
+    setGroupAssignmentDialog({ competitorId: target.id, groupId: target.group_id, ownership: target.ownership, fromDetail: competitor === undefined });
   }
   function closeGroupAssignmentDialog() {
     if (!groupAssignmentSubmitting) { setGroupAssignmentDialog(null); setGroupAssignmentError(null); }
@@ -1981,8 +2103,11 @@ function App() {
     }
     try {
       setGroupAssignmentDialog(null);
-      setNotice({ message: "竞品组已更新。", type: "success" });
-      await Promise.all([loadDetail(groupAssignmentDialog.competitorId, detailDays), loadCompetitors(), loadDashboard(), loadGroups()]);
+      const refreshList = groupAssignmentDialog.ownership === "self" ? loadOwnProducts : loadCompetitors;
+      const refreshes: Promise<unknown>[] = [refreshList(), loadDashboard(), loadGroups()];
+      if (groupAssignmentDialog.fromDetail) refreshes.push(loadDetail(groupAssignmentDialog.competitorId, detailDays));
+      const refreshSucceeded = (await Promise.all(refreshes)).every(Boolean);
+      setNotice(getBatchRefreshNotice("竞品组已更新。", refreshSucceeded));
     } catch {
       setGroupAssignmentError("竞品组更新失败，请稍后重试");
     } finally { setGroupAssignmentSubmitting(false); }
@@ -1992,16 +2117,19 @@ function App() {
     const urls = parseCompetitorUrls(url);
     if (addStatus === "submitting" || urls.length === 0) return;
     setAddStatus("submitting"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: urls.length });
-    const result = await addCompetitorsSequentially(urls, groupId, fetch, (completed, total) => setAddProgress({ completed, total }));
+    const successLabels: string[] = [];
+    const result = await addCompetitorsSequentially(urls, groupId, fetch, (completed, total) => setAddProgress({ completed, total }), (_url, body) => {
+      successLabels.push(body.ownership === "self" ? `已识别为我方商品「${body.title || "新商品"}」，已添加至我方商品` : `已添加监控商品「${body.title || "新商品"}」`);
+    });
     if (result.failures.length === 0) {
-      setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setGroupCreateStatus("initial"); setAddProgress({ completed: 0, total: 0 }); setNotice({ message: `已添加 ${result.succeeded.length} 个竞品`, type: "success" }); const [loaded] = await Promise.all([loadCompetitors(), loadDashboard()]); if (loaded) setPaginationResetVersion((version) => version + 1); return;
+      setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setGroupCreateStatus("initial"); setAddProgress({ completed: 0, total: 0 }); const refreshSucceeded = (await Promise.all([loadCompetitors(), loadOwnProducts(), loadDashboard()])).every(Boolean); setNotice(getBatchRefreshNotice(successLabels.length === 1 ? successLabels[0] : `已添加 ${result.succeeded.length} 个监控商品`, refreshSucceeded)); if (refreshSucceeded) setPaginationResetVersion((version) => version + 1); return;
     }
     setAddFailures(result.failures); setAddSucceededCount(result.succeeded.length); setUrl(result.failures.map((failure) => failure.url).join("\n")); setAddStatus(result.succeeded.length ? "partial" : "failed");
-    if (result.succeeded.length > 0) { const [loaded] = await Promise.all([loadCompetitors(), loadDashboard()]); if (loaded) setPaginationResetVersion((version) => version + 1); }
+    if (result.succeeded.length > 0) { const refreshSucceeded = (await Promise.all([loadCompetitors(), loadOwnProducts(), loadDashboard()])).every(Boolean); setNotice(getBatchRefreshNotice(`已添加 ${result.succeeded.length} 个监控商品`, refreshSucceeded)); if (refreshSucceeded) setPaginationResetVersion((version) => version + 1); }
   }
   function openBatchGroupDialog(selectedCompetitorIds: number[]) {
-    const selected = competitors.filter((item) => selectedCompetitorIds.includes(item.id));
-    const eligible = selected.filter((item) => item.group_role === "competitor");
+    const selected = currentProducts.filter((item) => selectedCompetitorIds.includes(item.id));
+    const eligible = selected.filter((item) => !isSelfProduct(item));
     setBatchGroupTarget(undefined);
     setBatchGroupError(null);
     setBatchGroupDialog({ competitorIds: eligible.map((item) => item.id), selectedCount: selected.length, ownCount: selected.length - eligible.length });
@@ -2021,29 +2149,29 @@ function App() {
       setBatchGroupDialog(null); setBatchGroupTarget(undefined); setSelectedIds(new Set());
       const updatedCount = body.updated_count ?? 0;
       const groupName = batchGroupTarget === null ? "未分组" : groups.find((group) => group.id === batchGroupTarget)?.name || "目标竞品组";
-      const refreshSucceeded = (await Promise.all([loadCompetitors(), loadGroups(), loadDashboard()])).every(Boolean);
+      const refreshSucceeded = (await Promise.all([loadCurrentProducts(), loadGroups(), loadDashboard()])).every(Boolean);
       setNotice(getBatchRefreshNotice(updatedCount > 0 ? `已将 ${updatedCount} 个竞品${batchGroupTarget === null ? "移至" : "设置到"}「${groupName}」` : "所选竞品已在目标分组，无需修改", refreshSucceeded));
     } catch (error) {
       setBatchGroupError(error instanceof Error ? error.message : "竞品组更新失败，请稍后重试");
     } finally { setBatchGroupSubmitting(false); }
   }
   function openBatchLifecycleDialog(action: "stop" | "delete", selectedCompetitorIds: number[]) {
-    const selected = competitors.filter((item) => selectedCompetitorIds.includes(item.id));
-    const eligible = selected.filter((item) => action === "stop" ? item.is_active : item.group_role === "competitor");
+    const selected = currentProducts.filter((item) => selectedCompetitorIds.includes(item.id));
+    const eligible = selected.filter((item) => action === "stop" ? item.is_active : !isSelfProduct(item));
     if (eligible.length === 0) return;
     setNotice(null);
     setBatchLifecycleError(null);
-    setBatchLifecycleDialog({ action, competitorIds: eligible.map((item) => item.id), selectedCount: selected.length, ownCount: selected.filter((item) => item.group_role === "own").length });
+    setBatchLifecycleDialog({ action, competitorIds: eligible.map((item) => item.id), selectedCount: selected.length, ownCount: selected.filter(isSelfProduct).length });
   }
   function closeBatchLifecycleDialog() {
     if (!batchLifecycleSubmittingRef.current) { setBatchLifecycleDialog(null); setBatchLifecycleError(null); }
   }
   async function refreshAfterBatchLifecycle() {
-    return (await Promise.all([loadCompetitors(), loadGroups(), loadDashboard()])).every(Boolean);
+    return (await Promise.all([loadCurrentProducts(), loadGroups(), loadDashboard()])).every(Boolean);
   }
   async function updateMonitoringBatch(selectedCompetitorIds: number[], isActive: boolean) {
     if (batchLifecycleSubmittingRef.current) return;
-    const eligibleIds = competitors.filter((item) => selectedCompetitorIds.includes(item.id) && item.is_active !== isActive).map((item) => item.id);
+    const eligibleIds = currentProducts.filter((item) => selectedCompetitorIds.includes(item.id) && item.is_active !== isActive).map((item) => item.id);
     if (eligibleIds.length === 0) return;
     batchLifecycleSubmittingRef.current = true;
     setBatchLifecycleSubmitting(true);
@@ -2120,25 +2248,27 @@ function App() {
     try { body = await response.json() as CollectionErrorBody; } catch { /* use the stable fallback below */ }
     return getLifecycleErrorMessage(body.code, body.message);
   }
-  async function refreshAfterLifecycle(message: string, competitor: LifecycleCompetitor, deleted = false) {
+  async function refreshAfterLifecycle(message: string, competitor: LifecycleCompetitor, deleted = false): Promise<boolean> {
     setLifecycleDialog(null); setLifecycleError(null);
     setGroupLoaded(false);
+    const isSelf = competitor.ownership === "self";
+    const refreshList = isSelf ? loadOwnProducts : loadCompetitors;
     if (deleted) {
       latestDetailRequestId.current += 1;
       setDetail(null); setDetailError(null); setDetailStatus("loading"); setSelectedCompetitorId(null);
-      navigate("competitors");
-      await Promise.all([loadCompetitors(), loadDashboard()]);
+      navigate(isSelf ? "own-products" : "competitors");
+      return (await Promise.all([refreshList(), loadDashboard()])).every(Boolean);
     } else {
-      await Promise.all([loadCompetitors(), loadDashboard(), loadDetail(competitor.id, detailDays)]);
+      return (await Promise.all([refreshList(), loadDashboard(), loadDetail(competitor.id, detailDays)])).every(Boolean);
     }
-    setNotice({ message, type: "success" });
   }
   async function updateMonitoring(competitor: LifecycleCompetitor, isActive: boolean, dialogAction: "stop" | null) {
     setLifecycleSubmitting(true); setLifecycleError(null);
     try {
       const response = await fetch(`/api/competitors/${competitor.id}/monitoring`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ is_active: isActive }) });
       if (!response.ok) throw new Error(await readLifecycleError(response));
-      await refreshAfterLifecycle(isActive ? "已恢复监控，列表和 Dashboard 已更新。" : "已停止监控，历史数据已保留。", competitor);
+      const refreshSucceeded = await refreshAfterLifecycle(isActive ? "已恢复监控，列表和 Dashboard 已更新。" : "已停止监控，历史数据已保留。", competitor);
+      setNotice(getBatchRefreshNotice(isActive ? "已恢复监控，列表和 Dashboard 已更新。" : "已停止监控，历史数据已保留。", refreshSucceeded));
     } catch (error) {
       const message = error instanceof Error ? error.message : "操作失败，请稍后重试";
       if (dialogAction) setLifecycleError(message); else setNotice({ message, type: "error" });
@@ -2149,7 +2279,9 @@ function App() {
     try {
       const response = await fetch(`/api/competitors/${competitor.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await readLifecycleError(response));
-      await refreshAfterLifecycle("竞品已永久删除。", competitor, true);
+      const message = `${competitor.ownership === "self" ? "我方商品" : "竞品"}已永久删除。`;
+      const refreshSucceeded = await refreshAfterLifecycle(message, competitor, true);
+      setNotice(getBatchRefreshNotice(message, refreshSucceeded));
     } catch (error) {
       setLifecycleError(error instanceof Error ? error.message : "操作失败，请稍后重试");
     } finally { setLifecycleSubmitting(false); }
@@ -2163,7 +2295,24 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <>{page === "dashboard" ? <DashboardPage data={dashboard} attention={dashboardAttention} attentionStatus={dashboardAttentionStatus} attentionError={dashboardAttentionError} status={dashboardStatus} error={dashboardError} batchState={batchState} onRetry={() => void loadDashboard()} onRetryAttention={() => void loadDashboardAttention()} onNavigate={navigate} onOpenGroupDetail={openGroupDetail} /> : page === "competitors" ? <ListPage competitors={competitors} groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} onAdd={openDialog} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} paginationResetVersion={paginationResetVersion} /> : page === "groups" ? <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} /> : page === "group-detail" ? <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} /> : <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate("competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}{notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}{dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}{groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}{groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}{ownProductDialog && <OwnProductDialog group={ownProductDialog.group} mode={ownProductDialog.mode} competitors={competitors} loading={ownProductLoading} selectedId={ownProductSelectedId} confirming={ownProductConfirming} submitting={ownProductSubmitting} error={ownProductError} onSelect={(id) => { setOwnProductSelectedId(id); setOwnProductConfirming(false); }} onConfirmStep={() => { setOwnProductConfirming(true); setOwnProductError(null); }} onClose={closeOwnProductDialog} onSubmit={() => void submitOwnProduct()} />}{batchGroupDialog && <BatchGroupAssignmentDialog targetGroupId={batchGroupTarget} groups={groups} selectedCount={batchGroupDialog.selectedCount} eligibleCount={batchGroupDialog.competitorIds.length} ownCount={batchGroupDialog.ownCount} submitting={batchGroupSubmitting} error={batchGroupError} onChange={setBatchGroupTarget} onClose={closeBatchGroupDialog} onSubmit={submitBatchGroup} />}{batchLifecycleDialog && <BatchLifecycleDialog action={batchLifecycleDialog.action} selectedCount={batchLifecycleDialog.selectedCount} eligibleCount={batchLifecycleDialog.competitorIds.length} ownCount={batchLifecycleDialog.ownCount} submitting={batchLifecycleSubmitting} error={batchLifecycleError} onClose={closeBatchLifecycleDialog} onConfirm={() => void submitBatchLifecycle()} />}{groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}{lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}</>;
+  return <>
+    {page === "dashboard" && <DashboardPage data={dashboard} attention={dashboardAttention} attentionStatus={dashboardAttentionStatus} attentionError={dashboardAttentionError} status={dashboardStatus} error={dashboardError} batchState={batchState} ownShopName={ownShopName} onAdd={openDashboardAddDialog} onCollect={() => void handleBatchAction("all_active")} onRetry={() => void loadDashboard()} onRetryAttention={() => void loadDashboardAttention()} onNavigate={navigate} onOpenGroupDetail={openGroupDetail} />}
+    {page === "own-products" && <ListPage competitors={ownProducts} ownership="self" groups={groups} status={ownListStatus} error={ownListError} onRetry={() => void loadOwnProducts()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} paginationResetVersion={paginationResetVersion} />}
+    {page === "competitors" && <ListPage competitors={competitors} ownership="competitor" groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} paginationResetVersion={paginationResetVersion} />}
+    {page === "settings" && <SettingsPage configured={settingsConfigured} value={settingsValue} status={settingsStatus} error={settingsError} saveError={settingsSaveError} submitting={settingsSubmitting} onChange={setSettingsValue} onRetry={() => void loadOwnShopName()} onSave={submitOwnShopName} onNavigate={navigate} />}
+    {page === "groups" && <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} />}
+    {page === "group-detail" && <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} />}
+    {page === "detail" && <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate(detail?.competitor.ownership === "self" ? "own-products" : "competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}
+    {notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}
+    {dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={groups} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}
+    {groupNameDialog && <GroupNameDialog mode={groupNameDialog.mode} name={groupName} submitting={groupNameSubmitting} error={groupNameError} onChange={setGroupName} onClose={closeGroupNameDialog} onSubmit={submitGroupName} />}
+    {groupDeleteDialog && <GroupDeleteDialog group={groupDeleteDialog} submitting={groupDeleteSubmitting} error={groupDeleteError} onClose={closeGroupDeleteDialog} onConfirm={() => void confirmGroupDelete()} />}
+    {ownProductDialog && <OwnProductDialog group={ownProductDialog.group} mode={ownProductDialog.mode} competitors={competitors} loading={ownProductLoading} selectedId={ownProductSelectedId} confirming={ownProductConfirming} submitting={ownProductSubmitting} error={ownProductError} onSelect={(id) => { setOwnProductSelectedId(id); setOwnProductConfirming(false); }} onConfirmStep={() => { setOwnProductConfirming(true); setOwnProductError(null); }} onClose={closeOwnProductDialog} onSubmit={() => void submitOwnProduct()} />}
+    {batchGroupDialog && <BatchGroupAssignmentDialog targetGroupId={batchGroupTarget} groups={groups} selectedCount={batchGroupDialog.selectedCount} eligibleCount={batchGroupDialog.competitorIds.length} ownCount={batchGroupDialog.ownCount} submitting={batchGroupSubmitting} error={batchGroupError} onChange={setBatchGroupTarget} onClose={closeBatchGroupDialog} onSubmit={submitBatchGroup} />}
+    {batchLifecycleDialog && <BatchLifecycleDialog action={batchLifecycleDialog.action} selectedCount={batchLifecycleDialog.selectedCount} eligibleCount={batchLifecycleDialog.competitorIds.length} ownCount={batchLifecycleDialog.ownCount} submitting={batchLifecycleSubmitting} error={batchLifecycleError} onClose={closeBatchLifecycleDialog} onConfirm={() => void submitBatchLifecycle()} />}
+    {groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}
+    {lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}
+  </>;
 }
 
 export default App;

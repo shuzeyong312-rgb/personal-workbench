@@ -2,7 +2,7 @@ from collections.abc import Generator
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from threading import Thread
+from threading import Event, Thread
 from unittest.mock import Mock, patch
 
 import pytest
@@ -19,6 +19,7 @@ from app.collection.service import (
     CollectionError,
     run_batch_collection,
 )
+import app.collection.service as collection_service
 from app.collection.daily import run_daily_collection_cycle
 from app.database import get_db
 from app.main import app
@@ -128,6 +129,28 @@ def test_all_active_empty_returns_completed_without_starting(
     start.assert_not_called()
 
 
+def test_all_active_batch_includes_active_self_and_competitor(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    own_id = add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    with client[1]() as session:
+        own = session.get(Competitor, own_id)
+        assert own is not None
+        own.ownership = "self"
+        session.commit()
+
+    with patch("app.competitors.start_batch_task") as start:
+        response = client[0].post(
+            "/api/competitors/collect-batch",
+            json={"mode": "all_active"},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["total"] == 2
+    assert start.call_args.args[1] == [1, 2]
+
+
 def test_batch_busy_uses_collection_in_progress(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
@@ -139,6 +162,49 @@ def test_batch_busy_uses_collection_in_progress(
     )
     assert response.status_code == 409
     assert response.json()["code"] == "collection_in_progress"
+
+
+def test_reserved_batch_blocks_delete_during_worker_handoff_and_worker_recovers(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    worker_waiting = Event()
+    allow_worker = Event()
+    collected: list[int] = []
+    real_acquire = collection_service.acquire_collection_slot
+    gate = {"first": True}
+
+    def gate_worker_acquire(*, batch_reservation: int | None = None, **kwargs: object) -> bool:
+        if batch_reservation is not None and gate["first"]:
+            gate["first"] = False
+            worker_waiting.set()
+            assert allow_worker.wait(timeout=2)
+        return real_acquire(batch_reservation=batch_reservation, **kwargs)
+
+    def fake_collect(_session: Session, item_id: int, **_kwargs: object) -> SimpleNamespace:
+        collected.append(item_id)
+        return SimpleNamespace(outcome="active")
+
+    assert BATCH_RUNTIME.reserve([competitor_id]) is True
+    worker = Thread(target=run_batch_collection, args=(client[1], [competitor_id], BATCH_RUNTIME))
+    with patch.object(collection_service, "acquire_collection_slot", side_effect=gate_worker_acquire), \
+        patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(FakeContext())), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=fake_collect):
+        worker.start()
+        assert worker_waiting.wait(timeout=2)
+        blocked = client[0].delete(f"/api/competitors/{competitor_id}")
+        assert blocked.status_code == 409
+        assert blocked.json()["code"] == "collection_in_progress"
+        with client[1]() as session:
+            assert session.get(Competitor, competitor_id) is not None
+        allow_worker.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert collected == [competitor_id]
+    assert BATCH_RUNTIME.is_busy() is False
+    assert client[0].delete(f"/api/competitors/{competitor_id}").status_code == 204
 
 
 class FakeContext:

@@ -227,6 +227,7 @@ def test_today_without_events_returns_empty_stats(
     assert body["date"] == "2026-09-20"
     assert body["stats"] == {
         "monitored_competitors": 1,
+        "active_monitored_products": 1,
         "changed_competitors": 0,
         "change_events": 0,
         "price_changed_competitors": 0,
@@ -245,6 +246,33 @@ def test_today_without_events_returns_empty_stats(
     assert all(point["price_changes"] == 0 for point in body["trend_7d"])
 
 
+def test_dashboard_keeps_self_in_active_total_but_excludes_self_events_from_competitor_stats(
+    client: tuple[TestClient, sessionmaker[Session]], business_day: None
+) -> None:
+    with client[1]() as session:
+        own = add_competitor(session, 1)
+        own.ownership = "self"
+        competitor = add_competitor(session, 2)
+        add_event(session, own, datetime(2026, 9, 20, 1), "price_increase")
+        add_event(session, competitor, datetime(2026, 9, 20, 2), "stock_changed")
+        session.commit()
+
+    body = client[0].get("/api/dashboard/today").json()
+
+    assert body["stats"] == {
+        "monitored_competitors": 1,
+        "active_monitored_products": 2,
+        "changed_competitors": 1,
+        "change_events": 1,
+        "price_changed_competitors": 0,
+        "stock_changed_competitors": 1,
+        "sku_changed_competitors": 0,
+        "failed_collections": 0,
+    }
+    assert [item["competitor_id"] for item in body["items"]] == [2]
+    assert body["trend_7d"][-1]["stock_changes"] == 1
+
+
 def test_groups_two_events_for_one_active_competitor(
     client: tuple[TestClient, sessionmaker[Session]], business_day: None
 ) -> None:
@@ -260,6 +288,7 @@ def test_groups_two_events_for_one_active_competitor(
 
     assert body["stats"] == {
         "monitored_competitors": 1,
+        "active_monitored_products": 1,
         "changed_competitors": 1,
         "change_events": 2,
         "price_changed_competitors": 1,

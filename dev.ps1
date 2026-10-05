@@ -76,6 +76,15 @@ function Stop-ProjectService($Ids) {
 function Start-Project {
     $backendLog = Join-Path $LogsDir 'backend.log'
     $frontendLog = Join-Path $LogsDir 'frontend.log'
+    Push-Location $BackendDir
+    try {
+        & $Python -m alembic upgrade head
+        if ($LASTEXITCODE -ne 0) {
+            throw "Database migration failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
     $backendCommand = "Set-Location -LiteralPath '$BackendDir'; & '$Python' -m uvicorn app.main:app --reload --host 127.0.0.1 --port $BackendPort *> '$backendLog'"
     $frontendCommand = "Set-Location -LiteralPath '$FrontendDir'; & '$Vite' --host 127.0.0.1 --port $FrontendPort --strictPort --open *> '$frontendLog'"
 

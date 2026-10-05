@@ -16,6 +16,7 @@ from app.group_detail import router as group_detail_router
 from app.group_attention import router as group_attention_router
 from app.database import engine
 from app.dashboard import router as dashboard_router
+from app.settings import router as settings_router
 
 
 DAILY_COLLECTION_INITIAL_DELAY_SECONDS = 30
@@ -72,6 +73,7 @@ app.include_router(competitor_groups_router)
 app.include_router(group_detail_router)
 app.include_router(group_attention_router)
 app.include_router(dashboard_router)
+app.include_router(settings_router)
 
 
 @app.exception_handler(HTTPException)

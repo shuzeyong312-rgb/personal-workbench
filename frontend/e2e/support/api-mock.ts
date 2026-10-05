@@ -1,13 +1,15 @@
 import { expect, type Page } from "@playwright/test";
 import type { Competitor } from "../../src/App";
 
-export async function installApiMock(page: Page, options: { competitors: Competitor[]; groups?: { id: number; name: string; created_at: string }[] }) {
+export async function installApiMock(page: Page, options: { competitors: Competitor[]; groups?: { id: number; name: string; created_at: string }[]; addProducts?: Record<string, "self" | "competitor">; activeMonitoredProducts?: number }) {
   const unexpected: string[] = [];
   let competitors = options.competitors;
   const groups = options.groups ?? [];
+  let nextId = Math.max(0, ...competitors.map((competitor) => competitor.id)) + 1;
   const responses: Record<string, unknown> = {
-    "GET /api/dashboard/today": { date: "2026-09-28", stats: { monitored_competitors: 0, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] },
+    "GET /api/dashboard/today": { date: "2026-09-28", stats: { monitored_competitors: 0, active_monitored_products: options.activeMonitoredProducts ?? 0, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] },
     "GET /api/dashboard/group-attention": { date: "2026-09-28", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] },
+    "GET /api/settings/own-shop-name": { configured: true, own_shop_name: "测试店铺" },
     "GET /api/competitors/collect-batch/status": { status: "idle", outcome_code: null, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, items: [] },
     "GET /api/competitors": competitors,
     "GET /api/competitor-groups": groups,
@@ -16,6 +18,51 @@ export async function installApiMock(page: Page, options: { competitors: Competi
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const key = `${request.method()} ${new URL(request.url()).pathname}`;
+    const requestUrl = new URL(request.url());
+    if (key === "POST /api/competitors") {
+      const body = request.postDataJSON() as { url: string; group_id?: number | null };
+      const offerId = body.url.match(/\/offer\/(\d+)\.html/i)?.[1] ?? String(nextId);
+      const ownership = options.addProducts?.[offerId] ?? "competitor";
+      const groupId = body.group_id ?? null;
+      const added: Competitor = {
+        id: nextId++, platform: "1688", offer_id: offerId, url: `https://detail.1688.com/offer/${offerId}.html`,
+        group_id: groupId, group_role: ownership === "self" && groupId !== null ? "own" : "competitor", ownership,
+        title: ownership === "self" ? "新增我方商品" : "新增竞品商品", shop_name: ownership === "self" ? "测试店铺" : "竞品店铺",
+        main_image_url: null, status: "active", is_active: true, created_at: "2026-09-28T00:00:00Z", last_collected_at: "2026-09-28T00:00:00Z",
+        latest_snapshot: { price_min: null, price_max: null, sku_count: 0 }, latest_change: null,
+      };
+      competitors = [...competitors, added];
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(added) });
+      return;
+    }
+    if (key === "POST /api/competitors/collect-batch") {
+      const body = request.postDataJSON() as { mode?: string; competitor_ids?: number[] };
+      if (body.mode !== "all_active" || body.competitor_ids) { unexpected.push(`${key} ${JSON.stringify(body)}`); }
+      const activeCount = options.activeMonitoredProducts ?? competitors.filter((competitor) => competitor.is_active).length;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "completed", outcome_code: "completed", total: activeCount, completed: activeCount, succeeded: activeCount, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, items: [] }) });
+      return;
+    }
+    const groupMatch = requestUrl.pathname.match(/^\/api\/competitors\/(\d+)\/group$/);
+    if (key === "PATCH /api/competitors/" + groupMatch?.[1] + "/group") {
+      const body = request.postDataJSON() as { group_id: number | null };
+      const competitorId = Number(groupMatch?.[1]);
+      const current = competitors.find((competitor) => competitor.id === competitorId);
+      if (!current) { await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ code: "competitor_not_found" }) }); return; }
+      const updated = { ...current, group_id: body.group_id, group_role: current.ownership === "self" && body.group_id !== null ? "own" as const : "competitor" as const };
+      competitors = competitors.map((competitor) => competitor.id === competitorId ? updated : competitor);
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(updated) });
+      return;
+    }
+    const detailMatch = requestUrl.pathname.match(/^\/api\/competitors\/(\d+)\/detail$/);
+    if (key === "GET /api/competitors/" + detailMatch?.[1] + "/detail") {
+      const current = competitors.find((competitor) => competitor.id === Number(detailMatch?.[1]));
+      if (!current) { await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ code: "competitor_not_found" }) }); return; }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        range_days: Number(requestUrl.searchParams.get("days") ?? 7), competitor: current, latest_snapshot: null, latest_skus: [], latest_price_change: null,
+        daily_trend: [], recent_changes: [], recent_collection_runs: [],
+      }) });
+      return;
+    }
     if (key === "PATCH /api/competitors/group-batch") {
       const body = request.postDataJSON() as { competitor_ids: number[]; group_id: number | null };
       competitors = competitors.map((competitor) => body.competitor_ids.includes(competitor.id) ? { ...competitor, group_id: body.group_id } : competitor);
@@ -36,7 +83,11 @@ export async function installApiMock(page: Page, options: { competitors: Competi
       return;
     }
     if (!(key in responses)) { unexpected.push(key); await route.abort("blockedbyclient"); return; }
-    const response = key === "GET /api/competitors" ? competitors : responses[key];
+    const response = key === "GET /api/competitors"
+      ? requestUrl.searchParams.get("ownership")
+        ? competitors.filter((competitor) => (competitor.ownership ?? (competitor.group_role === "own" ? "self" : "competitor")) === requestUrl.searchParams.get("ownership"))
+        : competitors
+      : responses[key];
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response) });
   });
   return { unexpected, async expectNoUnexpectedApi() { expect(unexpected, `Unexpected API request:\n${unexpected.join("\n")}`).toEqual([]); } };

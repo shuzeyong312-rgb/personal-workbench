@@ -138,6 +138,7 @@ def test_no_snapshot_returns_continuous_empty_daily_trend(
 
     body = client[0].get(f"/api/competitors/{competitor.id}/detail").json()
 
+    assert body["competitor"]["ownership"] == "competitor"
     assert body["range_days"] == 7
     assert body["latest_snapshot"] is None
     assert body["latest_skus"] == []

@@ -17,6 +17,7 @@ const competitor: Competitor = {
   url: "https://detail.1688.com/offer/123456789.html",
   group_id: null,
   group_role: "competitor",
+  ownership: "competitor",
   title: null,
   shop_name: null,
   main_image_url: null,
@@ -278,18 +279,42 @@ test("continues after one URL fails and retains failure reasons", async () => {
   expect(getAddFailureReason("competitor_group_not_found")).toBe("竞品组不存在");
 });
 
-test("converts request errors and unknown responses to server-error without stopping", async () => {
+test("preserves network and HTTP error categories without stopping", async () => {
   const result = await addCompetitorsSequentially(["A", "B"], null, async (_input, init) => {
     const url = (JSON.parse(String(init?.body)) as { url: string }).url;
     if (url === "A") throw new Error("offline");
     return { ok: false, json: async () => ({}) } as Response;
   });
   expect(result.succeeded).toEqual([]);
-  expect(result.failures.map(({ url, code }) => ({ url, code }))).toEqual([{ url: "A", code: "server-error" }, { url: "B", code: "server-error" }]);
+  expect(result.failures.map(({ url, code }) => ({ url, code }))).toEqual([{ url: "A", code: "network-error" }, { url: "B", code: "server-error" }]);
+});
+
+test.each([
+  ["own_shop_name_not_configured", "own_shop_name_not_configured"],
+  ["collection_in_progress", "collection_in_progress"],
+  ["competitor_already_exists", "competitor_already_exists"],
+  ["competitor_group_not_found", "competitor_group_not_found"],
+  ["own_product_already_bound", "own_product_already_bound"],
+  ["1688_login_required", "1688_login_required"],
+  ["1688_verification_required", "1688_verification_required"],
+  ["collection_timeout", "collection_timeout"],
+  ["collection_parse_failed", "collection_parse_failed"],
+  ["collection_save_failed", "collection_save_failed"],
+] as const)("keeps add error code %s instead of collapsing it", async (backendCode, expectedCode) => {
+  const result = await addCompetitorsSequentially(["A"], null, async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({ code: backendCode }),
+  } as Response));
+  expect(result.failures[0].code).toBe(expectedCode);
 });
 
 test("renders loading, empty, error and normal list states", () => {
-  expect(renderToStaticMarkup(<ListPage {...listProps} competitors={[]} status="loading" error={null} onRetry={noop} onAdd={noop} />)).toContain("正在加载竞品列表");
+  const competitorLoading = renderToStaticMarkup(<ListPage {...listProps} competitors={[]} status="loading" error={null} onRetry={noop} onAdd={noop} />);
+  expect(competitorLoading).toContain("正在加载竞品列表");
+  const ownLoading = renderToStaticMarkup(<ListPage {...listProps} ownership="self" competitors={[]} status="loading" error={null} onRetry={noop} onAdd={noop} />);
+  expect(ownLoading).toContain("正在加载我方商品");
+  expect(ownLoading).not.toContain("正在加载竞品列表");
   expect(renderToStaticMarkup(<ListPage {...listProps} competitors={[]} status="ready" error={null} onRetry={noop} onAdd={noop} />)).toContain("还没有添加竞品");
   expect(renderToStaticMarkup(<ListPage {...listProps} competitors={[]} status="error" error="请求失败" onRetry={noop} onAdd={noop} />)).toContain("重试");
   const normal = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
@@ -299,8 +324,37 @@ test("renders loading, empty, error and normal list states", () => {
   expect(normal).toContain("暂无变化记录");
   expect(normal).toContain("批量操作（0）");
   expect(normal).not.toContain("立即采集");
+  expect(normal).not.toContain("采集选中");
+  expect(normal).not.toContain("采集全部监控中");
   expect(normal).toContain("全选当前页全部商品");
   expect(normal).toContain("监控中");
+  expect(normal).not.toContain("添加监控商品");
+  expect(normal).toContain("共 1 个竞品");
+  const ownNormal = renderToStaticMarkup(<ListPage {...listProps} ownership="self" competitors={[competitor]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(ownNormal).toContain("共 1 个我方商品");
+  expect(ownNormal).not.toContain("共 1 个竞品");
+});
+
+test("removes collection actions from the own-product batch menu", () => {
+  const html = renderToStaticMarkup(<ListPage {...listProps} ownership="self" competitors={[competitor]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  expect(html).not.toContain("采集选中");
+  expect(html).not.toContain("采集全部监控中");
+});
+
+test("uses own-product wording for the own-product list summary and empty state", () => {
+  const originalFilters = { ...defaultCompetitorFilters };
+  defaultCompetitorFilters.search = "不存在的我方商品";
+  try {
+    const filtered = renderToStaticMarkup(<ListPage {...listProps} ownership="self" competitors={[competitor]} status="ready" error={null} onRetry={noop} />);
+    expect(filtered).toContain("没有找到符合条件的我方商品");
+    expect(filtered).not.toContain("没有找到符合条件的竞品");
+  } finally {
+    Object.assign(defaultCompetitorFilters, originalFilters);
+  }
+  const empty = renderToStaticMarkup(<ListPage {...listProps} ownership="self" competitors={[]} status="ready" error={null} onRetry={noop} />);
+  expect(empty).toContain("共 0 个我方商品");
+  expect(empty).toContain("还没有我方商品");
+  expect(empty).not.toContain("还没有添加竞品");
 });
 
 test.each([
@@ -593,7 +647,7 @@ test("renders competitor group controls and new group entry", () => {
   expect(html).toContain("未分组");
   expect(html).toContain("暖手宝");
   expect(html).toContain("新增竞品组");
-  expect(html).toContain("添加竞品");
+  expect(html).toContain("添加监控商品");
 });
 
 test("renders progress, failed URLs, and disables all add controls while submitting", () => {
@@ -609,7 +663,7 @@ test("renders partial and all-failed summaries with backend reasons", () => {
   const failed = renderToStaticMarkup(<AddDialog url="A" status="failed" failures={[...failures]} onUrlChange={noop} onSubmit={noop} onClose={noop} groups={[]} groupId={null} onGroupChange={noop} newGroupName="" onNewGroupNameChange={noop} onCreateGroup={noop} groupCreateStatus="initial" />);
   expect(partial).toContain("已添加 2 个，1 个未添加");
   expect(partial).toContain("A — 已存在");
-  expect(failed).toContain("未添加 1 个竞品");
+  expect(failed).toContain("未添加 1 个监控商品");
   expect(failed).toContain("A — 已存在");
 });
 
@@ -633,11 +687,13 @@ test.each([
 });
 
 test("renders competitor group labels in the list", () => {
-  const html = renderToStaticMarkup(<ListPage {...listProps} groups={[group]} competitors={[{ ...competitor, group_id: null }, { ...competitor, id: 2, offer_id: "987654321", group_id: 1 }, { ...competitor, id: 3, offer_id: "111111111", group_id: 2 }]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+  const html = renderToStaticMarkup(<ListPage {...listProps} groups={[group]} competitors={[{ ...competitor, group_id: null }, { ...competitor, id: 2, offer_id: "987654321", group_id: 1 }, { ...competitor, id: 3, offer_id: "111111111", group_id: 2 }]} status="ready" error={null} onRetry={noop} onAdd={noop} onOpenGroupAssignment={noop} />);
   expect(html).toContain("竞品组");
   expect(html).toContain("未分组");
   expect(html).toContain("暖手宝");
   expect(html).toContain("—");
+  expect(html).toContain("+ 绑定竞品组");
+  expect(html).toContain("更换/解除");
 });
 
 const dashboardData: DashboardData = {
@@ -684,6 +740,7 @@ const dashboardProps: React.ComponentProps<typeof DashboardPage> = {
   onRetryAttention: noop,
   onNavigate: noop,
   onOpenGroupDetail: noop,
+  ownShopName: "测试店铺",
 };
 const renderDashboard = (props: Partial<React.ComponentProps<typeof DashboardPage>> = {}) => renderToStaticMarkup(<DashboardPage {...dashboardProps} {...props} />);
 
@@ -717,7 +774,10 @@ test("renders group-first KPI and keeps backend group order and Attention levels
   expect(html).toContain(">9</strong>");
   expect(html).toContain("异常采集");
   expect(html).not.toContain("添加竞品");
-  expect(html).not.toContain("立即采集");
+  expect(html).toContain("我方店铺：测试店铺");
+  expect(html).toContain("立即采集");
+  expect(html).toContain("添加监控商品");
+  expect(html).not.toContain("dashboard-context-row");
   expect(html).toContain("今日需要关注的商品组");
   const order = ["一般组", "建议组", "重点组"].map((name) => html.indexOf(name));
   expect(order.every((index) => index >= 0)).toBe(true);
@@ -735,6 +795,26 @@ test("renders group-first KPI and keeps backend group order and Attention levels
   expect(html).not.toContain("dashboard-events-table");
   expect(html).toContain("采集状态概览");
   expect(html).toContain("近 7 天竞品变化趋势");
+});
+
+test("disables dashboard collection when there are no active monitored products", () => {
+  const html = renderDashboard({ data: { ...dashboardData, stats: { ...dashboardData.stats, active_monitored_products: 0 } } });
+  expect(html).toMatch(/<button[^>]*disabled=""[^>]*>立即采集<\/button>/);
+  const active = renderDashboard({ data: { ...dashboardData, stats: { ...dashboardData.stats, active_monitored_products: 1 } } });
+  expect(active).toMatch(/<button[^>]*>立即采集<\/button>/);
+});
+
+test("wires Dashboard collection action and keeps it out of list pages", () => {
+  const collect = vi.fn();
+  const dashboard = DashboardPage({ ...dashboardProps, onCollect: collect });
+  findButton(dashboard, "立即采集")?.onClick?.();
+  expect(collect).toHaveBeenCalledOnce();
+  const ownList = renderToStaticMarkup(<ListPage {...listProps} ownership="self" competitors={[competitor]} status="ready" error={null} onRetry={noop} onOpenGroupAssignment={noop} />);
+  const competitorList = renderToStaticMarkup(<ListPage {...listProps} ownership="competitor" competitors={[competitor]} status="ready" error={null} onRetry={noop} onOpenGroupAssignment={noop} />);
+  expect(ownList).not.toContain("采集选中");
+  expect(ownList).not.toContain("采集全部监控中");
+  expect(competitorList).not.toContain("采集选中");
+  expect(competitorList).not.toContain("采集全部监控中");
 });
 
 test("limits rendered reasons to the backend-provided list and shows the no-change state", () => {
@@ -782,6 +862,7 @@ test("renders the collection batch status and Group Detail action", () => {
   const running = renderDashboard({ batchState: { ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true } });
   expect(running).toContain("采集中 3 / 9");
   expect(running).toContain('style="width:33.33333333333333%"');
+  expect(running).toContain('class="secondary-button" disabled="">立即采集</button>');
   expect(running).toContain("进入组分析");
   const verification = renderDashboard({ batchState: { ...idleBatchState, status: "verification_required", total: 9, completed: 3 } });
   expect(verification).toContain("需要人工验证");
@@ -817,7 +898,7 @@ test("dashboard all-zero trend still has a usable integer domain", () => {
   expect(scale.ticks).toEqual([0, 1, 2, 3, 4]);
 });
 
-test("renders batch state without dashboard quick actions", () => {
+test("renders batch state with the dashboard collection action", () => {
   const running = renderDashboard({ batchState: { ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true } });
   expect(running).toContain("采集中 3 / 9");
   expect(running).toContain('style="width:33.33333333333333%"');
@@ -828,7 +909,7 @@ test("renders batch state without dashboard quick actions", () => {
   expect(empty).toContain("今日采集统计仍会保留");
   expect(empty).toContain('disabled=""');
   expect(empty).not.toContain("添加竞品");
-  expect(empty).not.toContain("立即采集");
+  expect(empty).toContain("立即采集");
 });
 
 test("renders detail entry actions on dashboard and competitor list", () => {
@@ -999,10 +1080,10 @@ test("renders compact group detail states, baseline, comparison, and dynamic mod
 });
 
 test("shows own role in list and detail and limits bind candidates to group members", () => {
-  const own = { ...competitor, id: 7, group_id: 1, group_role: "own" as const, title: null };
+  const own = { ...competitor, id: 7, group_id: 1, group_role: "own" as const, ownership: "self" as const, title: null };
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[own]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(list).toContain("我方");
-  const detail = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, group_role: "own" } }} status="ready" error={null} />);
+  const detail = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, group_role: "own", ownership: "self" } }} status="ready" error={null} />);
   expect(detail).toContain("我方商品");
   const dialog = renderToStaticMarkup(<OwnProductDialog group={{ ...groupSummary, own_product: { id: own.id, offer_id: own.offer_id, title: null, shop_name: null, main_image_url: null, status: "unknown", is_active: true } }} mode="bind" competitors={[own, { ...competitor, id: 8, group_id: null }, { ...competitor, id: 9, group_id: 1, offer_id: "909" }]} loading={false} selectedId={null} confirming={false} submitting={false} error={null} onSelect={noop} onConfirmStep={noop} onClose={noop} onSubmit={noop} />);
   expect(dialog).toContain("Offer 909");
@@ -1016,6 +1097,14 @@ test("shows own role in list and detail and limits bind candidates to group memb
   const unbind = renderToStaticMarkup(<OwnProductDialog group={{ ...groupSummary, own_product: { id: 7, offer_id: "700", title: "原商品", shop_name: null, main_image_url: null, status: "active", is_active: true } }} mode="unbind" competitors={[]} loading={false} selectedId={null} confirming={false} submitting={false} error={null} onSelect={noop} onConfirmStep={noop} onClose={noop} onSubmit={noop} />);
   expect(unbind).toContain("仍保留在当前组");
   expect(unbind).toContain("历史数据不会删除");
+});
+
+test("uses ownership for an ungrouped self detail", () => {
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, ownership: "self", group_id: null, group_role: "competitor" } }} status="ready" error={null} />);
+  expect(html).toContain("我方商品详情");
+  expect(html).toContain("返回我方商品");
+  expect(html).toContain("删除我方商品");
+  expect(html).not.toContain("直接竞品");
 });
 
 test("renders create and rename group dialogs with failure feedback", () => {
@@ -1272,6 +1361,7 @@ const detailData: CompetitorDetail = {
     url: "https://detail.1688.com/offer/123456789.html",
     group_id: 1,
     group_role: "competitor",
+    ownership: "competitor",
     title: "暖手宝商品",
     shop_name: "家居店",
     main_image_url: null,
