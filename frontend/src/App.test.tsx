@@ -7,6 +7,7 @@ import { createServer } from "vite";
 import { expect, test, vi } from "vitest";
 
 import { competitorPageSize, getBatchRefreshNotice, paginateCompetitors, updatePageSelection } from "./App";
+import { CurrentBatchCard } from "./App";
 
 import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
@@ -968,7 +969,26 @@ test("renders workspace module placeholders", () => {
   expect(compare).toContain("<h1>全网比价</h1>");
   expect(compare).toContain("全网比价模块已预留");
   expect(collectionTasks).toContain("<h1>采集任务</h1>");
-  expect(collectionTasks).toContain("采集任务模块已预留");
+  expect(collectionTasks).toContain("当前批量采集");
+  expect(collectionTasks).toContain("采集记录");
+});
+
+test("renders Collection Tasks runtime states and preserves missing product IDs", () => {
+  const productById = new Map([[1, { ...competitor, title: "当前商品", offer_id: "offer-1", shop_name: "测试店铺" }]]);
+  const render = (batchState: BatchState) => renderToStaticMarkup(<CurrentBatchCard batchState={batchState} status="ready" error={null} onRetry={noop} productById={productById} />);
+  const idle = render(idleBatchState);
+  expect(idle).toContain("当前无批量采集任务");
+  expect(idle).toContain("可在竞品监控大屏点击「立即采集」发起批量采集。");
+  expect(render({ ...idleBatchState, status: "running", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, items: [{ competitor_id: 99, status: "failed", error_code: "collection_timeout", message: "加载超时", outcome: null }] })).toContain("商品 ID：99");
+  expect(render({ ...idleBatchState, status: "cooling_down", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, cooldown_remaining_seconds: 17, auto_resume_attempt: 1 })).toContain("自动恢复 1 / 2");
+  expect(render({ ...idleBatchState, status: "verification_required", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, browser_open: true, runner_active: true })).toContain("需要人工完成 1688 验证");
+  expect(render({ ...idleBatchState, status: "completed", total: 2, completed: 2, succeeded: 1, failed: 1, outcome_code: "completed" })).toContain("结果码：completed");
+});
+
+test("keeps collection task labels in user-facing language", () => {
+  const html = renderToStaticMarkup(<CollectionTasksPage onNavigate={noop} />);
+  expect(html).toContain("查看每次商品采集结果与失败原因");
+  expect(html).not.toMatch(/BatchRuntime|Runtime|持久化|单商品采集尝试/);
 });
 
 test.each([

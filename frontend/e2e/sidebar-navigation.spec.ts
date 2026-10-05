@@ -5,7 +5,7 @@ test("uses consistent module navigation, collapses monitoring, and opens placeho
   const mock = await installApiMock(page, { competitors: [] });
   await page.goto("/");
 
-  const monitoringToggle = page.getByRole("button", { name: "竞品监控" });
+  const monitoringToggle = page.getByRole("button", { name: "竞品监控", exact: true });
   await expect(monitoringToggle).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("button", { name: "竞品监控大屏" })).toBeVisible();
 
@@ -23,10 +23,10 @@ test("uses consistent module navigation, collapses monitoring, and opens placeho
     await expect(page.getByText(`${moduleName}模块已预留`)).toBeVisible();
   }
 
-  await monitoringToggle.click();
   await page.getByRole("button", { name: "采集任务" }).click();
   await expect(page.getByRole("heading", { name: "采集任务", exact: true })).toBeVisible();
-  await expect(page.getByText("采集任务模块已预留")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "当前批量采集" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "采集记录" })).toBeVisible();
 
   await mock.expectNoUnexpectedApi();
 });

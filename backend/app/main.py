@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.collection.daily import run_daily_collection_cycle
 from app.collection.service import shutdown_batch_runner
+from app.collection_runs import router as collection_runs_router
 from app.competitors import router as competitors_router
 from app.competitor_detail import router as competitor_detail_router
 from app.competitor_groups import router as competitor_groups_router
@@ -68,6 +69,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(competitors_router)
+app.include_router(collection_runs_router)
 app.include_router(competitor_detail_router)
 app.include_router(competitor_groups_router)
 app.include_router(group_detail_router)

@@ -1385,7 +1385,7 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd = 
              {pagedCompetitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={selectedIds.has(competitor.id)} disabled={batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"} {isSelfProduct(competitor) && <span className="own-role-badge">我方</span>}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td><div className="list-group-cell"><span>{getCompetitorGroupLabel(competitor.group_id, groups)}</span><button type="button" className="text-button" onClick={() => onOpenGroupAssignment(competitor)}>{competitor.group_id === null ? "+ 绑定竞品组" : "更换/解除"}</button></div></td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button></td></tr>) }
           </tbody></table></div>}
         </section>
-        <div className="pagination-bar"><span>共 {filteredCompetitors.length} 个{selfPage ? "我方商品" : "竞品"}</span><button type="button" disabled={pagination.page === 1} onClick={() => setCurrentPage((page) => page - 1)}>上一页</button><span className="page-number" aria-current="page">{pagination.page}</span><button type="button" disabled={pagination.page === pagination.totalPages} onClick={() => setCurrentPage((page) => page + 1)}>下一页</button><span>第 {pagination.page} / {pagination.totalPages} 页</span></div>
+        <PaginationBar total={filteredCompetitors.length} itemLabel={selfPage ? "个我方商品" : "个竞品"} page={pagination.page} totalPages={pagination.totalPages} onPrevious={() => setCurrentPage((page) => page - 1)} onNext={() => setCurrentPage((page) => page + 1)} previousDisabled={pagination.page === 1} nextDisabled={pagination.page === pagination.totalPages} />
     </AppShell>
   );
 }
@@ -1726,8 +1726,52 @@ export function HomePage({ onNavigate }: { onNavigate: (page: Page) => void }) {
   return <WorkspacePlaceholderPage page="home" title="首页" description="个人工作台总览与快捷入口。" note="后续将在这里汇总竞品监控、全网比价、自动询价和自动上架等模块的关键状态与快捷入口。" icon="home" onNavigate={onNavigate} />;
 }
 
-export function CollectionTasksPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
-  return <WorkspacePlaceholderPage page="collection-tasks" title="采集任务" description="统一查看采集进度、历史批次与异常结果。" note="后续将在这里集中展示当前采集任务、历史采集记录和失败原因。" icon="monitoring" onNavigate={onNavigate} />;
+type PaginationBarProps = {
+  total: number;
+  itemLabel: string;
+  page: number;
+  totalPages: number;
+  onPrevious: () => void;
+  onNext: () => void;
+  previousDisabled: boolean;
+  nextDisabled: boolean;
+};
+
+export function PaginationBar({ total, itemLabel, page, totalPages, onPrevious, onNext, previousDisabled, nextDisabled }: PaginationBarProps) {
+  return <div className="pagination-bar"><span>共 {total} {itemLabel}</span><button type="button" disabled={previousDisabled} onClick={onPrevious}>上一页</button><span className="page-number" aria-current="page">{page}</span><button type="button" disabled={nextDisabled} onClick={onNext}>下一页</button><span>第 {page} / {totalPages} 页</span></div>;
+}
+
+type CollectionRun = { id: number; competitor_id: number; ownership: "self" | "competitor"; title: string | null; offer_id: string; shop_name: string | null; started_at: string; finished_at: string | null; status: "running" | "success" | "failed"; error_type: string | null; error_message: string | null; duration_seconds: number | null };
+type CollectionRunPage = { items: CollectionRun[]; total: number; page: number; page_size: number };
+type CollectionTaskProps = { onNavigate: (page: Page) => void; batchState?: BatchState; batchStatus?: ListStatus; batchError?: string | null; onRefreshBatch?: () => Promise<boolean> };
+
+function ProductReference({ competitorId, productById }: { competitorId: number; productById: ReadonlyMap<number, Competitor> }) {
+  const product = productById.get(competitorId);
+  if (!product) return <div className="collection-task-product collection-task-product-missing"><strong>商品 ID：{competitorId}</strong><span>标题、Offer ID、店铺和身份未采集</span></div>;
+  return <div className="collection-task-product"><strong>{product.title || "标题未采集"}</strong><span>Offer ID：{product.offer_id || "未采集"}</span><span>{product.shop_name || "店铺未采集"} · {product.ownership === "self" ? "我方商品" : "直接竞品"}</span></div>;
+}
+
+export function CurrentBatchCard({ batchState, status, error, onRetry, productById }: { batchState: BatchState; status: ListStatus; error: string | null; onRetry: () => void; productById: ReadonlyMap<number, Competitor> }) {
+  if (status === "loading") return <section className="table-card collection-current-card"><div className="table-heading"><div><h2>当前批量采集</h2></div></div><div className="state-panel"><div className="spinner" /><strong>正在读取当前批量采集状态…</strong></div></section>;
+  if (status === "error") return <section className="table-card collection-current-card"><div className="table-heading"><div><h2>当前批量采集</h2></div></div><div className="state-panel state-error"><strong>状态刷新失败</strong><span>{error || "暂时无法读取批量采集状态。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></div></section>;
+  if (batchState.status === "idle") return <section className="table-card collection-current-card"><div className="table-heading"><div><h2>当前批量采集</h2></div></div><div className="collection-batch-idle"><strong>当前无批量采集任务</strong><span>可在竞品监控大屏点击「立即采集」发起批量采集。</span></div></section>;
+  const currentProduct = batchState.current_competitor_id === null ? null : <ProductReference competitorId={batchState.current_competitor_id} productById={productById} />;
+  const progress = batchState.total ? Math.min(100, (batchState.completed / batchState.total) * 100) : 0;
+  const title = batchState.status === "running" ? "采集中" : batchState.status === "cooling_down" ? "1688 验证已触发" : batchState.status === "verification_required" ? "需要人工完成 1688 验证" : "最近批次完成";
+  return <section className={`table-card collection-current-card collection-batch-${batchState.status}`}><div className="table-heading"><div><h2>当前批量采集</h2></div><span className={`collection-batch-status collection-batch-status-${batchState.status}`}>{title}</span></div><div className="collection-batch-summary"><div><strong>{batchState.completed} / {batchState.total}</strong><span>已完成 / 总数</span></div><div><strong>{batchState.succeeded}</strong><span>成功</span></div><div><strong>{batchState.failed}</strong><span>失败</span></div><div><strong>{batchState.remaining}</strong><span>剩余</span></div></div>{(batchState.status === "running" || batchState.status === "cooling_down" || batchState.status === "verification_required") && <div className="collection-progress" aria-label={`批量采集进度 ${batchState.completed} / ${batchState.total}`}><i style={{ width: `${progress}%` }} /></div>}{batchState.status === "cooling_down" && <div className="collection-batch-notice"><strong>浏览器已关闭，等待冷却后自动恢复。</strong><span>冷却剩余：{formatBatchCooldown(batchState.cooldown_remaining_seconds)} · 自动恢复 {batchState.auto_resume_attempt} / {batchState.auto_resume_max}</span></div>}{batchState.status === "verification_required" && <div className="collection-batch-notice"><strong>请在已打开的浏览器中完成 1688 验证。</strong><span>浏览器：{batchState.browser_open ? "已打开" : "未打开"} · 采集器：{batchState.runner_active ? "运行中" : "未运行"}</span></div>}{batchState.status === "completed" && <div className="collection-batch-notice"><strong>结果码：{batchState.outcome_code || "未提供"}</strong><span>需要验证：{batchState.verification_required}</span></div>}{currentProduct && <div className="collection-current-product"><span>当前商品</span>{currentProduct}</div>}{batchState.items.length > 0 && <div className="collection-batch-items"><strong>已完成项目</strong><ul>{batchState.items.map((item) => <li key={`${item.competitor_id}-${item.status}`}><ProductReference competitorId={item.competitor_id} productById={productById} /><span className={`collection-task-run-status collection-task-run-status-${item.status}`}>{item.status === "success" ? `采集成功${item.outcome === "active" ? " · 在售" : item.outcome === "offline" ? " · 已下架" : ""}` : item.status === "failed" ? "失败" : "需要验证"}</span>{item.status !== "success" && <>{item.message && <small>{item.message}</small>}{item.error_code && <small>{item.error_code}</small>}</>}</li>)}</ul></div>}</section>;
+}
+
+export function CollectionTasksPage({ onNavigate, batchState = idleBatchState, batchStatus = "ready", batchError = null, onRefreshBatch = async () => true }: CollectionTaskProps) {
+  const [products, setProducts] = useState<Competitor[]>([]); const [historyStatus, setHistoryStatus] = useState<ListStatus>("loading"); const [historyError, setHistoryError] = useState<string | null>(null); const [history, setHistory] = useState<CollectionRunPage | null>(null); const [searchDraft, setSearchDraft] = useState(""); const [search, setSearch] = useState(""); const [runStatus, setRunStatus] = useState<"all" | "success" | "failed">("all"); const [ownership, setOwnership] = useState<"all" | "self" | "competitor">("all"); const [page, setPage] = useState(1); const latestHistoryRequest = useRef(0);
+  const refreshBatchRef = useRef(onRefreshBatch);
+  refreshBatchRef.current = onRefreshBatch;
+  const productById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
+  const refreshBatch = useCallback(() => refreshBatchRef.current(), []);
+  const loadHistory = useCallback(async () => { const requestId = ++latestHistoryRequest.current; setHistoryStatus("loading"); setHistoryError(null); const params = new URLSearchParams({ status: runStatus, ownership, page: String(page) }); if (search.trim()) params.set("search", search.trim()); try { const response = await fetch(`/api/collection-runs?${params.toString()}`); if (!response.ok) throw new Error("request failed"); const data = await response.json() as CollectionRunPage; if (requestId !== latestHistoryRequest.current) return; setHistory(data); setHistoryStatus("ready"); } catch { if (requestId !== latestHistoryRequest.current) return; setHistoryError("暂时无法获取采集记录，请检查服务是否正常运行。"); setHistoryStatus("error"); } }, [ownership, page, runStatus, search]);
+  useEffect(() => { void refreshBatch(); }, [refreshBatch]); useEffect(() => { void loadHistory(); }, [loadHistory]); useEffect(() => { void fetch("/api/competitors").then((response) => response.ok ? response.json() as Promise<Competitor[]> : []).then(setProducts).catch(() => setProducts([])); }, []);
+  const totalPages = history ? Math.max(1, Math.ceil(history.total / history.page_size)) : 1;
+  const updateFilters = (nextStatus: "all" | "success" | "failed", nextOwnership: "all" | "self" | "competitor") => { setPage(1); setRunStatus(nextStatus); setOwnership(nextOwnership); };
+  return <AppShell page="collection-tasks" onNavigate={onNavigate} breadcrumb="采集任务"><header className="page-header"><div><h1>采集任务</h1><p className="page-description">查看当前采集进度、历史记录与失败原因。</p></div></header><CurrentBatchCard batchState={batchState} status={batchStatus} error={batchError} onRetry={() => void refreshBatch()} productById={productById} /><section className="table-card collection-history-card"><div className="table-heading"><div><h2>采集记录</h2><span>查看每次商品采集结果与失败原因</span></div></div><form className="collection-history-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(searchDraft); }}><input aria-label="搜索采集记录" value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="搜索标题、Offer ID 或店铺" /><button type="submit" className="secondary-button">搜索</button><select aria-label="采集记录状态" value={runStatus} onChange={(event) => updateFilters(event.target.value as typeof runStatus, ownership)}><option value="all">全部状态</option><option value="success">成功</option><option value="failed">失败</option></select><select aria-label="采集记录身份" value={ownership} onChange={(event) => updateFilters(runStatus, event.target.value as typeof ownership)}><option value="all">全部身份</option><option value="self">我方商品</option><option value="competitor">直接竞品</option></select></form>{historyStatus === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载采集记录…</strong></div>}{historyStatus === "error" && <div className="state-panel state-error"><strong>采集记录加载失败</strong><span>{historyError}</span><button type="button" className="secondary-button" onClick={() => void loadHistory()}>重试</button></div>}{historyStatus === "ready" && history && (<>{history.items.length === 0 ? <div className="detail-empty">{history.total === 0 ? "暂无采集记录" : "当前页无记录"}</div> : <div className="table-scroll"><table className="collection-runs-table"><thead><tr><th>状态</th><th>商品</th><th>当前身份</th><th>开始时间</th><th>耗时</th><th>结果</th></tr></thead><tbody>{history.items.map((run) => <tr key={run.id}><td><span className={`collection-task-run-status collection-task-run-status-${run.status}`}>{run.status === "success" ? "成功" : run.status === "failed" ? "失败" : "未完成"}</span></td><td><strong>{run.title || "标题未采集"}</strong><small>Offer ID：{run.offer_id} · {run.shop_name || "店铺未采集"}</small></td><td>{run.ownership === "self" ? "我方商品" : "直接竞品"}</td><td>{formatDate(run.started_at)}</td><td>{formatDuration(run.duration_seconds)}</td><td>{run.status === "failed" ? (run.error_message || run.error_type || "采集失败") : ""}</td></tr>)}</tbody></table></div>}<PaginationBar total={history.total} itemLabel="条" page={history.page} totalPages={totalPages} onPrevious={() => setPage(history.page - 1)} onNext={() => setPage(history.page + 1)} previousDisabled={history.page <= 1} nextDisabled={history.page >= totalPages} /></>)}</section></AppShell>;
 }
 
 type SettingsPageProps = {
@@ -1809,6 +1853,8 @@ function App() {
   const [addProgress, setAddProgress] = useState({ completed: 0, total: 0 });
   const [notice, setNotice] = useState<Notice | null>(null);
   const [batchState, setBatchState] = useState<BatchState>(idleBatchState);
+  const [batchStatus, setBatchStatus] = useState<ListStatus>("loading");
+  const [batchError, setBatchError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [batchGroupDialog, setBatchGroupDialog] = useState<{ competitorIds: number[]; selectedCount: number; ownCount: number } | null>(null);
   const [batchGroupTarget, setBatchGroupTarget] = useState<number | null | undefined>(undefined);
@@ -1948,6 +1994,8 @@ function App() {
       const previous = batchStateRef.current;
       batchStateRef.current = next;
       setBatchState(next);
+      setBatchStatus("ready");
+      setBatchError(null);
       const wasActiveBatch = previous.status === "running" || previous.status === "cooling_down";
       if (next.status === "completed" && wasActiveBatch) {
         const refreshSucceeded = (await Promise.all([loadCurrentProducts(), loadDashboard()])).every(Boolean);
@@ -1955,8 +2003,12 @@ function App() {
           ? { message: `采集完成：成功 ${next.succeeded}，失败 ${next.failed}`, type: next.failed ? "error" : "success" }
           : { message: batchRefreshFailureMessage, type: "error" });
       }
+      return true;
     } catch {
+      setBatchStatus("error");
+      setBatchError("暂时无法读取批量采集状态，请检查服务是否正常运行。");
       if (notifyOnError) setNotice({ message: "无法读取批量采集状态，请稍后重试。", type: "error" });
+      return false;
     }
   }
   useEffect(() => { void loadDashboard(); void loadOwnShopName(); }, []);
@@ -1966,14 +2018,6 @@ function App() {
     const timer = window.setTimeout(() => setNotice(null), 4000);
     return () => window.clearTimeout(timer);
   }, [notice]);
-  useEffect(() => {
-    if (batchState.status !== "completed") return;
-    const timer = window.setTimeout(() => {
-      batchStateRef.current = idleBatchState;
-      setBatchState(idleBatchState);
-    }, 4000);
-    return () => window.clearTimeout(timer);
-  }, [batchState.status]);
   useEffect(() => {
     if (batchState.status !== "running" && batchState.status !== "cooling_down" && !(batchState.status === "verification_required" && batchState.browser_open)) return;
     const timer = window.setInterval(() => { void loadBatchStatus(); }, 1500);
@@ -2356,7 +2400,7 @@ function App() {
     {page === "dashboard" && <DashboardPage data={dashboard} attention={dashboardAttention} attentionStatus={dashboardAttentionStatus} attentionError={dashboardAttentionError} status={dashboardStatus} error={dashboardError} batchState={batchState} ownShopName={ownShopName} onAdd={openDashboardAddDialog} onCollect={() => void handleBatchAction("all_active")} onRetry={() => void loadDashboard()} onRetryAttention={() => void loadDashboardAttention()} onNavigate={navigate} onOpenGroupDetail={openGroupDetail} />}
     {page === "own-products" && <ListPage competitors={ownProducts} ownership="self" groups={groups} status={ownListStatus} error={ownListError} onRetry={() => void loadOwnProducts()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} paginationResetVersion={paginationResetVersion} />}
     {page === "competitors" && <ListPage competitors={competitors} ownership="competitor" groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} paginationResetVersion={paginationResetVersion} />}
-    {page === "collection-tasks" && <CollectionTasksPage onNavigate={navigate} />}
+    {page === "collection-tasks" && <CollectionTasksPage onNavigate={navigate} batchState={batchState} batchStatus={batchStatus} batchError={batchError} onRefreshBatch={loadBatchStatus} />}
     {page === "settings" && <SettingsPage configured={settingsConfigured} value={settingsValue} status={settingsStatus} error={settingsError} saveError={settingsSaveError} submitting={settingsSubmitting} onChange={setSettingsValue} onRetry={() => void loadOwnShopName()} onSave={submitOwnShopName} onNavigate={navigate} />}
     {page === "groups" && <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} />}
     {page === "group-detail" && <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} />}

@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 import type { Competitor } from "../../src/App";
 
-export async function installApiMock(page: Page, options: { competitors: Competitor[]; groups?: { id: number; name: string; created_at: string }[]; addProducts?: Record<string, "self" | "competitor">; activeMonitoredProducts?: number }) {
+export async function installApiMock(page: Page, options: { competitors: Competitor[]; groups?: { id: number; name: string; created_at: string }[]; addProducts?: Record<string, "self" | "competitor">; activeMonitoredProducts?: number; collectionRuns?: unknown }) {
   const unexpected: string[] = [];
   let competitors = options.competitors;
   const groups = options.groups ?? [];
@@ -12,6 +12,7 @@ export async function installApiMock(page: Page, options: { competitors: Competi
     "GET /api/settings/own-shop-name": { configured: true, own_shop_name: "测试店铺" },
     "GET /api/competitors/collect-batch/status": { status: "idle", outcome_code: null, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, items: [] },
     "GET /api/competitors": competitors,
+    "GET /api/collection-runs": options.collectionRuns ?? { items: [], total: 0, page: 1, page_size: 20 },
     "GET /api/competitor-groups": groups,
     "GET /api/competitor-groups/summary": { groups: [], unassigned: { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } },
   };
