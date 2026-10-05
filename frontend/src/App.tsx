@@ -8,7 +8,7 @@ type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
 export type BatchStatus = "idle" | "running" | "cooling_down" | "completed" | "verification_required";
-export type Page = "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "settings";
+export type Page = "home" | "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "price-compare" | "auto-inquiry" | "auto-listing" | "settings";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
 type BatchAction = "selected" | "all_active" | "group" | "stop" | "resume" | "delete";
@@ -970,15 +970,31 @@ export function StatusBadge({ status }: { status: Competitor["status"] }) {
 }
 
 type ShellProps = { page: Page; onNavigate: (page: Page) => void; breadcrumb: string; children: ReactNode };
+type NavIconName = "home" | "monitoring" | "compare" | "inquiry" | "listing" | "settings";
+
+function NavIcon({ name }: { name: NavIconName }) {
+  const paths: Record<NavIconName, ReactNode> = {
+    home: <><path d="m4 10 8-6 8 6" /><path d="M6 9v11h12V9" /><path d="M10 20v-6h4v6" /></>,
+    monitoring: <><path d="M4 17V9" /><path d="M10 17V5" /><path d="M16 17v-4" /><path d="m4 7 5-3 5 5 6-5" /></>,
+    compare: <><path d="M5 7h12" /><path d="m14 4 3 3-3 3" /><path d="M19 17H7" /><path d="m10 14-3 3 3 3" /></>,
+    inquiry: <><path d="M5 5h14v10H9l-4 4V5Z" /><path d="M8 9h8" /><path d="M8 12h5" /></>,
+    listing: <><path d="M5 9v10h14V9" /><path d="M9 7l3-3 3 3" /><path d="M12 4v10" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="M12 3v2" /><path d="M12 19v2" /><path d="m5.64 5.64 1.42 1.42" /><path d="m16.94 16.94 1.42 1.42" /><path d="M3 12h2" /><path d="M19 12h2" /><path d="m5.64 18.36 1.42-1.42" /><path d="m16.94 7.06 1.42-1.42" /></>,
+  };
+  return <span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24">{paths[name]}</svg></span>;
+}
+
+const monitoringPages = new Set<Page>(["dashboard", "own-products", "competitors", "detail", "groups", "group-detail", "collection-tasks"]);
 
 export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: Page) => void }) {
   const [monitoringExpanded, setMonitoringExpanded] = useState(true);
+  const monitoringActive = monitoringPages.has(page);
   return <aside className="sidebar">
     <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>工作提效工具集</span></div></div>
     <nav aria-label="主导航">
-      <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">⌂</span>首页</button>
+      <button className={"nav-item" + (page === "home" ? " nav-active" : "")} onClick={() => onNavigate("home")} aria-current={page === "home" ? "page" : undefined}><NavIcon name="home" />首页</button>
       <div className={"nav-group" + (monitoringExpanded ? "" : " nav-group-collapsed")}>
-        <button type="button" className="nav-group-title" onClick={() => setMonitoringExpanded((expanded) => !expanded)} aria-expanded={monitoringExpanded} aria-controls="competitor-monitoring-nav"><span className="nav-icon" aria-hidden="true">⌁</span>竞品监控<span className="nav-chevron" aria-hidden="true">⌃</span></button>
+        <button type="button" className={"nav-group-title" + (monitoringActive ? " nav-group-title-current" : "")} onClick={() => setMonitoringExpanded((expanded) => !expanded)} aria-expanded={monitoringExpanded} aria-controls="competitor-monitoring-nav"><NavIcon name="monitoring" />竞品监控<span className="nav-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 14 4-4 4 4" /></svg></span></button>
         <div className="nav-group-children" id="competitor-monitoring-nav" hidden={!monitoringExpanded}>
           <button className={"nav-item nav-child" + (page === "dashboard" ? " nav-active" : "")} onClick={() => onNavigate("dashboard")} aria-current={page === "dashboard" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
           <button className={"nav-item nav-child" + (page === "own-products" ? " nav-active" : "")} onClick={() => onNavigate("own-products")} aria-current={page === "own-products" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />我方商品</button>
@@ -987,15 +1003,19 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
           <button className={"nav-item nav-child" + (page === "collection-tasks" ? " nav-active" : "")} onClick={() => onNavigate("collection-tasks")} aria-current={page === "collection-tasks" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />采集任务</button>
         </div>
       </div>
-      <button className="nav-item nav-disabled" disabled><span className="nav-icon" aria-hidden="true">▣</span>自动上架</button><button className={"nav-item" + (page === "settings" ? " nav-active" : "")} onClick={() => onNavigate("settings")} aria-current={page === "settings" ? "page" : undefined}><span className="nav-icon" aria-hidden="true">⚙</span>系统设置</button>
+      <button className={"nav-item" + (page === "price-compare" ? " nav-active" : "")} onClick={() => onNavigate("price-compare")} aria-current={page === "price-compare" ? "page" : undefined}><NavIcon name="compare" />全网比价</button>
+      <button className={"nav-item" + (page === "auto-inquiry" ? " nav-active" : "")} onClick={() => onNavigate("auto-inquiry")} aria-current={page === "auto-inquiry" ? "page" : undefined}><NavIcon name="inquiry" />自动询价</button>
+      <button className={"nav-item" + (page === "auto-listing" ? " nav-active" : "")} onClick={() => onNavigate("auto-listing")} aria-current={page === "auto-listing" ? "page" : undefined}><NavIcon name="listing" />自动上架</button>
+      <button className={"nav-item" + (page === "settings" ? " nav-active" : "")} onClick={() => onNavigate("settings")} aria-current={page === "settings" ? "page" : undefined}><NavIcon name="settings" />系统设置</button>
     </nav>
     <div className="sidebar-note"><strong>让工作更高效</strong><span>v1.0.0</span></div>
   </aside>;
 }
 
 function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
+  const monitoringPage = monitoringPages.has(page);
   return <div className="app-shell"><Sidebar page={page} onNavigate={onNavigate} /><main className={`main-content${page === "dashboard" ? " main-content-dashboard" : ""}`}>
-    <div className="workspace-header"><div className="breadcrumb">个人工作台 <span>/</span> 竞品监控 <span>/</span> <strong>{breadcrumb}</strong></div><div className="workspace-tools" aria-label="工作台工具区"><div className="workspace-search" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.5" /><path d="m16 16 4 4" /></svg><span>搜索商品名称、链接或关键词</span></div><span className="workspace-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></span><span className="workspace-user" aria-hidden="true"><span className="workspace-avatar">W</span><span>工作台</span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></span></div></div>
+    <div className="workspace-header"><div className="breadcrumb">个人工作台 <span>/</span>{monitoringPage && <>竞品监控 <span>/</span></>}<strong>{breadcrumb}</strong></div><div className="workspace-tools" aria-label="工作台工具区"><div className="workspace-search" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.5" /><path d="m16 16 4 4" /></svg><span>搜索商品名称、链接或关键词</span></div><span className="workspace-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></span><span className="workspace-user" aria-hidden="true"><span className="workspace-avatar">W</span><span>工作台</span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></span></div></div>
     {children}
   </main></div>;
 }
@@ -1681,11 +1701,33 @@ export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups,
   </section></div>;
 }
 
-export function CollectionTasksPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
-  return <AppShell page="collection-tasks" onNavigate={onNavigate} breadcrumb="采集任务">
-    <header className="page-header"><div><h1>采集任务</h1><p className="page-description">统一查看采集进度、历史批次与异常结果。</p></div></header>
-    <section className="table-card"><div className="state-panel"><div className="empty-icon" aria-hidden="true">◷</div><strong>采集任务页面已预留</strong><span>后续将在这里集中展示当前采集任务、历史采集记录和失败原因。</span></div></section>
+type WorkspacePlaceholderPageProps = {
+  page: Page;
+  title: string;
+  description: string;
+  note: string;
+  icon: NavIconName;
+  onNavigate: (page: Page) => void;
+};
+
+export function WorkspacePlaceholderPage({ page, title, description, note, icon, onNavigate }: WorkspacePlaceholderPageProps) {
+  return <AppShell page={page} onNavigate={onNavigate} breadcrumb={title}>
+    <header className="page-header"><div><h1>{title}</h1><p className="page-description">{description}</p></div></header>
+    <section className="table-card module-placeholder-card">
+      <div className="module-placeholder-icon"><NavIcon name={icon} /></div>
+      <span className="module-placeholder-badge">规划中</span>
+      <strong>{title}模块已预留</strong>
+      <p>{note}</p>
+    </section>
   </AppShell>;
+}
+
+export function HomePage({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  return <WorkspacePlaceholderPage page="home" title="首页" description="个人工作台总览与快捷入口。" note="后续将在这里汇总竞品监控、全网比价、自动询价和自动上架等模块的关键状态与快捷入口。" icon="home" onNavigate={onNavigate} />;
+}
+
+export function CollectionTasksPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  return <WorkspacePlaceholderPage page="collection-tasks" title="采集任务" description="统一查看采集进度、历史批次与异常结果。" note="后续将在这里集中展示当前采集任务、历史采集记录和失败原因。" icon="monitoring" onNavigate={onNavigate} />;
 }
 
 type SettingsPageProps = {
@@ -2307,6 +2349,10 @@ function App() {
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
   return <>
+    {page === "home" && <HomePage onNavigate={navigate} />}
+    {page === "price-compare" && <WorkspacePlaceholderPage page="price-compare" title="全网比价" description="统一检索并对比全网同款与相似商品价格。" note="后续将在这里承载商品检索、候选同款筛选、价格对比和结果沉淀。" icon="compare" onNavigate={navigate} />}
+    {page === "auto-inquiry" && <WorkspacePlaceholderPage page="auto-inquiry" title="自动询价" description="统一管理供应商询价任务与报价结果。" note="后续将在这里承载询价对象、询价话术、回复状态和供应商报价记录。" icon="inquiry" onNavigate={navigate} />}
+    {page === "auto-listing" && <WorkspacePlaceholderPage page="auto-listing" title="自动上架" description="统一管理商品资料校验、上架任务与执行结果。" note="后续将在这里承载商品资料准备、渠道映射、批量上架和失败结果处理。" icon="listing" onNavigate={navigate} />}
     {page === "dashboard" && <DashboardPage data={dashboard} attention={dashboardAttention} attentionStatus={dashboardAttentionStatus} attentionError={dashboardAttentionError} status={dashboardStatus} error={dashboardError} batchState={batchState} ownShopName={ownShopName} onAdd={openDashboardAddDialog} onCollect={() => void handleBatchAction("all_active")} onRetry={() => void loadDashboard()} onRetryAttention={() => void loadDashboardAttention()} onNavigate={navigate} onOpenGroupDetail={openGroupDetail} />}
     {page === "own-products" && <ListPage competitors={ownProducts} ownership="self" groups={groups} status={ownListStatus} error={ownListError} onRetry={() => void loadOwnProducts()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} paginationResetVersion={paginationResetVersion} />}
     {page === "competitors" && <ListPage competitors={competitors} ownership="competitor" groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} paginationResetVersion={paginationResetVersion} />}
