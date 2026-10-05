@@ -14,7 +14,7 @@
 
 系统设置页按业务模块展示两个独立区域：保留“基础设置”中的我方店铺名称；新增“竞品监控”，一次完整保存五项采集节奏与风控设置。设置仍存于现有 `system_settings` key/value；缺失 key 在读取时使用 V1 默认值。
 
-每次 Batch 在启动时读取一次完整竞品监控设置，生成只属于该 Batch 的不可变配置快照。Runner 只使用该快照：商品之间按间隔等待；每达到连续真实外部访问上限后，在仍有待处理商品时进入新的 `resting` 主动休息；触发 verification 时沿用既有自动恢复流程，但使用该快照中的冷却和恢复上限。单商品采集和 daily scheduler 完全不读取这些设置。
+每次 Batch 在启动时读取一次完整竞品监控设置，生成只属于该 Batch 的不可变配置快照。Runner 只使用该快照：商品之间按间隔等待；当主动批次休息已启用时，每达到连续真实外部访问上限后在仍有待处理商品时进入新的 `resting`；触发 verification 时沿用既有自动恢复流程，但使用该快照中的冷却和恢复上限。单商品采集和 daily scheduler 完全不读取这些设置。
 
 ## User Stories
 
@@ -72,12 +72,14 @@ PUT body 必须完整且只包含五个 API 字段，例如：
 
 ### 2. 设置页面
 
-系统设置页按以下两个业务模块排列，不将两类设置拼成一个通用设置表：
+系统设置内部使用左侧模块导航和右侧当前模块内容，不将两类设置拼成一个通用设置表。V1 导航仅有以下两个模块：
 
 1. **基础设置**：保留现有“我方店铺”卡片、说明、确认提示、独立 GET/PUT 和保存语义。
-2. **竞品监控**：新增“采集节奏与风控”卡片，含五个带单位和范围提示的数字输入；使用独立 GET/PUT 与保存按钮。该按钮一次提交完整五项，保存中禁止重复提交。
+2. **竞品监控**：右侧显示“采集节奏与风控”卡片，含五个带单位和范围提示的数字输入；使用独立 GET/PUT 与保存按钮。该按钮一次提交完整五项，保存中禁止重复提交。
 
 竞品监控区域的加载、保存错误和成功反馈独立于基础设置。加载或保存竞品监控失败不得覆盖已成功加载的我方店铺区域，反之亦然。前端可以在输入层做范围提示和提交禁用，但 Backend 422 是权威校验；不得把运行中 Batch 配置写回或显示成“当前设置”。
+
+`batch_rest_seconds` 与 `verification_cooldown_seconds` 在前端以业务友好的“分钟”展示和编辑；提交时转换为 API 所需的整数秒。分钟输入必须能精确表达 API 已保存的秒值，不得静默截断或四舍五入；保存前转换结果仍须落在各自秒级范围。界面明确提示：**“设置仅影响下一次新启动的批量采集，当前运行任务不变。”**
 
 ### 3. Batch 配置快照与状态
 
@@ -88,6 +90,7 @@ Batch POST 在冻结目标 competitor IDs、确认没有既有采集占用并成
 - 仍保留一个进程内 Runner 和既有 `COLLECTION_LOCK`。`resting`、`cooling_down`、人工 verification 窗口和 running 期间均保持现有互斥语义；不得重构、提前释放或用另一把锁替代 `COLLECTION_LOCK`。
 - `GET /api/competitors/collect-batch/status` 在既有字段基础上新增 `resting_remaining_seconds`。其状态枚举扩展为 `idle | running | resting | cooling_down | verification_required | completed`。
 - `resting_remaining_seconds` 只在 `resting` 返回非负整数倒计时，其他状态为 0；既有 `cooldown_remaining_seconds` 只在 `cooling_down` 返回非负整数，其他状态为 0。两个剩余时间不得同时为正，均以 Backend Runtime 为准，Frontend 不自行倒推。
+- `resting` 接入现有唯一的全局 Batch status polling：不新增页面级或第二个 polling loop。全局 polling 将 `resting` 视为 active batch，与 `running`、`cooling_down` 一样持续刷新；状态从 `resting` 转为 `running` 或 `completed` 后，必须自动继续取得并渲染后续状态，不能因本地终止条件停留在旧状态。
 
 ### 4. 真实外部访问计数与三类等待
 
@@ -97,10 +100,10 @@ Runner 维护只属于本次 Batch 的连续真实访问计数，初始为 0。�
 
 1. 若该访问触发 `1688_verification_required`，立即停止下一次外部访问，进入既有 verification 路径；不得先加 item interval 或主动休息。`cooling_down` 完成后将连续访问计数归零，重试当前 competitor 前不额外等待。
 2. 若当前 competitor 已得到正常最终结果（成功或普通失败）且没有待处理 competitor，不等待 item interval 或主动休息，直接完成 Batch。
-3. 若仍有待处理 competitor，且连续真实访问计数已达到 `continuous_collection_count`，进入 `resting`，不叠加 item interval；主动休息结束后将连续访问计数归零，再处理下一项。
+3. 若仍有待处理 competitor、`batch_rest_seconds > 0`，且连续真实访问计数已达到 `continuous_collection_count`，进入 `resting`，不叠加 item interval；主动休息结束后将连续访问计数归零，再处理下一项。
 4. 否则进入可中断的 item interval，等待 `item_interval_seconds` 后处理下一项。
 
-因此 `continuous_collection_count=1` 表示每一次正常完成的真实外部访问后、仅在还有下一项时进入主动休息；`batch_rest_seconds=0` 仍产生可观察的 `resting` 状态转换，但不额外停留。一次 Batch 最后的真实访问后不发生任何等待。
+因此 `continuous_collection_count=1` 表示每一次正常完成的真实外部访问后、仅在还有下一项且主动批次休息已启用时进入主动休息。`batch_rest_seconds=0` 表示关闭主动批次休息：Runner 不进入 `resting`、不产生 0 秒 `resting` 状态，即使已达到连续数量也按正常 item interval 继续；在该模式下连续访问计数无需因主动休息归零。一次 Batch 最后的真实访问后不发生任何等待。
 
 `resting` 是计划内降频，满足：`runner_active=true`、`browser_open=true`（既有 batch Context 仍可复用）、保持 `COLLECTION_LOCK`，且 `outcome_code` 仍为 `null`。它不是 verification，不关闭 Browser/Context、不增加 `auto_resume_attempt`，也不改变 `completed`、`remaining` 或最终 items。
 
@@ -128,7 +131,7 @@ Collection Tasks 继续只消费现有 Batch status polling，不新增任务 AP
 - GET 在五个 key 都缺失、部分缺失、旧值非法时返回各自默认值，且不写数据库；有效保存后完整 round-trip。
 - PUT 覆盖五项的边界值；缺项、未知字段、bool、浮点、字符串和每项越界均为 422，并证明原五项数据库值完全未变。
 - 模拟提交期间的保存异常，证明事务 rollback 后不存在部分更新。
-- Settings 页按“基础设置”和“竞品监控”分区；竞品监控加载/保存成功与失败状态独立；一次保存发出完整五项 body，范围与单位可见。
+- Settings 页使用左侧“基础设置”“竞品监控”模块导航和右侧当前模块内容；竞品监控加载/保存成功与失败状态独立；一次保存发出完整五项 body，范围与单位可见。两个长时长字段以分钟编辑、精确转换为秒，并显示“仅影响下一次新启动的批量采集，当前运行任务不变”。
 - 保留我方店铺 GET/PUT、重识别确认和既有页面行为回归测试。
 
 ### Batch service/runtime
@@ -136,7 +139,7 @@ Collection Tasks 继续只消费现有 Batch status polling，不新增任务 AP
 - Batch 启动读取一次设置快照；启动后 PUT 新值，当前 Batch 的 item interval、主动休息、cooldown 和 auto-resume 上限仍使用旧快照；下一 Batch 使用新值。
 - 验证真实外部访问而非成功数：预检查拒绝不计数；collector 已被调用但随后普通失败或 verification 仍计数。
 - 覆盖 item interval：仅在正常已完成项之间等待，最后一项后不等待。
-- 覆盖主动休息：第 `continuous_collection_count` 次真实访问后、仅在有后续项时进入 `resting`；`resting` 不额外叠加 item interval，结束后计数归零且复用 Context/锁。
+- 覆盖主动休息：`batch_rest_seconds > 0` 时，第 `continuous_collection_count` 次真实访问后、仅在有后续项时进入 `resting`；`resting` 不额外叠加 item interval，结束后计数归零且复用 Context/锁。`batch_rest_seconds=0` 时不进入 `resting`、不产生 0 秒状态，并在达到连续数量后仍按 item interval 继续。
 - 覆盖 verification 优先级：verification 不先进入 resting/item interval；cooldown 结束归零，重试当前项前不叠加等待；`auto_resume_max=0` 直接走人工兜底。
 - 覆盖 `resting` 和 `cooling_down` 的 status、剩余秒字段互斥、计数不变量（包括 `completed + remaining = total`）及 `COLLECTION_LOCK` 持有。
 - 对三类等待分别触发 stop/shutdown，证明不会启动下一次 collector、资源清理和锁释放仍符合现有 shutdown contract。
@@ -144,7 +147,7 @@ Collection Tasks 继续只消费现有 Batch status polling，不新增任务 AP
 
 ### Collection Tasks 与浏览器路径
 
-- Collection Tasks 以同一 status seam 渲染 `resting` 的主动休息、剩余时间、完成数和剩余数；`cooling_down` 显示不同的风控冷却/自动恢复信息；现有 running、completed、人工 verification 显示不回归。
+- Collection Tasks 以同一 status seam 渲染 `resting` 的主动休息、剩余时间、完成数和剩余数；`cooling_down` 显示不同的风控冷却/自动恢复信息；现有 running、completed、人工 verification 显示不回归。现有唯一全局 polling 将 `resting` 视为 active，验证 `resting → running` 和 `resting → completed` 都自动刷新；不新增第二个 polling loop。
 - 至少一条关键 Playwright 路径：进入系统设置，修改五项竞品监控设置并保存，验证完整 PUT body 与成功反馈；API mock 默认拒绝未声明请求。
 
 ## Out of Scope
