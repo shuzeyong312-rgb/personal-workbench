@@ -41,20 +41,22 @@ scheduler 每次检查读取当前已保存的自动采集设置，判断是否�
 
 继续使用现有 `system_settings` 和 `GET` / `PUT /api/settings/competitor-monitoring`；不新增设置 API、数据库表或 migration。该 API 改为一次返回并保存既有五项 Batch 配置和以下四项自动采集配置的完整对象：
 
-| API 字段 / `system_settings.key` | 默认值 | 有效值 |
+| API 字段 / `system_settings.key` | 默认值 | 有效值 / canonical `system_settings.value` |
 | --- | --- | --- |
-| `auto_collection_enabled` / `competitor_monitoring_auto_collection_enabled` | `true` | JSON boolean |
-| `auto_collection_strategy` / `competitor_monitoring_auto_collection_strategy` | `rolling_24h` | `rolling_24h` 或 `fixed_daily` |
-| `auto_collection_time` / `competitor_monitoring_auto_collection_time` | `09:30` | 严格 24 小时 `HH:mm` |
-| `auto_collection_missed_policy` / `competitor_monitoring_auto_collection_missed_policy` | `catch_up` | `catch_up` 或 `skip` |
+| `auto_collection_enabled` / `competitor_monitoring_auto_collection_enabled` | `true` | JSON boolean；`"true"` 或 `"false"` |
+| `auto_collection_strategy` / `competitor_monitoring_auto_collection_strategy` | `rolling_24h` | `rolling_24h` 或 `fixed_daily`；同名字符串 |
+| `auto_collection_time` / `competitor_monitoring_auto_collection_time` | `09:30` | 严格 24 小时 `HH:mm`；同格式字符串 |
+| `auto_collection_missed_policy` / `competitor_monitoring_auto_collection_missed_policy` | `catch_up` | `catch_up` 或 `skip`；同名字符串 |
 
-缺失、类型错误、格式错误或枚举外的历史值按字段 fallback 到默认值；读取不得写回默认值。既有五项的 strict validation、历史非法值 fallback、完整 body、未知字段拒绝、原子 PUT 和“不写回默认值”规则继续适用于扩展后的完整九项配置。PUT 必须在写入前验证所有九项，并在同一事务内提交；失败 rollback，不允许部分可见。关闭 `auto_collection_enabled` 只阻止未来自动 Batch reservation，不请求停止已启动的 Batch。
+四项新值只能按表中的 canonical encoding 写入；大小写变化、数值/布尔替代形式、额外空白、非严格时间格式和枚举外字符串等其他历史形式均为非法，读取按字段 fallback 到默认值且不得写回。既有五项的 strict validation、历史非法值 fallback、完整 body、未知字段拒绝、原子 PUT 和“不写回默认值”规则继续适用于扩展后的完整九项配置。PUT 必须在写入前验证所有九项，并在同一事务内提交；失败 rollback，不允许部分可见。关闭 `auto_collection_enabled` 只阻止未来自动 Batch reservation，不请求停止已启动的 Batch。
+
+Settings API 的完整九项对象不等同于 BatchConfig：`BatchConfig` 只能消费既有五项 Batch 节奏/风控字段；scheduler 只能消费上述四项自动调度字段。自动 Batch 启动时必须从完整设置对象显式投影出五项 Batch 字段构造冻结 BatchConfig，禁止将完整九项直接以 `**` 传给 BatchConfig。
 
 ### 2. 两种 due 策略与本地时间
 
 `rolling_24h` 保留现有语义：只评估 active 商品；不存在 `CollectionRun`，或最近一条 `CollectionRun.started_at` 距当前时刻至少 24 小时，商品才 due。成功和失败都计为最近一次尝试，不能因失败在每次 scheduler check 重试。
 
-`fixed_daily` 使用运行 Backend 的电脑本地时区；V1 不新增时区设置。当天的本地计划时间点是 eligibility 边界。对每个 active 商品，只要存在 `CollectionRun.started_at >= 当天计划时间点`，无论由手动单商品、添加商品、手动 Batch 或自动 Batch 产生，且无论成功或失败，均视为当天已尝试，不能再次进入该日 fixed_daily 自动范围。计划时间之前的 Run 不算当天计划完成。实现以分钟级检查为目标，不要求秒级 Cron。
+`fixed_daily` 的 `HH:mm` 使用运行 Backend 的电脑本地时区；V1 不新增时区设置。实现必须先构造当天本地 timezone-aware 计划时间，再转换为 UTC，并以该 UTC 边界与 `CollectionRun.started_at` 比较。SQLite/旧数据出现 naive datetime 时沿用现有项目约定按 UTC 解释。对每个 active 商品，只要存在 `CollectionRun.started_at >= 当天计划 UTC 边界`，无论由手动单商品、添加商品、手动 Batch 或自动 Batch 产生，且无论成功或失败，均视为当天已尝试，不能再次进入该日 fixed_daily 自动范围。计划时间之前的 Run 不算当天计划完成。实现以分钟级检查为目标，不要求秒级 Cron。
 
 ### 3. 错过计划、进程内 pending 与热更新
 
@@ -64,13 +66,13 @@ scheduler 每次检查读取当前已保存的自动采集设置，判断是否�
 - `skip`：若当前 Backend 进程在当天计划后启动，或在计划后才切换/启用 fixed_daily，当天不补采，等待下一天。
 - `skip` 的例外是本进程在计划时间之前已运行，并在本进程内跨过该时间：当天任务进入仅内存 `pending`。若 Runner 忙，后续 scheduler check 必须继续尝试；其他正式采集已生成 CollectionRun 的商品在每次重算候选时自然排除。
 
-V1 不持久化 `skip` 的 pending。当天计划已到达后若 Backend 重启，新进程依上述 skip 规则重新判断，不承诺恢复上一进程未完成的 pending。
+V1 不持久化 `skip` 的 pending。pending 只属于“当前进程 + 当前 fixed_daily 配置 + 当天计划”；当天计划已到达后若 Backend 重启，新进程依 skip 规则重新判断，不承诺恢复上一进程未完成的 pending。关闭 `auto_collection_enabled`、strategy 离开 fixed_daily、fixed_daily 重新启用、`auto_collection_time` 修改、`auto_collection_missed_policy` 修改或日期跨天时，必须清除旧 pending，并按新配置重新判断。特别是计划后重新启用 fixed_daily 且 policy 为 skip 时，当天不得继承旧 pending 补采。
 
 启用状态、策略、时间与错过策略不是 `BatchConfig`。scheduler 在每次未来任务判断时读取当前已保存值；修改设置影响后续判断，不取消或修改已经启动的 Batch。切换策略或启用状态后的“本次进程何时开始、是否已跨过今天计划时间”必须以当前进程的 lifecycle 和本次设置变更时刻确定，不能伪造重启前状态。
 
 ### 4. 统一 Batch Runner、范围与互斥
 
-scheduler 只负责：确认自动采集启用、按当前策略判断 due、计算本次 due 商品 ID，并尝试通过现有 Batch 启动路径 reservation/start。它不得自行循环调用单商品采集。
+scheduler 只负责：确认自动采集启用、按当前策略预判 due、计算候选商品 ID，并尝试通过现有 Batch 启动路径 reservation/start。它不得自行循环调用单商品采集。锁外预判只用于减少无效工作，不能作为启动结论：真正启动前必须先成功取得现有 collection slot；在这个短临界区内重新查询商品 active 状态与 CollectionRun，并按当前策略计算最终 due IDs；随后 reserve BatchRuntime，再释放 slot 并启动 worker。这样手动采集不能在最终 eligibility 与 reservation 之间插入新的 CollectionRun 而导致 fixed_daily 重复采集。不得增加第二把采集锁或第二 Runner。
 
 自动范围与 Dashboard “立即采集”的 `all_active` 相同：全部 `is_active=true` 的 self 和 competitor 商品，按既有稳定顺序；inactive 商品不进入候选。启动自动 Batch 时冻结当前完整 BatchConfig，复用 headed Chrome/profile、串行访问、item interval、continuous collection count、resting、verification cooldown、auto resume、stop/shutdown、`BatchRuntime` 和 `COLLECTION_LOCK`。单商品手动采集和添加商品首次采集继续不使用 Batch 节奏。
 
@@ -92,14 +94,14 @@ Settings UI 继续懒加载竞品监控配置、用一次完整 PUT 保存完整
 
 测试外部行为，优先复用既有 Settings API、`system_settings`、可注入 `now`/clock、session factory、`CollectionRun` fixture、`BatchRuntime`、Batch Runner fake collector、`COLLECTION_LOCK`、全局 Batch status polling 和现有 Settings Playwright API mock。禁止真实等待到某个时间，也不新增仅供测试的业务接口。
 
-- Settings API 覆盖四项新值的默认值、完整 round-trip、严格类型/枚举/`HH:mm` 校验、历史非法值 fallback 且不写回、扩展九项完整 PUT 的原子性和失败 rollback。
+- Settings API 覆盖四项新值的默认值、完整 round-trip、严格类型/枚举/`HH:mm` 校验、canonical value encoding、历史非法值 fallback 且不写回、扩展九项完整 PUT 的原子性和失败 rollback；完整九项不得污染仅五字段的 BatchConfig contract。
 - disabled 时不启动自动 Batch；验证关闭不停止已启动 Batch。
 - rolling_24h 覆盖无历史、少于 24 小时、至少 24 小时和 failed Run。
-- fixed_daily 覆盖计划前/后，以及 CollectionRun 在计划点前后对 eligibility 的区别；计划后由手动单商品、添加商品、手动 Batch、自动 Batch 或 failed Run 创建的 Run 都阻止当天重复自动采。
-- catch_up 覆盖晚启动补采及部分商品已有当日 Run 时只补剩余；skip 覆盖计划后启动当天不补、计划前已运行跨过计划点后进入 pending，以及 pending 遇 Runner busy 后可重试。
+- fixed_daily 覆盖计划前/后，以及 CollectionRun 在计划点前后对 eligibility 的区别；计划后由手动单商品、添加商品、手动 Batch、自动 Batch 或 failed Run 创建的 Run 都阻止当天重复自动采。使用确定性本地时区/clock 验证本地 timezone-aware 计划时间转换后的 UTC boundary，并覆盖 naive 历史时间按 UTC 解释。
+- catch_up 覆盖晚启动补采及部分商品已有当日 Run 时只补剩余；skip 覆盖计划后启动当天不补、计划前已运行跨过计划点后进入 pending，以及 pending 遇 Runner busy 后可重试。覆盖关闭/重新启用、strategy/time/policy 变化及跨天后 stale pending 被清除且不能复活，尤其计划后重新启用 fixed_daily + skip 不得补采。
 - 覆盖 rolling 遇 busy 后后续重新判断；fixed pending 每次重算时排除其他正式采集已产生 Run 的商品。
 - 覆盖 active self 与 competitor 都成为候选、inactive 不成为候选。
-- 在 Batch 启动 seam 证明自动任务实际经过统一 Batch Runner 并冻结 BatchConfig；设置修改不改变已运行 Batch；自动 Batch 和手动 Batch 不并发。
+- 在 Batch 启动 seam 证明自动任务实际经过统一 Batch Runner 并冻结 BatchConfig；设置修改不改变已运行 Batch；自动 Batch 和手动 Batch 不并发。用既有 collection slot/CollectionRun seam 在最终 eligibility 与 BatchRuntime reservation 之间注入手动 CollectionRun，证明最终临界区重新查询后不会重复自动采。
 - 覆盖 scheduler shutdown 唤醒等待、不再启动新 Batch，并保持既有协作式 Runner shutdown。
 - Settings UI 覆盖自动采集条件显示、切换 rolling 后保留 fixed-only 值、完整九项保存 contract；至少扩展现有 Settings Playwright 路径，使用默认拒绝未声明 API 的 mock，不重复建设整套 E2E。
 
@@ -114,4 +116,4 @@ Settings UI 继续懒加载竞品监控配置、用一次完整 PUT 保存完整
 
 ## Further Notes
 
-本 Feature 的最小架构是“scheduler 编排、Batch Runner 执行”。固定时间的当天完成度仅由已存在的 `CollectionRun.started_at` 推断，而非新 source 或日任务记录；这刻意保留了 V1 的本地、单进程边界。实现前需以本 Spec 取代旧 daily scheduler 的 direct-cycle 规则，并在 ChatGPT Spec Review 后 Freeze；本 Spec 不授权实现业务代码。
+本 Feature 的最小架构是“scheduler 编排、Batch Runner 执行”。固定时间的当天完成度仅由已存在的 `CollectionRun.started_at` 推断，而非新 source 或日任务记录；这刻意保留了 V1 的本地、单进程边界。Feature 实现交付时必须同步更新 `docs/architecture.md` 的“调度原则”，使长期架构描述反映 scheduler 编排 + Batch Runner 执行；本轮纯 Spec 修订不得提前将 architecture 写成已实现状态。实现前需以本 Spec 取代旧 daily scheduler 的 direct-cycle 规则，并在 ChatGPT Spec Review 后 Freeze；本 Spec 不授权实现业务代码。
