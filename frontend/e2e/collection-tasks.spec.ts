@@ -44,3 +44,38 @@ test("an empty history page retains pagination and can return to the previous Ba
   expect(requestedPages.slice(-2)).toEqual([2, 1]);
   await mock.expectNoUnexpectedApi();
 });
+
+test("collection tasks separates current batch states from collapsed details", async ({ page }) => {
+  const mock = await installApiMock(page, { competitors: competitors23 });
+  const base = { outcome_code: null, total: 3, completed: 1, succeeded: 1, failed: 0, remaining: 2, verification_required: 0, current_competitor_id: 1, browser_open: true, runner_active: true, auto_resume_attempt: 1, auto_resume_max: 2, cooldown_remaining_seconds: 30, resting_remaining_seconds: 20, items: [] };
+  let state = { ...base, status: "running" };
+  await page.route("**/api/competitors/collect-batch/status", route => route.fulfill({ json: state }));
+  const check = async (status: typeof state.status, label: string) => {
+    state = { ...base, status };
+    await page.goto("/");
+    await page.getByRole("button", { name: "采集任务", exact: true }).click();
+    await expect(page.getByText(label, { exact: true })).toBeVisible();
+  };
+  await check("running", "采集中");
+  await expect(page.getByRole("progressbar")).toBeVisible();
+  await check("resting", "计划内主动休息");
+  await expect(page.getByText("这是计划内主动休息。", { exact: true })).toBeVisible();
+  await check("cooling_down", "风控冷却中");
+  await expect(page.getByText("冷却剩余：30 秒 · 自动恢复 1 / 2", { exact: true })).toBeVisible();
+  await expect(page.getByText("这是计划内主动休息。", { exact: true })).toHaveCount(0);
+  await check("verification_required", "需要人工验证");
+  await expect(page.getByText("请在已打开的浏览器中完成 1688 人工验证。", { exact: true })).toBeVisible();
+  await check("completed", "本批次已完成");
+  await expect(page.getByRole("button", { name: "查看本批次明细" })).toBeVisible();
+  state = { ...base, status: "completed", completed: 3, remaining: 0, verification_required: 1, failed: 1, items: [
+    { competitor_id: 2, status: "failed", outcome: null, error_code: "collection_timeout", message: "商品页面加载超时" },
+    { competitor_id: 1, status: "verification_required", outcome: null, error_code: "1688_verification_required", message: "需要完成验证" },
+  ] };
+  await page.reload();
+  await page.getByRole("button", { name: "采集任务", exact: true }).click();
+  await expect(page.getByText("固定竞品 02", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "查看本批次明细" }).click();
+  await expect(page.locator(".collection-batch-items li")).toHaveCount(2);
+  await expect(page.getByText("商品页面加载超时", { exact: true })).toBeVisible();
+  await mock.expectNoUnexpectedApi();
+});

@@ -2,8 +2,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { chromium, expect as ui, type Browser, type Page } from "@playwright/test";
 import { createServer, type ViteDevServer } from "vite";
-import { renderToStaticMarkup } from "react-dom/server";
-import { CurrentBatchCard, idleBatchState } from "./App";
+import { idleBatchState } from "./App";
 import { installApiMock } from "../e2e/support/api-mock";
 import { competitors23 } from "../e2e/fixtures/competitors";
 
@@ -43,18 +42,56 @@ test("running polling failure is local and polling recovery clears it without re
     await ui(page.getByText("记录 1", { exact: true })).toBeVisible();
     fail = false; completed = true;
     await page.clock.runFor(1500);
-    await ui(page.getByText("最近批次完成", { exact: true })).toBeVisible();
+    await ui(page.getByText("本批次已完成", { exact: true })).toBeVisible();
     await ui(page.getByText("状态刷新失败", { exact: true })).toHaveCount(0);
     await page.clock.runFor(5000);
-    await ui(page.getByText("最近批次完成", { exact: true })).toBeVisible();
+    await ui(page.getByText("本批次已完成", { exact: true })).toBeVisible();
     expect(reads).toBe(initialReads + 2);
     await mock.expectNoUnexpectedApi();
   } finally { await page.close(); }
 }, 15000);
 
-test.each(["active", "offline", null] as const)("success renders authoritative outcome %s", outcome => {
-  const html = renderToStaticMarkup(<CurrentBatchCard batchState={{ ...idleBatchState, status: "completed", items: [{ competitor_id: 1, status: "success", outcome, error_code: null, message: null }] }} status="ready" error={null} onRetry={() => {}} productById={new Map()} />);
-  expect(html).toContain(outcome === "active" ? "采集成功 · 在售" : outcome === "offline" ? "采集成功 · 已下架" : "采集成功");
+test("batch details are collapsed by default and expand in Backend order", async () => {
+  const page = await browser.newPage();
+  try {
+    const mock = await installApiMock(page, { competitors: competitors23, collectionRuns: { items: [run(1)], total: 1, page: 1, page_size: 20 } });
+    await page.route("**/api/competitors/collect-batch/status", route => route.fulfill({ json: {
+      ...idleBatchState, status: "completed", total: 3, completed: 3, succeeded: 1, failed: 1, remaining: 0, verification_required: 1,
+      items: [
+        { competitor_id: 3, status: "success", outcome: "active", error_code: null, message: null },
+        { competitor_id: 2, status: "failed", outcome: null, error_code: "collection_timeout", message: "商品页面加载超时" },
+        { competitor_id: 1, status: "verification_required", outcome: null, error_code: "1688_verification_required", message: "需要完成验证" },
+      ],
+    } }));
+    await open(page);
+    await ui(page.getByRole("heading", { name: "本批次明细" })).toBeVisible();
+    await ui(page.getByText("固定竞品 03", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "查看本批次明细" }).click();
+    const rows = page.locator(".collection-batch-items li");
+    await ui(rows).toHaveCount(3);
+    expect(await rows.allTextContents()).toEqual([
+      expect.stringContaining("固定竞品 03"),
+      expect.stringContaining("固定竞品 02"),
+      expect.stringContaining("搜索目标竞品 01"),
+    ]);
+    await ui(page.getByText("采集成功 · 在售", { exact: true })).toBeVisible();
+    await ui(page.getByText("collection_timeout", { exact: true })).toBeVisible();
+    await ui(page.getByText("1688_verification_required", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "收起本批次明细" }).click();
+    await ui(page.getByText("固定竞品 03", { exact: true })).toHaveCount(0);
+    await mock.expectNoUnexpectedApi();
+  } finally { await page.close(); }
+});
+
+test("running shows a compact progress notice", async () => {
+  const page = await browser.newPage();
+  try {
+    const mock = await installApiMock(page, { competitors: competitors23 });
+    await page.route("**/api/competitors/collect-batch/status", route => route.fulfill({ json: { ...idleBatchState, status: "running", total: 2, completed: 1, succeeded: 1, remaining: 1, current_competitor_id: 1 } }));
+    await open(page);
+    await ui(page.getByText("正在处理当前商品。", { exact: true })).toBeVisible();
+    await mock.expectNoUnexpectedApi();
+  } finally { await page.close(); }
 });
 
 test("history empty page preserves Backend total and page, returns to previous without slicing", async () => {
@@ -103,12 +140,12 @@ test.each(["status", "history"])("%s failure and retry leave the other source in
     });
     await open(page);
     await ui(page.getByText(source === "status" ? "状态刷新失败" : "采集记录加载失败", { exact: true })).toBeVisible();
-    await ui(page.getByText(source === "status" ? "记录 1" : "最近批次完成", { exact: true })).toBeVisible();
+    await ui(page.getByText(source === "status" ? "记录 1" : "本批次已完成", { exact: true })).toBeVisible();
     const previousStatus = statusReads;
     const previousHistory = historyReads;
     fail = false;
     await page.getByRole("button", { name: "重试", exact: true }).click();
-    await ui(page.getByText("最近批次完成", { exact: true })).toBeVisible();
+    await ui(page.getByText("本批次已完成", { exact: true })).toBeVisible();
     await ui(page.getByText("记录 1", { exact: true })).toBeVisible();
     expect(statusReads).toBe(previousStatus + (source === "status" ? 1 : 0));
     expect(historyReads).toBe(previousHistory + (source === "history" ? 1 : 0));
@@ -191,9 +228,4 @@ test.each(["own-products", "competitors"])("%s uses the shared pagination contra
     await ui(page.getByRole("row").filter({ hasText: "固定竞品 10" })).toHaveCount(0);
     await mock.expectNoUnexpectedApi();
   } finally { await page.close(); }
-});
-test.each(["running", "completed", "verification_required"] as const)("%s retains message and error code", status => {
-  const html = renderToStaticMarkup(<CurrentBatchCard batchState={{ ...idleBatchState, status, items: [{ competitor_id: 1, status: "verification_required", outcome: null, error_code: "1688_verification_required", message: "需要完成验证" }] }} status="ready" error={null} onRetry={() => {}} productById={new Map()} />);
-  expect(html).toContain("需要完成验证");
-  expect(html).toContain("1688_verification_required");
 });
