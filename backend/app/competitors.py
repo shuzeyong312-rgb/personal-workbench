@@ -26,7 +26,7 @@ from app.collection.service import (
 from app.database import get_db
 from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
 from app.ownership import get_own_shop_name, identify_ownership
-from app.settings import get_competitor_monitoring_settings
+from app.settings import batch_config_values, get_competitor_monitoring_settings
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
@@ -555,7 +555,7 @@ async def collect_batch(
         )
     reservation_token: int | None = None
     try:
-        config = BatchConfig(**get_competitor_monitoring_settings(db))
+        config = BatchConfig(**batch_config_values(get_competitor_monitoring_settings(db)))
         if not BATCH_RUNTIME.reserve(competitor_ids, config):
             raise error(
                 "collection_in_progress",

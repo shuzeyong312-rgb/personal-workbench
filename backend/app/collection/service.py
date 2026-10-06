@@ -40,7 +40,7 @@ COLLECTION_LOCK = RLock()
 
 def _monitoring_default(field_name: str) -> int:
     """Keep runner compatibility defaults sourced at the Settings boundary."""
-    return competitor_monitoring_defaults()[field_name]
+    return int(competitor_monitoring_defaults()[field_name])
 
 
 @dataclass(frozen=True)

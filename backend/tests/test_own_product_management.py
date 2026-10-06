@@ -102,6 +102,10 @@ def test_competitor_monitoring_settings_default_invalid_read_and_atomic_save(cli
         "batch_rest_seconds": 120,
         "verification_cooldown_seconds": 600,
         "auto_resume_max": 2,
+        "auto_collection_enabled": True,
+        "auto_collection_strategy": "rolling_24h",
+        "auto_collection_time": "09:30",
+        "auto_collection_missed_policy": "catch_up",
     }
     assert client[0].get("/api/settings/competitor-monitoring").json() == defaults
     with client[1]() as session:
@@ -110,7 +114,7 @@ def test_competitor_monitoring_settings_default_invalid_read_and_atomic_save(cli
         session.commit()
     assert client[0].get("/api/settings/competitor-monitoring").json() == defaults
 
-    saved = {"item_interval_seconds": 1, "continuous_collection_count": 50, "batch_rest_seconds": 0, "verification_cooldown_seconds": 3600, "auto_resume_max": 0}
+    saved = {"item_interval_seconds": 1, "continuous_collection_count": 50, "batch_rest_seconds": 0, "verification_cooldown_seconds": 3600, "auto_resume_max": 0, "auto_collection_enabled": False, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30", "auto_collection_missed_policy": "skip"}
     assert client[0].put("/api/settings/competitor-monitoring", json=saved).json() == saved
     rejected = client[0].put("/api/settings/competitor-monitoring", json={**saved, "item_interval_seconds": True})
     assert rejected.status_code == 422
@@ -132,6 +136,27 @@ def test_competitor_monitoring_settings_falls_back_for_an_unbounded_legacy_integ
         assert session.get(SystemSetting, "competitor_monitoring_item_interval_seconds").value == raw
 
 
+@pytest.mark.parametrize("field, malformed", [
+    ("auto_collection_strategy", []),
+    ("auto_collection_strategy", {}),
+    ("auto_collection_strategy", True),
+    ("auto_collection_missed_policy", []),
+    ("auto_collection_missed_policy", {}),
+    ("auto_collection_missed_policy", 1),
+])
+def test_competitor_monitoring_enum_malformed_json_is_422(client, field, malformed):
+    payload = {
+        "item_interval_seconds": 5, "continuous_collection_count": 10,
+        "batch_rest_seconds": 120, "verification_cooldown_seconds": 600, "auto_resume_max": 2,
+        "auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h",
+        "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up",
+    }
+    payload[field] = malformed
+    response = client[0].put("/api/settings/competitor-monitoring", json=payload)
+    assert response.status_code == 422
+    assert response.json()["field"] == field
+
+
 def test_competitor_monitoring_settings_reads_the_complete_snapshot_in_one_query(client):
     saved = {
         "item_interval_seconds": 6,
@@ -139,6 +164,10 @@ def test_competitor_monitoring_settings_reads_the_complete_snapshot_in_one_query
         "batch_rest_seconds": 180,
         "verification_cooldown_seconds": 720,
         "auto_resume_max": 1,
+        "auto_collection_enabled": True,
+        "auto_collection_strategy": "rolling_24h",
+        "auto_collection_time": "09:30",
+        "auto_collection_missed_policy": "catch_up",
     }
     assert client[0].put("/api/settings/competitor-monitoring", json=saved).status_code == 200
     with client[1]() as session, patch.object(session, "scalars", wraps=session.scalars) as scalars:

@@ -22,12 +22,11 @@ from app.collection.service import (
 )
 import app.collection.service as collection_service
 import app.competitors as competitors_module
-from app.collection.daily import run_daily_collection_cycle
 from app.database import get_db
 from app.main import app
 from app.collection.types import ProductData
 from app.models import Base, Competitor, ProductSnapshot
-from app.settings import update_competitor_monitoring_setting
+from app.settings import batch_config_values, update_competitor_monitoring_setting
 
 
 @pytest.fixture()
@@ -555,7 +554,6 @@ def test_cooling_down_rejects_all_other_collection_entrypoints(
     runtime.reserve([1])
     context = FakeContext()
     batch_collect = Mock(side_effect=[CollectionError("1688_verification_required", "需要验证")])
-    daily_collect = Mock()
     thread = Thread(
         target=run_batch_collection,
         args=(client[1], [1], runtime),
@@ -577,7 +575,6 @@ def test_cooling_down_rejects_all_other_collection_entrypoints(
             json={"mode": "selected", "competitor_ids": [1]},
         )
         single = client[0].post("/api/competitors/1/collect")
-        daily = run_daily_collection_cycle(client[1], collect=daily_collect)
         delete_batch = client[0].post(
             "/api/competitors/delete-batch",
             json={"competitor_ids": [1]},
@@ -587,8 +584,6 @@ def test_cooling_down_rejects_all_other_collection_entrypoints(
         assert second_batch.json()["code"] == "collection_in_progress"
         assert single.status_code == 409
         assert single.json()["code"] == "collection_in_progress"
-        assert daily.interrupted == 1
-        daily_collect.assert_not_called()
         assert delete_batch.status_code == 409
         assert delete_batch.json()["code"] == "collection_in_progress"
         runtime.request_stop()
@@ -616,27 +611,29 @@ def test_batch_start_freezes_one_settings_snapshot_and_the_next_start_uses_the_n
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     add_competitor(client[1], 1)
-    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0}
-    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5}
+    auto = {"auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h", "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up"}
+    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0, **auto}
+    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5, **auto}
     assert client[0].put("/api/settings/competitor-monitoring", json=old).status_code == 200
     with patch("app.competitors.start_batch_task") as start:
         assert client[0].post("/api/competitors/collect-batch", json={"mode": "selected", "competitor_ids": [1]}).status_code == 202
         frozen = start.call_args.kwargs["config"]
         with client[1]() as settings_db:
             assert update_competitor_monitoring_setting(new, db=settings_db) == new
-        assert frozen == BatchConfig(**old)
+        assert frozen == BatchConfig(**batch_config_values(old))
         BATCH_RUNTIME.finish("success")
         assert client[0].post("/api/competitors/collect-batch", json={"mode": "selected", "competitor_ids": [1]}).status_code == 202
 
-    assert start.call_args.kwargs["config"] == BatchConfig(**new)
+    assert start.call_args.kwargs["config"] == BatchConfig(**batch_config_values(new))
 
 
 def test_batch_start_and_settings_put_interleaving_freeze_only_complete_old_or_new_configurations(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     add_competitor(client[1], 1)
-    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0}
-    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5}
+    auto = {"auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h", "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up"}
+    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0, **auto}
+    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5, **auto}
     assert client[0].put("/api/settings/competitor-monitoring", json=old).status_code == 200
     snapshot_read = Event()
     resume_start = Event()
@@ -663,12 +660,12 @@ def test_batch_start_and_settings_put_interleaving_freeze_only_complete_old_or_n
         worker.join(timeout=2)
         assert not worker.is_alive()
         assert responses[0].status_code == 202
-        assert start.call_args.kwargs["config"] == BatchConfig(**old)
+        assert start.call_args.kwargs["config"] == BatchConfig(**batch_config_values(old))
 
     BATCH_RUNTIME.finish("success")
     with patch("app.competitors.start_batch_task") as next_start:
         assert client[0].post("/api/competitors/collect-batch", json={"mode": "selected", "competitor_ids": [1]}).status_code == 202
-    assert next_start.call_args.kwargs["config"] == BatchConfig(**new)
+    assert next_start.call_args.kwargs["config"] == BatchConfig(**batch_config_values(new))
 
 
 def test_batch_waits_are_driven_by_external_accesses_not_successes_and_skip_the_last_item(

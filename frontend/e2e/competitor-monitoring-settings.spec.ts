@@ -4,7 +4,7 @@ import { installApiMock } from "./support/api-mock";
 
 test("competitor monitoring settings save all values as one request", async ({ page }) => {
   const mock = await installApiMock(page, { competitors: [] });
-  const settings = { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2 };
+  const settings = { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "09:30", auto_collection_missed_policy: "catch_up" };
   let saved: unknown = null;
   let reads = 0;
   await page.route("**/api/settings/competitor-monitoring", route => {
@@ -26,8 +26,18 @@ test("competitor monitoring settings save all values as one request", async ({ p
   await page.getByLabel("批次休息时间").fill("3");
   await page.getByLabel("风控冷却时间").fill("12");
   await page.getByLabel("自动恢复次数").fill("1");
+  await expect(page.getByLabel("自动采集时间")).toBeHidden();
+  await expect(page.getByLabel("错过计划")).toBeHidden();
+  await page.getByLabel("自动采集策略").selectOption("fixed_daily");
+  await expect(page.getByLabel("自动采集时间")).toBeVisible();
+  await expect(page.getByLabel("错过计划")).toBeVisible();
+  await page.getByLabel("自动采集时间").fill("10:15");
+  await page.getByLabel("错过计划").selectOption("skip");
+  await page.getByLabel("自动采集策略").selectOption("rolling_24h");
+  await expect(page.getByLabel("自动采集时间")).toBeHidden();
+  await expect(page.getByLabel("错过计划")).toBeHidden();
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await expect(page.getByText("竞品监控设置已保存。", { exact: true })).toBeVisible();
-  expect(saved).toEqual({ item_interval_seconds: 6, continuous_collection_count: 8, batch_rest_seconds: 180, verification_cooldown_seconds: 720, auto_resume_max: 1 });
+  expect(saved).toEqual({ item_interval_seconds: 6, continuous_collection_count: 8, batch_rest_seconds: 180, verification_cooldown_seconds: 720, auto_resume_max: 1, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "10:15", auto_collection_missed_policy: "skip" });
   await mock.expectNoUnexpectedApi();
 });

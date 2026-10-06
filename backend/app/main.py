@@ -7,8 +7,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.collection.daily import run_daily_collection_cycle
-from app.collection.service import shutdown_batch_runner
+from datetime import datetime, timezone
+
+from app.collection.daily import FixedDailyState, prepare_auto_batch
+from app.collection.service import shutdown_batch_runner, start_batch_task
 from app.collection_runs import router as collection_runs_router
 from app.competitors import router as competitors_router
 from app.competitor_detail import router as competitor_detail_router
@@ -20,8 +22,7 @@ from app.dashboard import router as dashboard_router
 from app.settings import router as settings_router
 
 
-DAILY_COLLECTION_INITIAL_DELAY_SECONDS = 30
-DAILY_COLLECTION_INTERVAL_SECONDS = 60 * 60
+DAILY_COLLECTION_INTERVAL_SECONDS = 60
 
 
 def _session_factory() -> Session:
@@ -39,14 +40,19 @@ async def _wait_for_stop(stop_event: asyncio.Event, timeout: float) -> bool:
 async def _daily_collection_loop(
     stop_event: asyncio.Event, thread_stop_event: Event
 ) -> None:
-    if await _wait_for_stop(stop_event, DAILY_COLLECTION_INITIAL_DELAY_SECONDS):
-        return
+    state = FixedDailyState()
+    lifecycle_started_at = datetime.now(timezone.utc)
     while not thread_stop_event.is_set():
-        await asyncio.to_thread(
-            run_daily_collection_cycle,
-            _session_factory,
-            stop_event=thread_stop_event,
+        start = await asyncio.to_thread(
+            prepare_auto_batch, _session_factory, state=state,
+            lifecycle_started_at=lifecycle_started_at, stop_event=thread_stop_event,
         )
+        if start is not None and not thread_stop_event.is_set():
+            try:
+                start_batch_task(_session_factory, start.competitor_ids, batch_reservation=start.reservation_token, config=start.config)
+            except Exception:
+                from app.collection.service import BATCH_RUNTIME
+                BATCH_RUNTIME.finish("collect_failed")
         if thread_stop_event.is_set():
             return
         if await _wait_for_stop(stop_event, DAILY_COLLECTION_INTERVAL_SECONDS):

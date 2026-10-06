@@ -20,11 +20,20 @@ COMPETITOR_MONITORING_SETTINGS = {
     "verification_cooldown_seconds": ("competitor_monitoring_verification_cooldown_seconds", 600, 60, 3600, True),
     "auto_resume_max": ("competitor_monitoring_auto_resume_max", 2, 0, 5, False),
 }
+AUTO_COLLECTION_SETTINGS = {
+    "auto_collection_enabled": ("competitor_monitoring_auto_collection_enabled", True),
+    "auto_collection_strategy": ("competitor_monitoring_auto_collection_strategy", "rolling_24h"),
+    "auto_collection_time": ("competitor_monitoring_auto_collection_time", "09:30"),
+    "auto_collection_missed_policy": ("competitor_monitoring_auto_collection_missed_policy", "catch_up"),
+}
 
 
-def competitor_monitoring_defaults() -> dict[str, int]:
+def competitor_monitoring_defaults() -> dict[str, object]:
     """Return the only business defaults for competitor-monitoring settings."""
-    return {field: definition[1] for field, definition in COMPETITOR_MONITORING_SETTINGS.items()}
+    return {
+        **{field: definition[1] for field, definition in COMPETITOR_MONITORING_SETTINGS.items()},
+        **{field: definition[1] for field, definition in AUTO_COLLECTION_SETTINGS.items()},
+    }
 
 
 def _valid_monitoring_value(value: object, minimum: int, maximum: int, minute_multiple: bool) -> bool:
@@ -36,15 +45,15 @@ def _valid_monitoring_value(value: object, minimum: int, maximum: int, minute_mu
     )
 
 
-def get_competitor_monitoring_settings(db: Session) -> dict[str, int]:
+def get_competitor_monitoring_settings(db: Session) -> dict[str, object]:
     # A batch start must observe one database snapshot.  In particular, do not
     # turn this into one get() per key: PUT commits all five settings together.
-    keys = [definition[0] for definition in COMPETITOR_MONITORING_SETTINGS.values()]
+    keys = [definition[0] for definition in COMPETITOR_MONITORING_SETTINGS.values()] + [definition[0] for definition in AUTO_COLLECTION_SETTINGS.values()]
     stored = {
         setting.key: setting.value
         for setting in db.scalars(select(SystemSetting).where(SystemSetting.key.in_(keys)))
     }
-    values: dict[str, int] = {}
+    values: dict[str, object] = {}
     for field, (key, default, minimum, maximum, minute_multiple) in COMPETITOR_MONITORING_SETTINGS.items():
         raw = stored.get(key)
         if not isinstance(raw, str) or re.fullmatch(r"[0-9]+", raw) is None:
@@ -58,19 +67,44 @@ def get_competitor_monitoring_settings(db: Session) -> dict[str, int]:
             values[field] = default
             continue
         values[field] = parsed if _valid_monitoring_value(parsed, minimum, maximum, minute_multiple) else default
+    for field, (key, default) in AUTO_COLLECTION_SETTINGS.items():
+        raw = stored.get(key)
+        if field == "auto_collection_enabled":
+            values[field] = raw == "true" if raw in {"true", "false"} else default
+        elif field == "auto_collection_strategy":
+            values[field] = raw if raw in {"rolling_24h", "fixed_daily"} else default
+        elif field == "auto_collection_time":
+            values[field] = raw if isinstance(raw, str) and re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", raw) else default
+        else:
+            values[field] = raw if raw in {"catch_up", "skip"} else default
     return values
 
 
-def validate_competitor_monitoring_settings(payload: object) -> dict[str, int]:
-    if not isinstance(payload, dict) or set(payload) != set(COMPETITOR_MONITORING_SETTINGS):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "invalid_competitor_monitoring_settings", "message": "必须完整提交五项竞品监控设置"})
-    values: dict[str, int] = {}
+def validate_competitor_monitoring_settings(payload: object) -> dict[str, object]:
+    expected = set(COMPETITOR_MONITORING_SETTINGS) | set(AUTO_COLLECTION_SETTINGS)
+    if not isinstance(payload, dict) or set(payload) != expected:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "invalid_competitor_monitoring_settings", "message": "必须完整提交九项竞品监控设置"})
+    values: dict[str, object] = {}
     for field, (_key, _default, minimum, maximum, minute_multiple) in COMPETITOR_MONITORING_SETTINGS.items():
         value = payload[field]
         if not _valid_monitoring_value(value, minimum, maximum, minute_multiple):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "invalid_competitor_monitoring_settings", "field": field, "message": f"{field} 参数无效"})
         values[field] = value
+    if type(payload["auto_collection_enabled"]) is not bool:
+        raise HTTPException(status_code=422, detail={"code": "invalid_competitor_monitoring_settings", "field": "auto_collection_enabled", "message": "auto_collection_enabled 参数无效"})
+    if not isinstance(payload["auto_collection_strategy"], str) or payload["auto_collection_strategy"] not in {"rolling_24h", "fixed_daily"}:
+        raise HTTPException(status_code=422, detail={"code": "invalid_competitor_monitoring_settings", "field": "auto_collection_strategy", "message": "auto_collection_strategy 参数无效"})
+    if not isinstance(payload["auto_collection_time"], str) or re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", payload["auto_collection_time"]) is None:
+        raise HTTPException(status_code=422, detail={"code": "invalid_competitor_monitoring_settings", "field": "auto_collection_time", "message": "auto_collection_time 参数无效"})
+    if not isinstance(payload["auto_collection_missed_policy"], str) or payload["auto_collection_missed_policy"] not in {"catch_up", "skip"}:
+        raise HTTPException(status_code=422, detail={"code": "invalid_competitor_monitoring_settings", "field": "auto_collection_missed_policy", "message": "auto_collection_missed_policy 参数无效"})
+    values.update({field: payload[field] for field in AUTO_COLLECTION_SETTINGS})
     return values
+
+
+def batch_config_values(settings: dict[str, object]) -> dict[str, int]:
+    """Explicitly keep scheduler-only values out of BatchConfig."""
+    return {field: int(settings[field]) for field in COMPETITOR_MONITORING_SETTINGS}
 
 
 class OwnShopNameRequest(BaseModel):
@@ -111,14 +145,14 @@ def update_own_shop_name(payload: OwnShopNameRequest, db: Session = Depends(get_
 
 
 @router.get("/competitor-monitoring")
-def get_competitor_monitoring_setting(db: Session = Depends(get_db)) -> dict[str, int]:
+def get_competitor_monitoring_setting(db: Session = Depends(get_db)) -> dict[str, object]:
     return get_competitor_monitoring_settings(db)
 
 
 @router.put("/competitor-monitoring")
 def update_competitor_monitoring_setting(
     payload: object = Body(...), db: Session = Depends(get_db)
-) -> dict[str, int]:
+) -> dict[str, object]:
     values = validate_competitor_monitoring_settings(payload)
     try:
         for field, (key, _default, _minimum, _maximum, _minute_multiple) in COMPETITOR_MONITORING_SETTINGS.items():
@@ -127,6 +161,13 @@ def update_competitor_monitoring_setting(
                 db.add(SystemSetting(key=key, value=str(values[field])))
             else:
                 setting.value = str(values[field])
+        for field, (key, _default) in AUTO_COLLECTION_SETTINGS.items():
+            setting = db.get(SystemSetting, key)
+            encoded = "true" if values[field] is True else "false" if values[field] is False else str(values[field])
+            if setting is None:
+                db.add(SystemSetting(key=key, value=encoded))
+            else:
+                setting.value = encoded
         db.commit()
     except Exception as exc:
         db.rollback()

@@ -207,11 +207,11 @@ V1 使用 SQLite。
 
 ## 10. 调度原则
 
-当前实现使用 FastAPI lifespan 启动一个 asyncio 后台 task。Backend 启动约 30 秒后进行首次 due-check，之后每小时检查一次。
+当前实现使用 FastAPI lifespan 启动一个可中断的 asyncio 后台 task，按分钟读取当前自动采集设置并判断 due 商品。
 
-due-check 只处理 `is_active=true` 的 Competitor，使用最近一条 CollectionRun.started_at 统一按 UTC 判断 24 小时窗口，并按顺序调用现有 collect_competitor()。每个竞品使用独立 Session；同步采集批次放入线程，不阻塞 API event loop。
+scheduler 只负责编排：计算 active 商品范围，取得既有 collection slot 后重新确认资格并预留 BatchRuntime。自动采集与“立即采集”共享唯一 Batch Runner、COLLECTION_LOCK、冻结的 BatchConfig 和状态轮询；scheduler 不直接逐条调用 `collect_competitor()`。
 
-自动采集依赖 Backend 正在运行，电脑关机时不会执行。单个采集失败继续后续竞品；如果全局 COLLECTION_LOCK 忙，则中断当前 cycle，下一次检查再尝试。Backend shutdown 时唤醒 scheduler，允许当前竞品完成后正常退出，不再启动下一个竞品。
+自动采集依赖 Backend 正在运行，电脑关机时不会执行。全局 COLLECTION_LOCK 或 BatchRuntime 忙时不会并发或排队，下一次检查重新判断。Backend shutdown 会唤醒 scheduler，停止新的 reservation，并让已运行的 Batch 协作式结束。
 
 当前不引入：
 
