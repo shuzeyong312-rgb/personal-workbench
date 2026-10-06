@@ -14,17 +14,20 @@ from sqlalchemy.pool import StaticPool
 from app.collection.service import (
     BATCH_RUNTIME,
     COLLECTION_LOCK,
+    BatchConfig,
     BatchItemResult,
     BatchRuntime,
     CollectionError,
     run_batch_collection,
 )
 import app.collection.service as collection_service
+import app.competitors as competitors_module
 from app.collection.daily import run_daily_collection_cycle
 from app.database import get_db
 from app.main import app
 from app.collection.types import ProductData
 from app.models import Base, Competitor, ProductSnapshot
+from app.settings import update_competitor_monitoring_setting
 
 
 @pytest.fixture()
@@ -67,6 +70,93 @@ def add_competitor(session_factory: sessionmaker[Session], competitor_id: int | 
         session.add(competitor)
         session.commit()
         return competitor.id
+
+
+def _collected_product(offer_id: str) -> ProductData:
+    return ProductData(
+        offer_id=offer_id,
+        title="已采集商品",
+        shop_name="测试店铺",
+        main_image_url=None,
+        price_min=Decimal("10.00"),
+        price_max=Decimal("10.00"),
+        product_status="active",
+        collection_source="html",
+        captured_at=datetime(2026, 10, 6, tzinfo=timezone.utc),
+        skus=[],
+    )
+
+
+@pytest.mark.parametrize(
+    ("collector_result", "expected_error"),
+    [
+        ("success", None),
+        (collection_service.CollectionTimeoutError(), "collection_timeout"),
+        (collection_service.VerificationRequiredError(), "1688_verification_required"),
+    ],
+    ids=["success", "ordinary_failure", "verification"],
+)
+def test_collect_competitor_reports_external_access_before_each_external_outcome(
+    client: tuple[TestClient, sessionmaker[Session]],
+    collector_result: str | BaseException,
+    expected_error: str | None,
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    observed: list[str] = []
+
+    def external_collector(*_args: object, **_kwargs: object) -> ProductData:
+        observed.append("collector")
+        assert observed == ["callback", "collector"]
+        if isinstance(collector_result, BaseException):
+            raise collector_result
+        return _collected_product("1000000000001")
+
+    with client[1]() as session, patch.object(collection_service, "collect_1688_product", side_effect=external_collector):
+        if expected_error is None:
+            result = collection_service.collect_competitor(
+                session, competitor_id, on_external_access=lambda: observed.append("callback")
+            )
+            assert result.outcome == "active"
+        else:
+            with pytest.raises(CollectionError) as error:
+                collection_service.collect_competitor(
+                    session, competitor_id, on_external_access=lambda: observed.append("callback")
+                )
+            assert error.value.code == expected_error
+
+    assert observed == ["callback", "collector"]
+
+
+def test_collect_competitor_reports_external_access_when_the_following_save_fails(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    observed: list[str] = []
+    with client[1]() as session:
+        original_commit = session.commit
+        commits = 0
+
+        def commit() -> None:
+            nonlocal commits
+            commits += 1
+            if commits == 2:
+                raise RuntimeError("save failed")
+            original_commit()
+
+        def external_collector(*_args: object, **_kwargs: object) -> ProductData:
+            observed.append("collector")
+            assert observed == ["callback", "collector"]
+            return _collected_product("1000000000001")
+
+        with patch.object(session, "commit", side_effect=commit), patch.object(
+            collection_service, "collect_1688_product", side_effect=external_collector
+        ), pytest.raises(CollectionError) as error:
+            collection_service.collect_competitor(
+                session, competitor_id, on_external_access=lambda: observed.append("callback")
+            )
+
+    assert error.value.code == "collection_save_failed"
+    assert observed == ["callback", "collector"]
 
 
 def test_selected_batch_validates_as_a_whole_and_returns_202(
@@ -505,6 +595,269 @@ def test_cooling_down_rejects_all_other_collection_entrypoints(
         thread.join(timeout=2)
 
     assert not thread.is_alive()
+    assert runtime.is_busy() is False
+    assert COLLECTION_LOCK.acquire(blocking=False)
+    COLLECTION_LOCK.release()
+
+
+def _test_config(**overrides: int) -> BatchConfig:
+    values = {
+        "item_interval_seconds": 5,
+        "continuous_collection_count": 10,
+        "batch_rest_seconds": 120,
+        "verification_cooldown_seconds": 600,
+        "auto_resume_max": 2,
+    }
+    values.update(overrides)
+    return BatchConfig(**values)
+
+
+def test_batch_start_freezes_one_settings_snapshot_and_the_next_start_uses_the_new_one(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0}
+    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5}
+    assert client[0].put("/api/settings/competitor-monitoring", json=old).status_code == 200
+    with patch("app.competitors.start_batch_task") as start:
+        assert client[0].post("/api/competitors/collect-batch", json={"mode": "selected", "competitor_ids": [1]}).status_code == 202
+        frozen = start.call_args.kwargs["config"]
+        with client[1]() as settings_db:
+            assert update_competitor_monitoring_setting(new, db=settings_db) == new
+        assert frozen == BatchConfig(**old)
+        BATCH_RUNTIME.finish("success")
+        assert client[0].post("/api/competitors/collect-batch", json={"mode": "selected", "competitor_ids": [1]}).status_code == 202
+
+    assert start.call_args.kwargs["config"] == BatchConfig(**new)
+
+
+def test_batch_start_and_settings_put_interleaving_freeze_only_complete_old_or_new_configurations(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0}
+    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5}
+    assert client[0].put("/api/settings/competitor-monitoring", json=old).status_code == 200
+    snapshot_read = Event()
+    resume_start = Event()
+    responses = []
+    real_get = competitors_module.get_competitor_monitoring_settings
+
+    def pause_after_snapshot(db: Session) -> dict[str, int]:
+        values = real_get(db)
+        snapshot_read.set()
+        assert resume_start.wait(timeout=2)
+        return values
+
+    with patch("app.competitors.start_batch_task") as start, patch.object(
+        competitors_module, "get_competitor_monitoring_settings", side_effect=pause_after_snapshot
+    ):
+        worker = Thread(target=lambda: responses.append(client[0].post(
+            "/api/competitors/collect-batch", json={"mode": "selected", "competitor_ids": [1]}
+        )))
+        worker.start()
+        assert snapshot_read.wait(timeout=2)
+        with client[1]() as settings_db:
+            assert update_competitor_monitoring_setting(new, db=settings_db) == new
+        resume_start.set()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert responses[0].status_code == 202
+        assert start.call_args.kwargs["config"] == BatchConfig(**old)
+
+    BATCH_RUNTIME.finish("success")
+    with patch("app.competitors.start_batch_task") as next_start:
+        assert client[0].post("/api/competitors/collect-batch", json={"mode": "selected", "competitor_ids": [1]}).status_code == 202
+    assert next_start.call_args.kwargs["config"] == BatchConfig(**new)
+
+
+def test_batch_waits_are_driven_by_external_accesses_not_successes_and_skip_the_last_item(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    runtime = BatchRuntime()
+    runtime.reserve([1, 2], _test_config())
+    waits: list[tuple[str, float]] = []
+
+    def collect(_db: Session, _id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        if _id == 1:
+            raise CollectionError("collection_timeout", "普通失败")
+        return SimpleNamespace(outcome="active")
+
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(FakeContext())), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect), \
+        patch.object(runtime, "wait_for_stop", side_effect=lambda seconds: waits.append(("interval", seconds)) or False):
+        run_batch_collection(client[1], [1, 2], runtime, config=_test_config(item_interval_seconds=7, batch_rest_seconds=0))
+
+    assert waits == [("interval", 7)]
+    assert runtime.external_accesses() == 2
+    assert runtime.snapshot()["failed"] == 1
+
+
+def test_resting_is_prioritized_over_interval_and_resets_before_the_next_access(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    for competitor_id in (1, 2, 3):
+        add_competitor(client[1], competitor_id)
+    runtime = BatchRuntime()
+    config = _test_config(continuous_collection_count=1, batch_rest_seconds=120)
+    runtime.reserve([1, 2, 3], config)
+    waits: list[tuple[str, float]] = []
+
+    def collect(_db: Session, _id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        return SimpleNamespace(outcome="active")
+
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(FakeContext())), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect), \
+        patch.object(runtime, "wait_for_resting", side_effect=lambda seconds: waits.append(("rest", seconds)) or True), \
+        patch.object(runtime, "wait_for_stop", side_effect=lambda seconds: waits.append(("interval", seconds)) or False):
+        run_batch_collection(client[1], [1, 2, 3], runtime, config=config)
+
+    assert waits == [("rest", 120), ("rest", 120)]
+    assert runtime.snapshot()["status"] == "completed"
+
+
+def test_verification_preempts_other_waits_then_retries_without_an_extra_wait(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    runtime = BatchRuntime()
+    config = _test_config(continuous_collection_count=1, batch_rest_seconds=120, verification_cooldown_seconds=180)
+    runtime.reserve([1, 2], config)
+    calls: list[int] = []
+    waits: list[tuple[str, float]] = []
+
+    def collect(_db: Session, item_id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        calls.append(item_id)
+        if calls == [1]:
+            raise CollectionError("1688_verification_required", "需要验证")
+        return SimpleNamespace(outcome="active")
+
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright([FakeContext(), FakeContext()])), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect), \
+        patch.object(runtime, "wait_for_cooldown", side_effect=lambda seconds: waits.append(("cooldown", seconds)) or True), \
+        patch.object(runtime, "wait_for_resting", side_effect=lambda seconds: waits.append(("rest", seconds)) or True), \
+        patch.object(runtime, "wait_for_stop", side_effect=lambda seconds: waits.append(("interval", seconds)) or False):
+        run_batch_collection(client[1], [1, 2], runtime, config=config)
+
+    assert calls == [1, 1, 2]
+    assert waits == [("cooldown", 180), ("rest", 120)]
+
+
+def test_zero_auto_resume_enters_manual_verification_without_cooldown(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    config = _test_config(auto_resume_max=0)
+    runtime.reserve([1], config)
+
+    def verification(_db: Session, _id: int, *, on_external_access: object = None, **_kwargs: object) -> None:
+        assert callable(on_external_access)
+        on_external_access()
+        raise CollectionError("1688_verification_required", "需要验证")
+
+    context = FakeContext()
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(context)), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "restore_context_window", side_effect=lambda _context, _page: context.pages.clear()), \
+        patch.object(collection_service, "collect_competitor", side_effect=verification), \
+        patch.object(runtime, "wait_for_cooldown") as cooldown:
+        run_batch_collection(client[1], [1], runtime, config=config)
+
+    assert runtime.snapshot()["status"] == "verification_required"
+    cooldown.assert_not_called()
+
+
+def test_stop_interrupts_item_interval_before_the_next_collector_and_releases_resources(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    runtime = BatchRuntime()
+    config = _test_config(item_interval_seconds=60, batch_rest_seconds=0)
+    runtime.reserve([1, 2], config)
+    context = FakeContext()
+    interval_started = Event()
+    calls: list[int] = []
+    real_wait = runtime.wait_for_stop
+
+    def collect(_db: Session, item_id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        calls.append(item_id)
+        return SimpleNamespace(outcome="active")
+
+    def wait(seconds: float) -> bool:
+        interval_started.set()
+        return real_wait(seconds)
+
+    worker = Thread(target=run_batch_collection, args=(client[1], [1, 2], runtime), kwargs={"config": config})
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(context)), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect), \
+        patch.object(runtime, "wait_for_stop", side_effect=wait):
+        worker.start()
+        assert interval_started.wait(timeout=2)
+        runtime.request_stop()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert calls == [1]
+    assert context.closed is True
+    assert runtime.is_busy() is False
+    assert COLLECTION_LOCK.acquire(blocking=False)
+    COLLECTION_LOCK.release()
+
+
+def test_stop_interrupts_resting_before_the_next_collector_and_releases_resources(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    runtime = BatchRuntime()
+    config = _test_config(continuous_collection_count=1, batch_rest_seconds=60)
+    runtime.reserve([1, 2], config)
+    context = FakeContext()
+    calls: list[int] = []
+    resting_started = Event()
+    real_enter_resting = runtime.enter_resting
+
+    def collect(_db: Session, item_id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        calls.append(item_id)
+        return SimpleNamespace(outcome="active")
+
+    def enter_resting(seconds: float) -> None:
+        real_enter_resting(seconds)
+        resting_started.set()
+
+    worker = Thread(target=run_batch_collection, args=(client[1], [1, 2], runtime), kwargs={"config": config})
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(context)), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect), \
+        patch.object(runtime, "enter_resting", side_effect=enter_resting):
+        worker.start()
+        assert resting_started.wait(timeout=2)
+        assert runtime.snapshot()["status"] == "resting"
+        runtime.request_stop()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert calls == [1]
+    assert context.closed is True
     assert runtime.is_busy() is False
     assert COLLECTION_LOCK.acquire(blocking=False)
     COLLECTION_LOCK.release()

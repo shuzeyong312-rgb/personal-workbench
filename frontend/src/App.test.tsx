@@ -1,7 +1,7 @@
 import { isValidElement, type ReactNode } from "react";
 import { fileURLToPath } from "node:url";
 
-import { chromium, expect as playwrightExpect } from "@playwright/test";
+import { chromium, expect as playwrightExpect, type Route } from "@playwright/test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { expect, test, vi } from "vitest";
@@ -94,8 +94,79 @@ const makeBatchState = (status: BatchState["status"], overrides: Partial<BatchSt
   auto_resume_attempt: status === "cooling_down" ? 1 : 0,
   auto_resume_max: 2,
   cooldown_remaining_seconds: 0,
+  resting_remaining_seconds: 0,
   items: [],
   ...overrides,
+});
+
+const monitoringSettings = { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2 };
+
+async function openSettingsScenario(options: { ownGet: number; monitoringGet: number; ownPut?: number; monitoringPut?: number }) {
+  const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), server: { host: "127.0.0.1", port: 0 }, clearScreen: false });
+  await server.listen();
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route("**/api/**", async route => {
+    const key = `${route.request().method()} ${new URL(route.request().url()).pathname}`;
+    if (key === "GET /api/dashboard/today") return json(route, { date: "2026-10-06", stats: { monitored_competitors: 0, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] });
+    if (key === "GET /api/dashboard/group-attention") return json(route, { date: "2026-10-06", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] });
+    if (key === "GET /api/competitors/collect-batch/status") return json(route, makeBatchState("idle"));
+    if (key === "GET /api/settings/own-shop-name") return json(route, options.ownGet === 200 ? { configured: true, own_shop_name: "测试店铺" } : { message: "基础设置加载失败" }, options.ownGet);
+    if (key === "PUT /api/settings/own-shop-name") return json(route, options.ownPut === 200 || options.ownPut === undefined ? { configured: true, own_shop_name: "更新店铺" } : { message: "基础设置保存失败" }, options.ownPut ?? 200);
+    if (key === "GET /api/settings/competitor-monitoring") return json(route, options.monitoringGet === 200 ? monitoringSettings : { message: "竞品监控加载失败" }, options.monitoringGet);
+    if (key === "PUT /api/settings/competitor-monitoring") return json(route, options.monitoringPut === 200 || options.monitoringPut === undefined ? monitoringSettings : { message: "竞品监控保存失败" }, options.monitoringPut ?? 200);
+    return route.abort("blockedbyclient");
+  });
+  const baseUrl = server.resolvedUrls?.local[0];
+  if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
+  await page.goto(baseUrl);
+  await page.getByRole("button", { name: "系统设置", exact: true }).click();
+  return { page, close: async () => { await context.close(); await browser.close(); await server.close(); } };
+}
+
+test("basic-settings load failure does not block competitor-monitoring settings", async () => {
+  const scenario = await openSettingsScenario({ ownGet: 500, monitoringGet: 200 });
+  try {
+    await playwrightExpect(scenario.page.getByText("设置加载失败", { exact: true })).toBeVisible();
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
+    await playwrightExpect(scenario.page.getByLabel("单商品采集间隔")).toHaveValue("5");
+  } finally { await scenario.close(); }
+});
+
+test("basic-settings save failure does not block competitor-monitoring settings", async () => {
+  const scenario = await openSettingsScenario({ ownGet: 200, monitoringGet: 200, ownPut: 500 });
+  try {
+    await playwrightExpect(scenario.page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
+    await scenario.page.getByRole("button", { name: "保存设置", exact: true }).click();
+    await playwrightExpect(scenario.page.getByRole("alert")).toContainText("基础设置保存失败");
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
+    await playwrightExpect(scenario.page.getByLabel("单商品采集间隔")).toHaveValue("5");
+  } finally { await scenario.close(); }
+});
+
+test("competitor-monitoring load failure does not replace the loaded basic settings", async () => {
+  const scenario = await openSettingsScenario({ ownGet: 200, monitoringGet: 500 });
+  try {
+    await playwrightExpect(scenario.page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
+    await playwrightExpect(scenario.page.getByText("竞品监控设置加载失败", { exact: true })).toBeVisible();
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^基础设置/ }).click();
+    await playwrightExpect(scenario.page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
+  } finally { await scenario.close(); }
+});
+
+test("competitor-monitoring save failure does not replace the loaded basic settings", async () => {
+  const scenario = await openSettingsScenario({ ownGet: 200, monitoringGet: 200, monitoringPut: 500 });
+  try {
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
+    await playwrightExpect(scenario.page.getByLabel("单商品采集间隔")).toHaveValue("5");
+    await scenario.page.getByRole("button", { name: "保存设置", exact: true }).click();
+    await playwrightExpect(scenario.page.getByRole("alert")).toContainText("竞品监控保存失败");
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^基础设置/ }).click();
+    await playwrightExpect(scenario.page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
+  } finally { await scenario.close(); }
 });
 
 test("paginates eleven competitors with a fixed page size and clamps invalid pages", () => {
@@ -980,6 +1051,7 @@ test("renders Collection Tasks runtime states and preserves missing product IDs"
   expect(idle).toContain("当前无批量采集任务");
   expect(idle).toContain("可在竞品监控大屏点击「立即采集」发起批量采集。");
   expect(render({ ...idleBatchState, status: "running", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, items: [{ competitor_id: 99, status: "failed", error_code: "collection_timeout", message: "加载超时", outcome: null }] })).toContain("商品 ID：99");
+  expect(render({ ...idleBatchState, status: "resting", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, resting_remaining_seconds: 17, browser_open: true, runner_active: true })).toContain("计划内主动休息 · 剩余 17 秒 · 已完成 1 · 剩余 1");
   expect(render({ ...idleBatchState, status: "cooling_down", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, cooldown_remaining_seconds: 17, auto_resume_attempt: 1 })).toContain("自动恢复 1 / 2");
   expect(render({ ...idleBatchState, status: "verification_required", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, browser_open: true, runner_active: true })).toContain("需要人工完成 1688 验证");
   expect(render({ ...idleBatchState, status: "completed", total: 2, completed: 2, succeeded: 1, failed: 1, outcome_code: "completed" })).toContain("结果码：completed");

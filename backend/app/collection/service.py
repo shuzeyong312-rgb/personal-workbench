@@ -1,5 +1,5 @@
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from math import ceil
@@ -32,11 +32,24 @@ from app.collection.types import ProductData, SkuData
 from app.changes import detect_changes
 from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
 from app.ownership import apply_collected_ownership
+from app.settings import competitor_monitoring_defaults
 
 
 COLLECTION_LOCK = RLock()
-BATCH_COOLDOWN_SECONDS = 10 * 60
-AUTO_RESUME_MAX = 2
+
+
+def _monitoring_default(field_name: str) -> int:
+    """Keep runner compatibility defaults sourced at the Settings boundary."""
+    return competitor_monitoring_defaults()[field_name]
+
+
+@dataclass(frozen=True)
+class BatchConfig:
+    item_interval_seconds: int = field(default_factory=lambda: _monitoring_default("item_interval_seconds"))
+    continuous_collection_count: int = field(default_factory=lambda: _monitoring_default("continuous_collection_count"))
+    batch_rest_seconds: int = field(default_factory=lambda: _monitoring_default("batch_rest_seconds"))
+    verification_cooldown_seconds: int = field(default_factory=lambda: _monitoring_default("verification_cooldown_seconds"))
+    auto_resume_max: int = field(default_factory=lambda: _monitoring_default("auto_resume_max"))
 
 
 @dataclass(frozen=True)
@@ -64,8 +77,10 @@ class BatchRuntime:
         self.browser_open = False
         self.runner_active = False
         self.auto_resume_attempt = 0
-        self.auto_resume_max = AUTO_RESUME_MAX
+        self.auto_resume_max = BatchConfig().auto_resume_max
         self.cooldown_remaining_seconds = 0
+        self.resting_remaining_seconds = 0
+        self.external_access_count = 0
         self.items: list[BatchItemResult] = []
         self.stop_event = Event()
         self.task: asyncio.Task[Any] | None = None
@@ -76,7 +91,7 @@ class BatchRuntime:
         with self._lock:
             return self.runner_active or self.browser_open
 
-    def reserve(self, competitor_ids: list[int]) -> bool:
+    def reserve(self, competitor_ids: list[int], config: BatchConfig | None = None) -> bool:
         with self._lock:
             if self.runner_active or self.browser_open:
                 return False
@@ -93,8 +108,10 @@ class BatchRuntime:
             self.browser_open = False
             self.runner_active = True
             self.auto_resume_attempt = 0
-            self.auto_resume_max = AUTO_RESUME_MAX
+            self.auto_resume_max = (config or BatchConfig()).auto_resume_max
             self.cooldown_remaining_seconds = 0
+            self.resting_remaining_seconds = 0
+            self.external_access_count = 0
             self.items = []
             self.stop_event = Event()
             self.task = None
@@ -124,6 +141,7 @@ class BatchRuntime:
         with self._lock:
             self.status = "running"
             self.cooldown_remaining_seconds = 0
+            self.resting_remaining_seconds = 0
 
     def begin_auto_resume(self) -> None:
         with self._lock:
@@ -133,22 +151,43 @@ class BatchRuntime:
         with self._lock:
             self.status = "cooling_down"
             self.cooldown_remaining_seconds = max(0, ceil(seconds))
+            self.resting_remaining_seconds = 0
+
+    def enter_resting(self, seconds: float) -> None:
+        with self._lock:
+            self.status = "resting"
+            self.resting_remaining_seconds = max(0, ceil(seconds))
+            self.cooldown_remaining_seconds = 0
 
     def wait_for_cooldown(self, seconds: float) -> bool:
+        return self._wait_with_remaining(seconds, "cooldown_remaining_seconds")
+
+    def wait_for_resting(self, seconds: float) -> bool:
+        return self._wait_with_remaining(seconds, "resting_remaining_seconds")
+
+    def _wait_with_remaining(self, seconds: float, field: str) -> bool:
         deadline = monotonic() + max(0, seconds)
         while True:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 with self._lock:
-                    self.cooldown_remaining_seconds = 0
+                    setattr(self, field, 0)
                 return True
             with self._lock:
-                self.cooldown_remaining_seconds = max(0, ceil(remaining))
+                setattr(self, field, max(0, ceil(remaining)))
                 stop_event = self.stop_event
             if stop_event.wait(min(remaining, 0.1)):
                 with self._lock:
-                    self.cooldown_remaining_seconds = 0
+                    setattr(self, field, 0)
                 return False
+
+    def record_external_access(self) -> None:
+        with self._lock:
+            self.external_access_count += 1
+
+    def external_accesses(self) -> int:
+        with self._lock:
+            return self.external_access_count
 
     def set_current(self, competitor_id: int | None) -> None:
         with self._lock:
@@ -173,6 +212,7 @@ class BatchRuntime:
             self.runner_active = False
             self._active_reservation = None
             self.cooldown_remaining_seconds = 0
+            self.resting_remaining_seconds = 0
 
     def mark_verification(self) -> None:
         with self._lock:
@@ -181,7 +221,7 @@ class BatchRuntime:
 
     def is_running(self) -> bool:
         with self._lock:
-            return self.status == "running"
+            return self.status in {"running", "resting"}
 
     def has_failures(self) -> bool:
         with self._lock:
@@ -193,6 +233,7 @@ class BatchRuntime:
             self._active_reservation = None
             self.browser_open = False
             self.cooldown_remaining_seconds = 0
+            self.resting_remaining_seconds = 0
 
     def request_stop(self) -> None:
         with self._lock:
@@ -224,6 +265,7 @@ class BatchRuntime:
                 "auto_resume_attempt": self.auto_resume_attempt,
                 "auto_resume_max": self.auto_resume_max,
                 "cooldown_remaining_seconds": self.cooldown_remaining_seconds,
+                "resting_remaining_seconds": self.resting_remaining_seconds,
                 "items": [
                     {
                         "competitor_id": item.competitor_id,
@@ -466,6 +508,7 @@ def collect_competitor(
     browser_context: object | None = None,
     batch_reservation: int | None = None,
     batch_runtime: BatchRuntime = BATCH_RUNTIME,
+    on_external_access: Callable[[], None] | None = None,
 ) -> CollectionResult:
     competitor = db.get(Competitor, competitor_id)
     if competitor is None:
@@ -497,6 +540,8 @@ def collect_competitor(
             raise CollectionError("collection_save_failed", "采集结果保存失败") from exc
 
         try:
+            if on_external_access is not None:
+                on_external_access()
             if browser_context is None:
                 product = collect_1688_product(competitor_url, competitor_offer_id)
             else:
@@ -685,10 +730,20 @@ def run_batch_collection(
     competitor_ids: list[int],
     runtime: BatchRuntime = BATCH_RUNTIME,
     *,
-    cooldown_seconds: float = BATCH_COOLDOWN_SECONDS,
+    config: BatchConfig | None = None,
+    cooldown_seconds: float | None = None,
     batch_reservation: int | None = None,
 ) -> None:
     """Run one serial batch in one worker thread and one headed Context."""
+    config = config or BatchConfig()
+    if cooldown_seconds is not None:
+        config = BatchConfig(
+            item_interval_seconds=config.item_interval_seconds,
+            continuous_collection_count=config.continuous_collection_count,
+            batch_rest_seconds=config.batch_rest_seconds,
+            verification_cooldown_seconds=cooldown_seconds,
+            auto_resume_max=config.auto_resume_max,
+        )
     lock_acquired = False
     context = None
     verification_page = None
@@ -712,13 +767,15 @@ def run_batch_collection(
             move_context_offscreen(context)
 
             stop_batch = False
-            for competitor_id in runnable_ids:
+            continuous_accesses = 0
+            for position, competitor_id in enumerate(runnable_ids):
                 while True:
                     if runtime.stop_requested():
                         stop_batch = True
                         break
                     runtime.set_current(competitor_id)
                     retry_current = False
+                    external_accesses_before = runtime.external_accesses()
                     try:
                         with session_factory() as db:
                             collection_result = collect_competitor(
@@ -727,10 +784,11 @@ def run_batch_collection(
                                 browser_context=context,
                                 batch_reservation=batch_reservation,
                                 batch_runtime=runtime,
+                                on_external_access=runtime.record_external_access,
                             )
                     except CollectionError as exc:
                         if exc.code == "1688_verification_required":
-                            if runtime.snapshot()["auto_resume_attempt"] >= runtime.snapshot()["auto_resume_max"]:
+                            if runtime.snapshot()["auto_resume_attempt"] >= config.auto_resume_max:
                                 runtime.record(
                                     BatchItemResult(
                                         competitor_id=competitor_id,
@@ -755,11 +813,12 @@ def run_batch_collection(
                                 break
 
                             runtime.begin_auto_resume()
+                            continuous_accesses = 0
                             _close_quietly(context)
                             context = None
                             runtime.set_browser_open(False)
-                            runtime.enter_cooldown(cooldown_seconds)
-                            if not runtime.wait_for_cooldown(cooldown_seconds):
+                            runtime.enter_cooldown(config.verification_cooldown_seconds)
+                            if not runtime.wait_for_cooldown(config.verification_cooldown_seconds):
                                 stop_batch = True
                                 break
                             runtime.set_running()
@@ -793,13 +852,31 @@ def run_batch_collection(
                     break
                 if stop_batch:
                     break
+                if runtime.stop_requested():
+                    stop_batch = True
+                    break
+                if runtime.external_accesses() <= external_accesses_before:
+                    continue
+                continuous_accesses += 1
+                if position == len(runnable_ids) - 1:
+                    continue
+                if config.batch_rest_seconds > 0 and continuous_accesses >= config.continuous_collection_count:
+                    runtime.enter_resting(config.batch_rest_seconds)
+                    if not runtime.wait_for_resting(config.batch_rest_seconds):
+                        stop_batch = True
+                        break
+                    runtime.set_running()
+                    continuous_accesses = 0
+                elif runtime.wait_for_stop(config.item_interval_seconds):
+                    stop_batch = True
+                    break
 
     except Exception:
         runtime.finish("collect_failed")
     finally:
         _close_quietly(context)
         runtime.mark_runner_stopped()
-        if runtime.stop_requested() and runtime.snapshot()["status"] in {"running", "cooling_down"}:
+        if runtime.stop_requested() and runtime.snapshot()["status"] in {"running", "resting", "cooling_down"}:
             runtime.finish("collect_failed")
         elif runtime.is_running():
             runtime.finish(
@@ -814,6 +891,7 @@ def start_batch_task(
     competitor_ids: list[int],
     runtime: BatchRuntime = BATCH_RUNTIME,
     batch_reservation: int | None = None,
+    config: BatchConfig | None = None,
 ) -> asyncio.Task[Any]:
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -822,6 +900,7 @@ def start_batch_task(
             competitor_ids,
             runtime,
             batch_reservation=batch_reservation,
+            config=config,
         )
     )
     runtime.attach_task(task)

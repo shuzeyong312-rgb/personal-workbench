@@ -25,6 +25,7 @@ from app.main import app
 from app.models import Base, Competitor, CompetitorGroup, SystemSetting
 from app.collection.types import ProductData, SkuData
 from app.models import ChangeEvent, CollectionRun, ProductSnapshot, SkuSnapshot
+from app.settings import get_competitor_monitoring_settings
 
 BACKEND_ROOT = Path(__file__).parents[1]
 
@@ -92,6 +93,58 @@ def test_own_shop_name_put_trims_and_round_trips(client):
         "configured": True,
         "own_shop_name": "广州莓有科技有限公司",
     }
+
+
+def test_competitor_monitoring_settings_default_invalid_read_and_atomic_save(client):
+    defaults = {
+        "item_interval_seconds": 5,
+        "continuous_collection_count": 10,
+        "batch_rest_seconds": 120,
+        "verification_cooldown_seconds": 600,
+        "auto_resume_max": 2,
+    }
+    assert client[0].get("/api/settings/competitor-monitoring").json() == defaults
+    with client[1]() as session:
+        session.add(SystemSetting(key="competitor_monitoring_item_interval_seconds", value="bad"))
+        session.add(SystemSetting(key="competitor_monitoring_batch_rest_seconds", value="61"))
+        session.commit()
+    assert client[0].get("/api/settings/competitor-monitoring").json() == defaults
+
+    saved = {"item_interval_seconds": 1, "continuous_collection_count": 50, "batch_rest_seconds": 0, "verification_cooldown_seconds": 3600, "auto_resume_max": 0}
+    assert client[0].put("/api/settings/competitor-monitoring", json=saved).json() == saved
+    rejected = client[0].put("/api/settings/competitor-monitoring", json={**saved, "item_interval_seconds": True})
+    assert rejected.status_code == 422
+    assert rejected.json()["field"] == "item_interval_seconds"
+    assert client[0].get("/api/settings/competitor-monitoring").json() == saved
+
+
+def test_competitor_monitoring_settings_falls_back_for_an_unbounded_legacy_integer_without_rewriting(client):
+    raw = "9" * 5000
+    with client[1]() as session:
+        session.add(SystemSetting(key="competitor_monitoring_item_interval_seconds", value=raw))
+        session.commit()
+
+    response = client[0].get("/api/settings/competitor-monitoring")
+
+    assert response.status_code == 200
+    assert response.json()["item_interval_seconds"] == 5
+    with client[1]() as session:
+        assert session.get(SystemSetting, "competitor_monitoring_item_interval_seconds").value == raw
+
+
+def test_competitor_monitoring_settings_reads_the_complete_snapshot_in_one_query(client):
+    saved = {
+        "item_interval_seconds": 6,
+        "continuous_collection_count": 8,
+        "batch_rest_seconds": 180,
+        "verification_cooldown_seconds": 720,
+        "auto_resume_max": 1,
+    }
+    assert client[0].put("/api/settings/competitor-monitoring", json=saved).status_code == 200
+    with client[1]() as session, patch.object(session, "scalars", wraps=session.scalars) as scalars:
+        assert get_competitor_monitoring_settings(session) == saved
+
+    assert scalars.call_count == 1
 
 
 @pytest.mark.parametrize("value", ["", "   ", "x" * 256])

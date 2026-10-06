@@ -7,7 +7,7 @@ type GroupCreateStatus = "initial" | "submitting" | "success" | "invalid" | "dup
 type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
-export type BatchStatus = "idle" | "running" | "cooling_down" | "completed" | "verification_required";
+export type BatchStatus = "idle" | "running" | "resting" | "cooling_down" | "completed" | "verification_required";
 export type Page = "home" | "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "price-compare" | "auto-inquiry" | "auto-listing" | "settings";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
@@ -145,6 +145,7 @@ export type BatchState = {
   auto_resume_attempt: number;
   auto_resume_max: number;
   cooldown_remaining_seconds: number;
+  resting_remaining_seconds: number;
   items: { competitor_id: number; status: "success" | "failed" | "verification_required"; error_code: string | null; message: string | null; outcome: "active" | "offline" | null }[];
 };
 
@@ -163,6 +164,7 @@ export const idleBatchState: BatchState = {
   auto_resume_attempt: 0,
   auto_resume_max: 2,
   cooldown_remaining_seconds: 0,
+  resting_remaining_seconds: 0,
   items: [],
 };
 
@@ -1757,7 +1759,7 @@ export function CurrentBatchCard({ batchState, status, error, onRetry, productBy
   if (batchState.status === "idle") return <section className="table-card collection-current-card"><div className="table-heading"><div><h2>当前批量采集</h2></div></div><div className="collection-batch-idle"><strong>当前无批量采集任务</strong><span>可在竞品监控大屏点击「立即采集」发起批量采集。</span></div></section>;
   const currentProduct = batchState.current_competitor_id === null ? null : <ProductReference competitorId={batchState.current_competitor_id} productById={productById} />;
   const progress = batchState.total ? Math.min(100, (batchState.completed / batchState.total) * 100) : 0;
-  const title = batchState.status === "running" ? "采集中" : batchState.status === "cooling_down" ? "1688 验证已触发" : batchState.status === "verification_required" ? "需要人工完成 1688 验证" : "最近批次完成";
+  const title = batchState.status === "running" ? "采集中" : batchState.status === "resting" ? `计划内主动休息 · 剩余 ${formatBatchCooldown(batchState.resting_remaining_seconds)} · 已完成 ${batchState.completed} · 剩余 ${batchState.remaining}` : batchState.status === "cooling_down" ? "1688 验证已触发" : batchState.status === "verification_required" ? "需要人工完成 1688 验证" : "最近批次完成";
   return <section className={`table-card collection-current-card collection-batch-${batchState.status}`}><div className="table-heading"><div><h2>当前批量采集</h2></div><span className={`collection-batch-status collection-batch-status-${batchState.status}`}>{title}</span></div><div className="collection-batch-summary"><div><strong>{batchState.completed} / {batchState.total}</strong><span>已完成 / 总数</span></div><div><strong>{batchState.succeeded}</strong><span>成功</span></div><div><strong>{batchState.failed}</strong><span>失败</span></div><div><strong>{batchState.remaining}</strong><span>剩余</span></div></div>{(batchState.status === "running" || batchState.status === "cooling_down" || batchState.status === "verification_required") && <div className="collection-progress" aria-label={`批量采集进度 ${batchState.completed} / ${batchState.total}`}><i style={{ width: `${progress}%` }} /></div>}{batchState.status === "cooling_down" && <div className="collection-batch-notice"><strong>浏览器已关闭，等待冷却后自动恢复。</strong><span>冷却剩余：{formatBatchCooldown(batchState.cooldown_remaining_seconds)} · 自动恢复 {batchState.auto_resume_attempt} / {batchState.auto_resume_max}</span></div>}{batchState.status === "verification_required" && <div className="collection-batch-notice"><strong>请在已打开的浏览器中完成 1688 验证。</strong><span>浏览器：{batchState.browser_open ? "已打开" : "未打开"} · 采集器：{batchState.runner_active ? "运行中" : "未运行"}</span></div>}{batchState.status === "completed" && <div className="collection-batch-notice"><strong>结果码：{batchState.outcome_code || "未提供"}</strong><span>需要验证：{batchState.verification_required}</span></div>}{currentProduct && <div className="collection-current-product"><span>当前商品</span>{currentProduct}</div>}{batchState.items.length > 0 && <div className="collection-batch-items"><strong>已完成项目</strong><ul>{batchState.items.map((item) => <li key={`${item.competitor_id}-${item.status}`}><ProductReference competitorId={item.competitor_id} productById={productById} /><span className={`collection-task-run-status collection-task-run-status-${item.status}`}>{item.status === "success" ? `采集成功${item.outcome === "active" ? " · 在售" : item.outcome === "offline" ? " · 已下架" : ""}` : item.status === "failed" ? "失败" : "需要验证"}</span>{item.status !== "success" && <>{item.message && <small>{item.message}</small>}{item.error_code && <small>{item.error_code}</small>}</>}</li>)}</ul></div>}</section>;
 }
 
@@ -1785,16 +1787,39 @@ type SettingsPageProps = {
   onRetry: () => void;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
   onNavigate: (page: Page) => void;
+  monitoring: CompetitorMonitoringSettings | null;
+  monitoringStatus: ListStatus;
+  monitoringError: string | null;
+  monitoringSaveError: string | null;
+  monitoringSubmitting: boolean;
+  onMonitoringChange: (value: CompetitorMonitoringSettings) => void;
+  onMonitoringOpen: () => void;
+  onMonitoringRetry: () => void;
+  onMonitoringSave: (event: FormEvent<HTMLFormElement>) => void;
 };
 
-export function SettingsPage({ configured, value, status, error, saveError, submitting, onChange, onRetry, onSave, onNavigate }: SettingsPageProps) {
+type CompetitorMonitoringSettings = { item_interval_seconds: number; continuous_collection_count: number; batch_rest_seconds: number; verification_cooldown_seconds: number; auto_resume_max: number };
+
+export function SettingsPage({ configured, value, status, error, saveError, submitting, onChange, onRetry, onSave, onNavigate, monitoring, monitoringStatus, monitoringError, monitoringSaveError, monitoringSubmitting, onMonitoringChange, onMonitoringOpen, onMonitoringRetry, onMonitoringSave }: SettingsPageProps) {
+  const [module, setModule] = useState<"basic" | "monitoring">("basic");
+  const setNumber = (key: keyof CompetitorMonitoringSettings, value: string) => { if (monitoring) onMonitoringChange({ ...monitoring, [key]: Number(value) }); };
+  const monitoringRows: { key: keyof CompetitorMonitoringSettings; title: string; description: string; unit: string; recommended: string; range: string; value: number }[] = monitoring ? [
+    { key: "item_interval_seconds", title: "单商品采集间隔", description: "每采集完一个商品后的等待时间", unit: "秒", recommended: "推荐 5 秒", range: "1～60 秒", value: monitoring.item_interval_seconds },
+    { key: "continuous_collection_count", title: "连续采集数量", description: "连续访问指定数量后进入主动休息", unit: "个", recommended: "推荐 10 个", range: "1～50 个", value: monitoring.continuous_collection_count },
+    { key: "batch_rest_seconds", title: "批次休息时间", description: "完成一组连续采集后暂停一段时间", unit: "分钟", recommended: "推荐 2 分钟", range: "0～30 分钟，0 表示关闭主动休息", value: monitoring.batch_rest_seconds / 60 },
+    { key: "verification_cooldown_seconds", title: "风控冷却时间", description: "触发 1688 验证后等待多久再自动恢复", unit: "分钟", recommended: "推荐 10 分钟", range: "1～60 分钟", value: monitoring.verification_cooldown_seconds / 60 },
+    { key: "auto_resume_max", title: "自动恢复次数", description: "触发验证后最多自动恢复的次数", unit: "次", recommended: "推荐 2 次", range: "0～5 次，0 表示直接进入人工处理", value: monitoring.auto_resume_max },
+  ] : [];
+  const field = (row: typeof monitoringRows[number]) => <label className="monitoring-setting-row" key={row.key}><span className="monitoring-setting-copy"><strong>{row.title}</strong><small>{row.description}</small></span><span className="monitoring-setting-input"><input aria-label={row.title} type="number" min={row.key === "batch_rest_seconds" || row.key === "auto_resume_max" ? 0 : 1} max={row.key === "item_interval_seconds" ? 60 : row.key === "continuous_collection_count" ? 50 : row.key === "batch_rest_seconds" ? 30 : row.key === "verification_cooldown_seconds" ? 60 : 5} step={1} value={row.value} disabled={monitoringSubmitting} onChange={(event) => setNumber(row.key, row.key === "batch_rest_seconds" || row.key === "verification_cooldown_seconds" ? String(Number(event.target.value) * 60) : event.target.value)} /><b>{row.unit}</b></span><span className="monitoring-setting-meta"><em>{row.recommended}</em><small>{row.range}</small></span></label>;
   return <AppShell page="settings" onNavigate={onNavigate} breadcrumb="系统设置">
-    <header className="page-header"><div><h1>系统设置</h1><p className="page-description">配置用于自动识别我方商品的店铺名称。</p></div></header>
-    <section className="table-card settings-card"><div className="table-heading"><div><h2>我方店铺</h2><span>仅支持精确店铺名称匹配（首尾空白和连续空白会标准化）。</span></div></div>
+    <header className="page-header"><div><h1>系统设置</h1><p className="page-description">按业务模块管理基础信息与竞品采集节奏。</p></div></header>
+    <div className="settings-layout"><nav aria-label="设置模块" className="settings-nav"><button type="button" className={module === "basic" ? "settings-module-active" : "settings-module"} onClick={() => setModule("basic")}><strong>基础设置</strong><span>我方店铺、基础信息</span></button><button type="button" className={module === "monitoring" ? "settings-module-active" : "settings-module"} onClick={() => { setModule("monitoring"); onMonitoringOpen(); }}><strong>竞品监控</strong><span>采集节奏、风控处理</span></button></nav>
+    {module === "basic" && <section className="table-card settings-card"><div className="table-heading"><div><h2>我方店铺</h2><span>仅支持精确店铺名称匹配（首尾空白和连续空白会标准化）。</span></div></div>
       {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载系统设置…</strong></div>}
       {status === "error" && <div className="state-panel state-error"><strong>设置加载失败</strong><span>{error || "暂时无法读取系统设置。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></div>}
       {status === "ready" && <form className="settings-form" onSubmit={onSave}><label htmlFor="own-shop-name">我方店铺名称</label><input id="own-shop-name" value={value} onChange={(event) => onChange(event.target.value)} maxLength={255} disabled={submitting} placeholder="请输入 1688 店铺名称" />{!configured && <p className="hint">尚未配置。配置后才能从大屏添加监控商品。</p>}{saveError && <div className="feedback feedback-server-error" role="alert">{saveError}</div>}<div className="dialog-actions"><button type="submit" className="primary-button" disabled={submitting || !value.trim()}>{submitting ? "保存中…" : "保存设置"}</button><button type="button" className="secondary-button" onClick={() => onNavigate("dashboard")} disabled={submitting}>返回大屏</button></div></form>}
-    </section>
+    </section>}
+    {module === "monitoring" && <section className="table-card settings-card settings-monitoring-card"><div className="settings-monitoring-heading"><h2>竞品监控设置</h2><p>配置采集节奏与风控恢复策略，降低长时间连续访问造成的压力。</p><span>设置仅影响下一次新启动的批量采集，当前运行任务不变。</span></div>{monitoringStatus === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载竞品监控设置…</strong></div>}{monitoringStatus === "error" && <div className="state-panel state-error"><strong>竞品监控设置加载失败</strong><span>{monitoringError || "暂时无法读取竞品监控设置。"}</span><button type="button" className="secondary-button" onClick={onMonitoringRetry}>重试</button></div>}{monitoringStatus === "ready" && monitoring && <form className="monitoring-settings-form" onSubmit={onMonitoringSave}><section className="monitoring-setting-group"><header><h3>采集节奏</h3><span>控制每次访问之间的节奏与计划内休息。</span></header>{monitoringRows.slice(0, 3).map(field)}</section><section className="monitoring-setting-group"><header><h3>风控处理</h3><span>触发验证后，按当前设置等待并尝试恢复。</span></header>{monitoringRows.slice(3).map(field)}</section>{monitoringSaveError && <div className="feedback feedback-server-error" role="alert">{monitoringSaveError}</div>}<div className="settings-save-bar"><button type="submit" className="primary-button" disabled={monitoringSubmitting}>{monitoringSubmitting ? "保存中…" : "保存设置"}</button></div></form>}</section>}</div>
   </AppShell>;
 }
 
@@ -1822,6 +1847,11 @@ function App() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const [settingsSubmitting, setSettingsSubmitting] = useState(false);
+  const [monitoringSettings, setMonitoringSettings] = useState<CompetitorMonitoringSettings | null>(null);
+  const [monitoringStatus, setMonitoringStatus] = useState<ListStatus>("loading");
+  const [monitoringError, setMonitoringError] = useState<string | null>(null);
+  const [monitoringSaveError, setMonitoringSaveError] = useState<string | null>(null);
+  const [monitoringSubmitting, setMonitoringSubmitting] = useState(false);
   const [groupSummary, setGroupSummary] = useState<CompetitorGroupsSummary | null>(null);
   const [groupStatus, setGroupStatus] = useState<GroupStatus>("loading");
   const [groupError, setGroupError] = useState<string | null>(null);
@@ -1920,6 +1950,14 @@ function App() {
       setSettingsConfigured(body.configured); setOwnShopName(body.own_shop_name); setSettingsValue(body.own_shop_name || ""); setSettingsStatus("ready"); return true;
     } catch { setSettingsError("暂时无法获取系统设置，请检查服务是否正常运行。"); setSettingsStatus("error"); return false; }
   }
+  async function loadMonitoringSettings(): Promise<boolean> {
+    setMonitoringStatus("loading"); setMonitoringError(null);
+    try {
+      const response = await fetch("/api/settings/competitor-monitoring");
+      if (!response.ok) throw new Error("request failed");
+      setMonitoringSettings(await response.json() as CompetitorMonitoringSettings); setMonitoringStatus("ready"); return true;
+    } catch { setMonitoringError("暂时无法获取竞品监控设置，请检查服务是否正常运行。"); setMonitoringStatus("error"); return false; }
+  }
   async function loadDashboardAttention(): Promise<boolean> {
     setDashboardAttentionStatus("loading"); setDashboardAttentionError(null);
     try {
@@ -1996,7 +2034,7 @@ function App() {
       setBatchState(next);
       setBatchStatus("ready");
       setBatchError(null);
-      const wasActiveBatch = previous.status === "running" || previous.status === "cooling_down";
+      const wasActiveBatch = previous.status === "running" || previous.status === "resting" || previous.status === "cooling_down";
       if (next.status === "completed" && wasActiveBatch) {
         const refreshSucceeded = (await Promise.all([loadCurrentProducts(), loadDashboard()])).every(Boolean);
         setNotice(refreshSucceeded
@@ -2019,7 +2057,7 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
   useEffect(() => {
-    if (batchState.status !== "running" && batchState.status !== "cooling_down" && !(batchState.status === "verification_required" && batchState.browser_open)) return;
+    if (batchState.status !== "running" && batchState.status !== "resting" && batchState.status !== "cooling_down" && !(batchState.status === "verification_required" && batchState.browser_open)) return;
     const timer = window.setInterval(() => { void loadBatchStatus(); }, 1500);
     return () => window.clearInterval(timer);
   }, [batchState.status, batchState.browser_open]);
@@ -2067,6 +2105,18 @@ function App() {
       setNotice(getBatchRefreshNotice("我方店铺设置已保存，商品身份已重新识别。", refreshSucceeded));
     } catch (error) { setSettingsSaveError(error instanceof Error ? error.message : "我方店铺名称保存失败，请稍后重试"); }
     finally { setSettingsSubmitting(false); }
+  }
+  async function submitMonitoringSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (monitoringSubmitting || !monitoringSettings) return;
+    setMonitoringSubmitting(true); setMonitoringSaveError(null);
+    try {
+      const response = await fetch("/api/settings/competitor-monitoring", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(monitoringSettings) });
+      const body = await response.json().catch(() => ({})) as CompetitorMonitoringSettings & CollectionErrorBody;
+      if (!response.ok) throw new Error(body.message || "竞品监控设置保存失败，请稍后重试");
+      setMonitoringSettings(body); setNotice({ message: "竞品监控设置已保存。", type: "success" });
+    } catch (error) { setMonitoringSaveError(error instanceof Error ? error.message : "竞品监控设置保存失败，请稍后重试"); }
+    finally { setMonitoringSubmitting(false); }
   }
   async function handleCreateGroup() {
     setGroupCreateStatus("submitting");
@@ -2401,7 +2451,7 @@ function App() {
     {page === "own-products" && <ListPage competitors={ownProducts} ownership="self" groups={groups} status={ownListStatus} error={ownListError} onRetry={() => void loadOwnProducts()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} paginationResetVersion={paginationResetVersion} />}
     {page === "competitors" && <ListPage competitors={competitors} ownership="competitor" groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} paginationResetVersion={paginationResetVersion} />}
     {page === "collection-tasks" && <CollectionTasksPage onNavigate={navigate} batchState={batchState} batchStatus={batchStatus} batchError={batchError} onRefreshBatch={loadBatchStatus} />}
-    {page === "settings" && <SettingsPage configured={settingsConfigured} value={settingsValue} status={settingsStatus} error={settingsError} saveError={settingsSaveError} submitting={settingsSubmitting} onChange={setSettingsValue} onRetry={() => void loadOwnShopName()} onSave={submitOwnShopName} onNavigate={navigate} />}
+    {page === "settings" && <SettingsPage configured={settingsConfigured} value={settingsValue} status={settingsStatus} error={settingsError} saveError={settingsSaveError} submitting={settingsSubmitting} onChange={setSettingsValue} onRetry={() => void loadOwnShopName()} onSave={submitOwnShopName} onNavigate={navigate} monitoring={monitoringSettings} monitoringStatus={monitoringStatus} monitoringError={monitoringError} monitoringSaveError={monitoringSaveError} monitoringSubmitting={monitoringSubmitting} onMonitoringChange={setMonitoringSettings} onMonitoringOpen={() => { if (monitoringStatus !== "ready") void loadMonitoringSettings(); }} onMonitoringRetry={() => void loadMonitoringSettings()} onMonitoringSave={submitMonitoringSettings} />}
     {page === "groups" && <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} />}
     {page === "group-detail" && <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} />}
     {page === "detail" && <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate(detail?.competitor.ownership === "self" ? "own-products" : "competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}

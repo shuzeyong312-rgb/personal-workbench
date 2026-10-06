@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.collection.service import (
+    BatchConfig,
     CollectionError,
     CollectionInProgressError,
     CompetitorNotFoundError,
@@ -25,6 +26,7 @@ from app.collection.service import (
 from app.database import get_db
 from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
 from app.ownership import get_own_shop_name, identify_ownership
+from app.settings import get_competitor_monitoring_settings
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
@@ -175,7 +177,7 @@ class BatchItemResponse(BaseModel):
 
 
 class BatchStatusResponse(BaseModel):
-    status: Literal["idle", "running", "cooling_down", "completed", "verification_required"]
+    status: Literal["idle", "running", "resting", "cooling_down", "completed", "verification_required"]
     outcome_code: str | None
     total: int
     completed: int
@@ -189,6 +191,7 @@ class BatchStatusResponse(BaseModel):
     auto_resume_attempt: int
     auto_resume_max: int
     cooldown_remaining_seconds: int
+    resting_remaining_seconds: int
     items: list[BatchItemResponse]
 
 
@@ -552,7 +555,8 @@ async def collect_batch(
         )
     reservation_token: int | None = None
     try:
-        if not BATCH_RUNTIME.reserve(competitor_ids):
+        config = BatchConfig(**get_competitor_monitoring_settings(db))
+        if not BATCH_RUNTIME.reserve(competitor_ids, config):
             raise error(
                 "collection_in_progress",
                 "已有竞品正在采集，请稍后重试",
@@ -572,7 +576,7 @@ async def collect_batch(
         COLLECTION_LOCK.release()
 
     try:
-        start_batch_task(session_factory, competitor_ids, batch_reservation=reservation_token)
+        start_batch_task(session_factory, competitor_ids, batch_reservation=reservation_token, config=config)
     except Exception:
         BATCH_RUNTIME.finish("collect_failed")
         raise
