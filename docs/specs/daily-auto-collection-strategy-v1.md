@@ -101,7 +101,7 @@ Settings UI 继续懒加载竞品监控配置、用一次完整 PUT 保存完整
 - catch_up 覆盖晚启动补采及部分商品已有当日 Run 时只补剩余；skip 覆盖计划后启动当天不补、计划前已运行跨过计划点后进入 pending，以及 pending 遇 Runner busy 后可重试。覆盖关闭/重新启用、strategy/time/policy 变化及跨天后 stale pending 被清除且不能复活，尤其计划后重新启用 fixed_daily + skip 不得补采。
 - 覆盖 rolling 遇 busy 后后续重新判断；fixed pending 每次重算时排除其他正式采集已产生 Run 的商品。
 - 覆盖 active self 与 competitor 都成为候选、inactive 不成为候选。
-- 在 Batch 启动 seam 证明自动任务实际经过统一 Batch Runner 并冻结 BatchConfig；设置修改不改变已运行 Batch；自动 Batch 和手动 Batch 不并发。用既有 collection slot/CollectionRun seam 在最终 eligibility 与 BatchRuntime reservation 之间注入手动 CollectionRun，证明最终临界区重新查询后不会重复自动采。
+- 在 Batch 启动 seam 证明自动任务实际经过统一 Batch Runner 并冻结 BatchConfig；设置修改不改变已运行 Batch；自动 Batch 和手动 Batch 不并发。用既有 collection slot/CollectionRun seam：scheduler 先在锁外预判商品 A due；在 scheduler 取得 collection slot 前让一次正式手动采集先取得 slot 并提交 A 的 CollectionRun；scheduler 随后取得 slot，必须在临界区内重新查询 A 的 active 状态与 CollectionRun，并将 A 排除在最终 due IDs 和 BatchRuntime reservation 之外。测试必须通过真实 collection-slot / CollectionRun 行为证明竞态关闭，不得绕过互斥语义直接在“最终 eligibility → reservation”之间注入数据库记录。
 - 覆盖 scheduler shutdown 唤醒等待、不再启动新 Batch，并保持既有协作式 Runner shutdown。
 - Settings UI 覆盖自动采集条件显示、切换 rolling 后保留 fixed-only 值、完整九项保存 contract；至少扩展现有 Settings Playwright 路径，使用默认拒绝未声明 API 的 mock，不重复建设整套 E2E。
 
