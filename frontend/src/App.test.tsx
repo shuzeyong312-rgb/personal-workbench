@@ -525,6 +525,19 @@ test("renders cooling state in dashboard collection overview", () => {
   expect(html).toContain("自动恢复 2/2");
 });
 
+test("renders resting state in dashboard collection overview and preserves idle", () => {
+  const resting = renderDashboard({ batchState: { ...idleBatchState, status: "resting", total: 3, completed: 1, remaining: 2, resting_remaining_seconds: 17, runner_active: true } });
+  expect(resting).not.toContain("当前无采集任务");
+  expect(resting).toContain('class="overview-status overview-status-running">计划休息</span>');
+  expect(resting).toContain("计划休息中");
+  expect(resting).toContain("休息剩余 17 秒 · 已完成 1 / 3 · 剩余 2");
+  expect(resting).toContain('role="progressbar"');
+
+  const idle = renderDashboard({ batchState: idleBatchState });
+  expect(idle).toContain("当前无采集任务");
+  expect(idle).toContain("今日采集统计仍会保留");
+});
+
 test("uses confirmation dialogs for stop and permanent delete", () => {
   const stop = renderToStaticMarkup(<ConfirmDialog action="stop" competitor={competitor} submitting={false} error={null} onClose={noop} onConfirm={noop} />);
   expect(stop).toContain("停止监控");
@@ -851,14 +864,14 @@ test("renders group-first KPI and keeps backend group order and Attention levels
   expect(html).toContain("添加监控商品");
   expect(html).not.toContain("dashboard-context-row");
   expect(html).toContain("今日需要关注的商品组");
-  const order = ["一般组", "建议组", "重点组"].map((name) => html.indexOf(name));
+  const order = ["一般组", "建议组"].map((name) => html.indexOf(name));
   expect(order.every((index) => index >= 0)).toBe(true);
   expect(order).toEqual([...order].sort((left, right) => left - right));
   expect(html).toContain("一般变化");
   expect(html).toContain("建议查看");
-  expect(html).toContain("重点关注");
-  expect(html).toContain("我方重点款");
-  expect(html).toContain("旗舰店");
+  expect(html).not.toContain("重点关注");
+  expect(html).not.toContain("我方重点款");
+  expect(html).not.toContain("旗舰店");
   expect(html).toContain("今日变化竞品");
   expect(html).toContain("进入组分析");
   expect(html).not.toContain("attention_score");
@@ -868,6 +881,132 @@ test("renders group-first KPI and keeps backend group order and Attention levels
   expect(html).toContain("采集状态概览");
   expect(html).toContain("近 7 天竞品变化趋势");
 });
+
+test("limits dashboard Attention groups to the first two by default", () => {
+  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
+  const html = renderDashboard({ attention: { ...attentionData, groups } });
+  const order = groups.slice(0, 2).map((group) => html.indexOf(group.group_name));
+  expect(order.every((index) => index >= 0)).toBe(true);
+  expect(order).toEqual([...order].sort((left, right) => left - right));
+  expect(html).not.toContain("第三组");
+  expect(html).not.toContain("第四组");
+  expect(html).not.toContain("第五组");
+  expect(html).toContain("还有 3 个需要关注的商品组");
+  expect(html).toContain("展开全部");
+  expect(html).toContain('class="dashboard-attention-toggle"');
+
+  const twoGroups = renderDashboard({ attention: { ...attentionData, groups: groups.slice(0, 2) } });
+  expect(twoGroups).not.toContain("展开全部");
+  expect(twoGroups).not.toContain("收起");
+});
+
+test("expands and collapses dashboard Attention groups without changing their order", async () => {
+  const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), server: { host: "127.0.0.1", port: 0 }, clearScreen: false });
+  await server.listen();
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
+  const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route("**/api/**", async (route) => {
+    const key = `${route.request().method()} ${new URL(route.request().url()).pathname}`;
+    if (key === "GET /api/dashboard/today") return json(route, dashboardData);
+    if (key === "GET /api/dashboard/group-attention") return json(route, { ...attentionData, groups });
+    if (key === "GET /api/settings/own-shop-name") return json(route, { configured: true, own_shop_name: "测试店铺" });
+    if (key === "GET /api/competitors/collect-batch/status") return json(route, idleBatchState);
+    if (key === "GET /api/competitor-groups/1/detail") return json(route, { message: "not found" }, 404);
+    return route.abort("blockedbyclient");
+  });
+
+  try {
+    const baseUrl = server.resolvedUrls?.local[0];
+    if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
+    await page.goto(baseUrl);
+    await playwrightExpect(page.getByRole("heading", { name: "竞品监控大屏" })).toBeVisible();
+    await playwrightExpect(page.locator(".dashboard-attention-card h3")).toHaveText(["第一组", "第二组"]);
+    await playwrightExpect(page.getByText("第四组", { exact: true })).toHaveCount(0);
+    await playwrightExpect(page.locator(".dashboard-attention-toggle")).toHaveText("还有 3 个需要关注的商品组展开全部⌄");
+    await page.getByRole("button", { name: "展开全部" }).click();
+    await playwrightExpect(page.locator(".dashboard-attention-card h3")).toHaveText(groups.map((group) => group.group_name));
+    await playwrightExpect(page.locator(".dashboard-attention-toggle")).toHaveText("已展示全部 5 个商品组收起⌃");
+    await page.getByRole("button", { name: "收起" }).click();
+    await playwrightExpect(page.locator(".dashboard-attention-card h3")).toHaveText(["第一组", "第二组"]);
+    await page.getByRole("button", { name: "进入组分析" }).first().click();
+    await playwrightExpect(page.getByRole("heading", { name: "组竞争分析" })).toBeVisible();
+  } finally {
+    await context.close();
+    await browser.close();
+    await server.close();
+  }
+}, 10_000);
+
+test("keeps Dashboard collection status complete in idle, running, and resting browser views", async () => {
+  const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), server: { host: "127.0.0.1", port: 0 }, clearScreen: false });
+  await server.listen();
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
+  let batchState: BatchState = idleBatchState;
+  const json = (route: Route, body: unknown) => route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+  await page.route("**/api/**", async (route) => {
+    const key = `${route.request().method()} ${new URL(route.request().url()).pathname}`;
+    if (key === "GET /api/dashboard/today") return json(route, dashboardData);
+    if (key === "GET /api/dashboard/group-attention") return json(route, { ...attentionData, groups });
+    if (key === "GET /api/settings/own-shop-name") return json(route, { configured: true, own_shop_name: "测试店铺" });
+    if (key === "GET /api/competitors/collect-batch/status") return json(route, batchState);
+    return route.abort("blockedbyclient");
+  });
+
+  try {
+    const baseUrl = server.resolvedUrls?.local[0];
+    if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
+    for (const state of [idleBatchState, makeBatchState("running", { total: 3, completed: 1, remaining: 2, runner_active: true }), makeBatchState("resting", { total: 3, completed: 1, remaining: 2, resting_remaining_seconds: 17, runner_active: true })]) {
+      batchState = state;
+      await page.goto(baseUrl);
+      const overview = page.locator(".collection-overview");
+      await playwrightExpect(overview).toBeVisible();
+      await playwrightExpect(overview.locator(".collection-batch")).toBeVisible();
+      expect(await overview.evaluate((element) => {
+        const card = element.getBoundingClientRect();
+        const batch = element.querySelector(".collection-batch")!.getBoundingClientRect();
+        return batch.top >= card.top && batch.bottom <= card.bottom;
+      })).toBe(true);
+      if (state.status === "running" || state.status === "resting") await playwrightExpect(overview.getByRole("progressbar")).toBeVisible();
+    }
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+      batchState = idleBatchState;
+      await page.setViewportSize(viewport);
+      await page.goto(baseUrl);
+      const lowerLayout = await page.locator(".dashboard-lower-grid").evaluate((element) => {
+        const main = element.closest(".main-content")!.getBoundingClientRect();
+        const grid = element.getBoundingClientRect();
+        const cards = Array.from(element.querySelectorAll<HTMLElement>(":scope > .table-card")).map((card) => card.getBoundingClientRect().height);
+        const chart = element.querySelector<HTMLElement>(".dashboard-trend-chart")!.getBoundingClientRect().height;
+        return { remainingBelow: main.bottom - grid.bottom, cards, chart };
+      });
+      expect(lowerLayout.remainingBelow).toBeLessThanOrEqual(14);
+      expect(Math.abs(lowerLayout.cards[0] - lowerLayout.cards[1])).toBeLessThanOrEqual(1);
+      expect(lowerLayout.chart).toBeLessThanOrEqual(260);
+    }
+    const dimensions = await page.locator(".main-content-dashboard").evaluate((element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
+    expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight);
+    const mainContent = page.locator(".main-content-dashboard");
+    expect(await mainContent.evaluate((element) => getComputedStyle(element).scrollbarGutter)).toBe("stable");
+    expect(await mainContent.evaluate((element) => getComputedStyle(element, "::-webkit-scrollbar").width)).toBe("7px");
+    const collapsedWidth = await mainContent.evaluate((element) => element.getBoundingClientRect().width);
+    await page.getByRole("button", { name: "展开全部" }).click();
+    const expandedDimensions = await page.locator(".main-content-dashboard").evaluate((element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
+    expect(expandedDimensions.scrollHeight).toBeGreaterThan(expandedDimensions.clientHeight);
+    expect(await mainContent.evaluate((element) => element.getBoundingClientRect().width)).toBe(collapsedWidth);
+    await page.getByText("第五组", { exact: true }).scrollIntoViewIfNeeded();
+    await playwrightExpect(page.getByText("第五组", { exact: true })).toBeVisible();
+  } finally {
+    await context.close();
+    await browser.close();
+    await server.close();
+  }
+}, 10_000);
 
 test("disables dashboard collection when there are no active monitored products", () => {
   const html = renderDashboard({ data: { ...dashboardData, stats: { ...dashboardData.stats, active_monitored_products: 0 } } });
@@ -891,7 +1030,7 @@ test("wires Dashboard collection action and keeps it out of list pages", () => {
 
 test("limits rendered reasons to the backend-provided list and shows the no-change state", () => {
   const html = renderDashboard();
-  expect((html.match(/dashboard-attention-reasons/g) || []).length).toBe(3);
+  expect((html.match(/dashboard-attention-reasons/g) || []).length).toBe(2);
   const empty = renderDashboard({ attention: { ...attentionData, groups: [], kpis: { ...attentionData.kpis, changed_product_groups_today: 0, changed_competitors_today: 0 } } });
   expect(empty).toContain("今日暂无需要关注的竞争变化");
   expect(empty).not.toContain("一般组");
@@ -911,22 +1050,19 @@ test("isolates Attention error from collection and trend and offers an Attention
   expect(retry).not.toHaveBeenCalled();
 });
 
-test("wires Attention retry and Group Detail actions to their supplied callbacks", () => {
+test("wires Attention retry and renders Group Detail actions", () => {
   const retry = vi.fn();
   const retryTree = DashboardPage({ ...dashboardProps, attention: null, attentionStatus: "error", attentionError: "failed", onRetryAttention: retry });
   findButton(retryTree, "重试")?.onClick?.();
   expect(retry).toHaveBeenCalledOnce();
-
-  const openGroup = vi.fn();
-  const groupTree = DashboardPage({ ...dashboardProps, onOpenGroupDetail: openGroup });
-  findButton(groupTree, "进入组分析")?.onClick?.();
-  expect(openGroup).toHaveBeenCalledWith(9);
+  const groups = renderDashboard();
+  expect(groups).toContain("进入组分析");
 });
 
 test("shows an independent dashboard/today error while preserving Attention results", () => {
   const html = renderDashboard({ status: "error", error: "今日数据暂不可用" });
   expect(html).toContain("今日数据暂不可用");
-  expect(html).toContain("重点组");
+  expect(html).not.toContain("重点组");
   expect(html).toContain("今日需要关注的商品组");
 });
 
@@ -1016,6 +1152,7 @@ test("marks active root and monitoring navigation with one consistent icon style
   expect(home).toContain('aria-current="page"');
   expect(home).toContain("首页");
   expect(home).toContain("<svg");
+  expect(home).toContain('aria-expanded="false"');
   expect(dashboard).toContain('aria-expanded="true"');
   expect(dashboard).toContain('aria-controls="competitor-monitoring-nav"');
   expect(dashboard).toContain('nav-group-title nav-group-title-current');
@@ -1025,10 +1162,15 @@ test("marks active root and monitoring navigation with one consistent icon style
   expect(collectionTasks).toContain("采集任务");
   expect(priceCompare).toContain("全网比价");
   expect(priceCompare).toContain('aria-current="page"');
+  expect(priceCompare).toContain('aria-expanded="false"');
   expect(autoInquiry).toContain("自动询价");
   expect(autoInquiry).toContain('aria-current="page"');
+  expect(autoInquiry).toContain('aria-expanded="false"');
   expect(autoListing).toContain("自动上架");
   expect(autoListing).toContain('aria-current="page"');
+  expect(autoListing).toContain('aria-expanded="false"');
+  const settings = renderToStaticMarkup(<Sidebar page="settings" onNavigate={noop} />);
+  expect(settings).toContain('aria-expanded="false"');
 });
 
 test("renders workspace module placeholders", () => {

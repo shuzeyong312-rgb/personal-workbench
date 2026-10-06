@@ -201,8 +201,7 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .detail-overview-image .detail-gallery-main-image { display: grid; width: 220px; height: 220px; flex-basis: 220px; place-items: center; }
 .detail-gallery-strip { display: grid; width: 220px; max-width: 220px; grid-template-columns: 20px minmax(0, 1fr) 20px; align-items: center; column-gap: 4px; }
 .detail-gallery-arrow-slot { display: grid; width: 20px; height: 20px; place-items: center; }
-.detail-gallery-viewport { min-width: 0; margin-top: 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; }
-.detail-gallery-viewport::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.detail-gallery-viewport { min-width: 0; margin-top: 8px; overflow-x: auto; overflow-y: hidden; }
 .detail-gallery-thumbnails { display: flex; width: max-content; max-width: none; gap: 6px; padding: 1px 0 3px; }
 .detail-gallery-arrow { display: grid; width: 20px; height: 20px; place-items: center; padding: 0; border: 1px solid rgba(211, 225, 245, .95); border-radius: 50%; color: #46658f; background: rgba(255, 255, 255, .86); box-shadow: 0 2px 7px rgba(44, 73, 122, .15); }
 .detail-gallery-arrow:hover { color: #236fd4; background: rgba(255, 255, 255, .98); }
@@ -281,6 +280,14 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .detail-section-card .detail-table-scroll thead th { position: sticky; top: 0; z-index: 1; background: #f3f7fd; }
 .detail-section-card .detail-empty { min-height: 0; flex: 1 1 auto; }
 
+/* Keep the app-owned scroll surfaces quiet and consistent without touching form controls. */
+.main-content, .sidebar, :is(.table-scroll, .detail-table-scroll, .detail-record-list, .detail-gallery-viewport, .add-failures, .own-product-dialog, .own-product-candidates) { scrollbar-width: thin; scrollbar-color: rgba(105, 137, 184, .38) transparent; }
+.main-content, .sidebar { scrollbar-gutter: stable; }
+:is(.main-content, .sidebar, .table-scroll, .detail-table-scroll, .detail-record-list, .detail-gallery-viewport, .add-failures, .own-product-dialog, .own-product-candidates)::-webkit-scrollbar { width: 7px; height: 7px; }
+:is(.main-content, .sidebar, .table-scroll, .detail-table-scroll, .detail-record-list, .detail-gallery-viewport, .add-failures, .own-product-dialog, .own-product-candidates)::-webkit-scrollbar-track, :is(.main-content, .sidebar, .table-scroll, .detail-table-scroll, .detail-record-list, .detail-gallery-viewport, .add-failures, .own-product-dialog, .own-product-candidates)::-webkit-scrollbar-corner { background: transparent; }
+:is(.main-content, .sidebar, .table-scroll, .detail-table-scroll, .detail-record-list, .detail-gallery-viewport, .add-failures, .own-product-dialog, .own-product-candidates)::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(105, 137, 184, .38); }
+:is(.main-content, .sidebar, .table-scroll, .detail-table-scroll, .detail-record-list, .detail-gallery-viewport, .add-failures, .own-product-dialog, .own-product-candidates)::-webkit-scrollbar-thumb:hover { background: rgba(75, 111, 162, .55); }
+
 @media (max-width: 680px) {
   .app-shell { display: block; height: auto; min-height: 100vh; overflow: visible; }
   .sidebar { height: auto; min-height: auto; overflow: visible; }
@@ -288,65 +295,21 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
   .detail-section-card { height: clamp(300px, 44vh, 420px); }
 }
 
-/* Dashboard viewport fill: use the available desktop height without changing other pages. */
+/* Dashboard content keeps its natural height; the main pane scrolls only when needed. */
 @media (min-width: 1200px) and (min-height: 800px) {
-  .main-content-dashboard > .workspace-header,
-  .main-content-dashboard > .dashboard-page-header,
-  .main-content-dashboard > .dashboard-stats {
-    flex: 0 0 auto;
-  }
-
-  .main-content-dashboard > .dashboard-lower-grid {
-    min-height: 230px;
-    flex: .92 1 0;
-    margin-bottom: 0;
-  }
-  .main-content-dashboard .dashboard-lower-grid > .table-card {
-    height: 100%;
-  }
-  .main-content-dashboard .collection-overview,
-  .main-content-dashboard .dashboard-trend-section{
-    display: flex;
-    min-height: 0;
-    flex-direction: column;
-  }
-
-  .main-content-dashboard .collection-summary-grid {
-    flex: 0 0 auto;
-  }
-
-  .main-content-dashboard .collection-batch {
-    display: flex;
-    min-height: 0;
-    flex: 1 1 auto;
-    flex-direction: column;
-    justify-content: center;
-  }
-
-  .main-content-dashboard .collection-batch-idle { min-height: 116px; flex: 0 0 116px; }
-
-  .main-content-dashboard .dashboard-trend-wrap {
-    display: flex;
-    min-height: 0;
-    flex: 1 1 auto;
-    flex-direction: column;
-    justify-content: center;
-  }
-
-  .main-content-dashboard .dashboard-trend-chart {
-    height: clamp(205px, 23vh, 245px);
-    min-height: 0;
-  }
-
-  .main-content-dashboard .dashboard-trend-placeholder {
-    min-height: 0;
-    flex: 1 1 auto;
-  }
+  .main-content-dashboard { padding-top: 4px; padding-bottom: 4px; }
+  .main-content-dashboard > .dashboard-lower-grid { min-height: 300px; flex: 1 0 auto; }
+  .main-content-dashboard .dashboard-lower-grid > .table-card { height: auto; }
+  .main-content-dashboard .collection-overview, .main-content-dashboard .dashboard-trend-section { display: flex; min-height: 0; flex-direction: column; }
+  .main-content-dashboard .collection-batch { display: flex; min-height: 0; flex: 1 0 auto; flex-direction: column; justify-content: center; }
+  .main-content-dashboard .dashboard-trend-wrap { display: flex; min-height: 0; flex: 1 0 auto; flex-direction: column; justify-content: center; }
+  .main-content-dashboard .dashboard-trend-chart { height: clamp(180px, 24vh, 260px); min-height: 0; max-height: 260px; flex: 1 0 auto; }
+  .main-content-dashboard .dashboard-trend-placeholder { min-height: 208px; flex: 1 0 auto; }
 }
 
 .dashboard-trend-wrap { position: relative; }
 .dashboard-attention-section { margin-bottom: 14px; }
-.dashboard-attention-list { display: grid; gap: 10px; padding: 12px 14px 14px; }
+.dashboard-attention-list { display: grid; gap: 10px; padding: 12px 14px 6px; }
 .dashboard-attention-card { display: grid; grid-template-columns: minmax(190px, .8fr) minmax(240px, 1.2fr) auto; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid #e1e9f5; border-radius: 10px; background: rgba(250, 252, 255, .88); }
 .dashboard-attention-main { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .dashboard-attention-identity { display: grid; min-width: 0; gap: 5px; }
@@ -367,6 +330,11 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .dashboard-attention-state span { line-height: 1.5; }
 .dashboard-attention-error { color: #a65561; }
 .dashboard-attention-error strong { color: #a65561; }
+.dashboard-attention-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 5px 14px 6px; border-top: 1px solid #e8edf5; color: #8a99ae; font-size: 12px; }
+.dashboard-attention-toggle button { appearance: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; border: 0; border-radius: 3px; color: #2874df; background: transparent; font: inherit; font-weight: 700; cursor: pointer; }
+.dashboard-attention-toggle button:hover { color: #185dbb; }
+.dashboard-attention-toggle button:focus-visible { outline: 2px solid rgba(38, 128, 255, .45); outline-offset: 3px; }
+.dashboard-attention-toggle i { font-style: normal; font-size: 15px; line-height: 1; }
 .dashboard-support-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px 0; color: #a65561; font-size: 11px; }
 .text-link-button { padding: 4px 0; color: #2874df; font-size: 12px; font-weight: 700; }
 .text-link-button:hover { color: #185dbb; text-decoration: underline; }
