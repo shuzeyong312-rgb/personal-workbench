@@ -1,6 +1,6 @@
 # 系统设置视觉改版 V1
 
-状态：待 ChatGPT Spec Review；尚未 Freeze，不授权实现。
+状态：已通过 ChatGPT Spec Review；已 Freeze，授权进入实现。
 
 ## Problem Statement
 
