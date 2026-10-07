@@ -6,7 +6,7 @@ $FrontendDir = Join-Path $Root 'frontend'
 $Python = Join-Path $Root '.venv\Scripts\python.exe'
 $Vite = Join-Path $FrontendDir 'node_modules\.bin\vite.cmd'
 $BackendPort = 8200
-$FrontendPort = 5200
+$FrontendPort = 5300
 $LogsDir = Join-Path $Root 'logs'
 
 if (-not (Test-Path -LiteralPath $LogsDir -PathType Container)) {
