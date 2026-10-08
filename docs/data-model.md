@@ -2,12 +2,12 @@
 
 ## 1. 文档范围
 
-本文只描述 1688 竞品监控的数据模型，并明确区分：
+本文描述 1688 监控商品（我方商品与直接竞品）共用的数据模型，并明确区分：
 
 - **当前已实现**：当前 ORM、数据库表、迁移和采集流程已经支持的事实；
-- **未来 V1 计划**：产品目标中仍保留、但当前没有对应数据库模型或可靠业务能力的部分。
+- **后续规划**：仅在 roadmap / research 中讨论，当前没有对应正式模型的部分。核对基线为 `backend/app/models.py`、Alembic 至 `20261004_12` 和现有 API；数据库迁移版本表 `alembic_version` 不计入业务 ORM 实体。
 
-当前数据库已经实现 6 个实体：
+当前 ORM 已实现 7 个实体（7 张业务表）：
 
 ~~~text
 CompetitorGroup
@@ -16,6 +16,7 @@ CompetitorGroup
       │      └── SkuSnapshot
       ├── CollectionRun
       └── ChangeEvent
+SystemSetting（独立 key/value，无外键）
 ~~~
 
 ---
@@ -38,7 +39,7 @@ created_at
 - name 长度限制为 64 个字符；
 - CompetitorGroup 与 Competitor 为 1 → N 关系。
 - name 直接作为商品型号显示，不维护独立的我方商品实体；
-- 一个正式组可有 0 个或 1 个我方基准商品；旧组升级后默认未绑定，直到用户手动绑定。角色保存在 `Competitor.group_role`，不新增 `own_competitor_id`、OwnProduct 外键或 GroupMember 表；
+- 一个正式组可有 0 个或 1 个我方基准商品；旧组是否绑定取决于现有角色与后续 ownership 迁移的店铺识别结果；没有可靠 self 基准时保留未绑定。商品身份保存在 `Competitor.ownership`，组内兼容角色保存在 `Competitor.group_role`，不新增 `own_competitor_id`、OwnProduct 外键或 GroupMember 表；
 - 删除型号时，在同一事务内将全部成员设为 `group_id = NULL`、`group_role = competitor`，再删除 CompetitorGroup；保留 Competitor、ProductSnapshot、SkuSnapshot、CollectionRun、ChangeEvent、status 和 is_active；
 - 重命名型号只修改 name，不修改 Competitor、Snapshot、ChangeEvent 或 CollectionRun。
 
@@ -46,13 +47,14 @@ created_at
 
 ## 3. 当前已实现：Competitor
 
-表示一个被监控的 1688 商品。
+表示一个被监控的 1688 商品，包括我方商品与直接竞品。
 
 当前字段：
 
 ~~~text
 id
 group_id
+ownership
 group_role
 platform
 offer_id
@@ -73,14 +75,24 @@ last_collected_at
 - platform + offer_id 具有唯一约束；
 - url 保存标准化后的商品链接；
 - group_id 可为 NULL，或引用 competitor_groups.id；NULL 表示未分组；
-- `group_role` 只允许 `competitor` 和 `own`，默认值为 `competitor`；旧数据经 migration 后均为 `competitor`，不根据标题、店铺或其他商品信息猜测我方商品；
-- `competitor` 表示当前组内的直接竞品；`own` 表示当前组唯一的我方基准商品。`group_role` 与 `status`、`is_active` 独立；角色不表示在线状态或是否监控；
-- 数据库通过 `CHECK (group_role IN ('competitor', 'own'))` 限制角色值，通过 `CHECK (group_id IS NOT NULL OR group_role = 'competitor')` 禁止未分组商品为 own，并通过 SQLite partial unique index `uq_competitors_group_own`（谓词 `group_role = 'own'`）保证每组最多一个 own；
-- 普通 `competitor` 转组只改变 `group_id`，角色保持 `competitor`。`own` 转组或移至未分组时，同时改变 `group_id` 并重置为 `competitor`；转组不会自动成为目标组 own，也不会覆盖目标组已有 own；以上操作不改写 ProductSnapshot、SkuSnapshot、CollectionRun 或 ChangeEvent；
+- `ownership` 只允许 `self` / `competitor`，默认及 server default 为 `competitor`；它独立于 group、status、is_active。未分组 self 仍是我方商品，不能通过 group_role 推断身份。
+- `group_role` 只允许 `competitor` / `own`，默认 `competitor`。当前合法组合：
+
+  | ownership | group_id | group_role |
+  | --- | --- | --- |
+  | competitor | NULL 或正式组 | competitor |
+  | self | NULL | competitor（兼容角色，不改变 self 身份） |
+  | self | 正式组 | own |
+
+- ORM / migration 同时保留角色、ownership 和组合 CHECK；组合约束 `ck_competitors_ownership_role` 禁止 competitor/own、self 入组却为 competitor，以及未分组 own。SQLite partial unique index `uq_competitors_group_own`（谓词 `group_role = 'own'`）保证每组最多一个 own；status CHECK 为 unknown / active / offline。
+- 直接竞品单条或批量转组保持 competitor 身份/角色；self 单条入组成为 own，解除后成为 self/未分组/competitor role，目标组已有 own 返回冲突，不覆盖。竞品批量分组/删除拒绝 self，包含未分组 self。
+- ownership 从当前真实店铺与 `own_shop_name` 的空白标准化后精确比较得到；添加前置采集、配置保存重识别、后续成功采集共用身份规则，不使用标题、链接、组名或模糊匹配。
+- migration `20261004_12` 使用当前非 NULL shop_name 优先识别；仅 NULL shop_name 的旧 own 可保留 legacy self。组冲突优先真实店铺匹配，按 created_at / id 选择稳定 winner，其余 self 移至未分组并保留历史。配置重识别沿用稳定选择；后续采集保持既有真实 own，只能替代 NULL 店铺的 legacy fallback，不能抢占真实 own。
+- 身份/分组变化只影响当前读模型，不回写历史或生成 ownership ChangeEvent。当前 Snapshot、事件和采集记录没有历史 ownership / membership 字段。
 - title、shop_name、main_image_url 保存最近一次成功采集得到的当前信息；
 - main_image_url 当前优先来自 `gallery.fields.offerImgList[0]`，缺失或无效时仅使用已验证的结构化 fallback；字段仍允许为 NULL，并用于相邻快照的主图变化比较；
 - Competitor 只保存当前 `main_image_url`，不保存完整商品图库；
-- last_collected_at 只在成功采集后更新；
+- last_collected_at 表示最近成功完成的采集/状态检查，包括明确 offline 成功；它不等于最新 Snapshot 时间；
 - is_active 表示是否继续监控。
 
 status 当前允许：
@@ -97,7 +109,7 @@ offline
 
 ## 4. 当前已实现：ProductSnapshot
 
-表示某个竞品某次成功采集时的商品级事实快照。
+表示某个监控商品某次正常成功采集时的商品级事实快照。
 
 当前字段：
 
@@ -118,10 +130,10 @@ collection_source
 
 说明：
 
-- 每次成功采集新增一条快照，不覆盖历史快照；
+- 正常商品成功采集新增快照，不覆盖历史；明确 offline 成功只更新状态和 Run，不创建空快照；恢复上架创建新快照作为下一轮 baseline；
 - `image_urls` 是本次历史快照的 nullable JSON ordered list，来自 `gallery.fields.offerImgList` 的有效 URL，按 normalization 后的原始顺序 exact 去重；Fallback 主图只在必要时作为首项加入；旧 Snapshot 为 NULL；
-- 当前手动或自动采集也会生成快照；
-- Backend 运行期间存在每日自动调度：每小时进行 due-check，最近一条 CollectionRun.started_at 距当前 UTC 时间达到 24 小时才自动尝试；failed 尝试同样计入该窗口；
+- 手动、自动 Batch 与添加前置采集的正常成功事实均可生成快照；
+- Backend 运行时约每分钟检查自动策略并复用 Batch Runner；rolling_24h 按最近 CollectionRun.started_at 判断 24 小时，fixed_daily 按电脑本地计划时间转 UTC 判断当天是否尝试。failed 同样计入窗口；不承诺每天恰好一条 Snapshot；
 - price_min / price_max 使用 Numeric(18, 2)，用于保存商品级价格区间；
 - min_order_quantity 保存本次采集的 Offer 级最小起批数量，可为 NULL，非 NULL 时必须大于等于 1；
 - 缺失价格保存为 NULL，不转换为 0；
@@ -177,7 +189,7 @@ skuPriceScale → 商品级价格 / 商品级价格区间
 
 ## 6. 当前已实现：CollectionRun
 
-表示一次竞品采集执行记录。
+表示一次监控商品采集执行记录；包括 self 与 competitor，不是批次或持久化任务。
 
 当前字段：
 
@@ -202,17 +214,19 @@ failed
 事务和并发语义：
 
 - running 表示采集执行状态，不是数据库锁；
-- 当前并发控制由进程内 COLLECTION_LOCK 负责；
-- running 记录先独立提交，Playwright / 网络采集阶段不持有业务保存事务；
-- 采集成功后，快照、SKU、ChangeEvent、Competitor 当前值和 CollectionRun.success 在同一个业务事务中提交；
+- 当前并发互斥由进程内 COLLECTION_LOCK 与共享 BatchRuntime reservation/runner 状态协调；数据库 running 行不是互斥锁；
+- 已有商品采集的 running 记录先独立提交，外部采集阶段不持有业务保存事务；统一添加是例外：前置验证成功后才原子创建商品、baseline 快照/SKU 和成功 Run，添加失败不留下商品或 Run；
+- 正常成功时，快照、SKU、ChangeEvent、Competitor 当前值（含可靠身份维护）和 Run.success 原子提交；明确 offline 成功允许无 Snapshot，仍更新 last_collected_at 和 Run.success；
 - 保存失败时，本次业务数据回滚，随后将该 CollectionRun 记录为 failed；
 - error_type 和 error_message 保存安全、简洁的错误信息，不保存 traceback。
+- BatchRuntime 为进程内状态，包含 running / resting / cooling_down / verification_required / completed / idle 等，不增加 CollectionRun.status 枚举；重试当前商品可产生新的单商品 Run，没有 batch_id / source 字段。
+- `GET /api/collection-runs` 按 started_at DESC / id DESC 分页；返回的商品标题、店铺和 ownership 来自当前 Competitor，不是尝试时的历史身份。重启后可以看 Run 历史，但不能据此恢复或推造批次。
 
 ---
 
 ## 7. 当前已实现：ChangeEvent
 
-表示本次成功采集相对于同一竞品上一份快照检测出的真实变化。
+表示监控商品的客观变化：普通 diff 比较相邻有效快照，生命周期事件来自可靠状态转换；覆盖我方与竞品，聚合读取再按当前身份区分。
 
 当前字段：
 
@@ -242,7 +256,7 @@ detected_at
 
 old_value / new_value 不保存完整 Snapshot JSON、1688 原始数据、HTML、Cookie、Token 或请求头。
 
-Dashboard 不改变 ChangeEvent 的事实级语义。Dashboard 今日变化在查询展示层按 active Competitor 聚合；`change_count` 仍统计真实事件条数，`ChangeEvent` 不因展示聚合而合并或删除。SKU 级事件的 `entity_key` 仍是 `sku_id`，名称可从关联快照的 `SkuSnapshot` 可靠恢复时用于展示，不能恢复时保留事实性 SKU ID 回退。
+Dashboard 不改变 ChangeEvent 的事实级语义。旧 `/api/dashboard/today` 兼容读模型在查询展示层按 active 直接竞品聚合；当前 Dashboard 核心使用独立 Group Attention，而非该竞品级表；`change_count` 仍统计真实事件条数，`ChangeEvent` 不因展示聚合而合并或删除。SKU 级事件的 `entity_key` 仍是 `sku_id`，名称可从关联快照的 `SkuSnapshot` 可靠恢复时用于展示，不能恢复时保留事实性 SKU ID 回退。
 
 Dashboard item 的 `stock_total_change` 是商品级展示投影；primary event 为 `stock_increase`、`stock_decrease`、`sku_sold_out`、`sku_restocked` 或历史 `stock_changed` 时计算，结构为 `{old_total, new_total}`。current 使用 primary event 的 `snapshot_id`；previous 使用同一 competitor 中按 `(captured_at ASC, id ASC)` 紧邻的上一条 `ProductSnapshot`。总库存分别由对应快照下完整 SKU stock 求和；无 SKU 或任一 SKU stock 为 NULL 时该 total 为 NULL，0 是有效库存。不得将多条 SKU stock event 的 old/new 相加来计算商品总库存。该投影不修改 ChangeEvent。
 
@@ -312,37 +326,27 @@ id DESC
 
 ---
 
-## 8. 当前关系
+## 8. 当前关系与 SystemSetting
 
 ~~~text
-CompetitorGroup
-    │
-    └── N Competitor
-           │
-           ├── N ProductSnapshot
-           │      │
-           │      └── N SkuSnapshot
-           │
-           ├── N CollectionRun
-           │
-           └── N ChangeEvent
-                  ├── snapshot_id → ProductSnapshot（可空）
-                  └── collection_run_id → CollectionRun（可空，历史兼容）
-
-Competitor
-    │
-    ├── N ProductSnapshot
-    │      │
-    │      └── N SkuSnapshot
-    │
-    ├── N CollectionRun
-    │
-    └── N ChangeEvent
-           ├── snapshot_id → ProductSnapshot（可空）
-           └── collection_run_id → CollectionRun（可空，历史兼容）
+CompetitorGroup 1 → N Competitor（group_id 可空）
+Competitor 1 → N ProductSnapshot 1 → N SkuSnapshot
+Competitor 1 → N CollectionRun
+Competitor 1 → N ChangeEvent
+ChangeEvent.snapshot_id → ProductSnapshot（可空，类型 CHECK）
+ChangeEvent.collection_run_id → CollectionRun（可空，历史兼容）
+SystemSetting（独立，无外键）
 ~~~
 
-CompetitorGroup 与 Competitor 仍是一对多关系；Competitor 通过 `group_id` 表示属于哪个组，通过 `group_role` 表示在该组中是 own 还是 direct competitor。不存在单独的 OwnProduct 实体。
+这是数据库外键关系；ORM 仅显式声明 ProductSnapshot ↔ SkuSnapshot relationship，不代表其他边不存在。每组最多一个 self/own；不存在 OwnProduct、GroupMember、企业主体或经营观察表。
+
+SystemSetting 使用 `key: String(64)` 主键与 `value: nullable String(255)`，当前保存：
+
+- `own_shop_name`：我方店铺配置；迁移仅在缺失时初始化当前业务值，不覆盖已有配置。GET / PUT `/api/settings/own-shop-name`；保存配置与当前商品身份重识别同事务。
+- `competitor_monitoring_*`：五项 Batch 节奏/风控（商品间隔、连续采集数量、主动休息、验证冷却、自动续采上限）及四项自动策略（enabled、strategy、time、missed_policy）。GET / PUT `/api/settings/competitor-monitoring` 一次返回/保存九项；值以 canonical 字符串落库，类型/范围由 API 校验，无对应数据库枚举 CHECK。
+- 缺失或非法采集设置读取时按字段默认值 fallback，不写回；PUT 完整九项验证、原子提交。BatchConfig 只投影五项节奏/风控，不包含 scheduler 四项。
+
+Group Summary、Group Detail、Group Attention 都是派生读取，没有额外表或持久化分数；按当前 ownership / group / role 聚合，不能宣称历史事件发生时的归属。竞品数量过滤 ownership=competitor，通用采集统计可覆盖所有监控商品。
 
 ---
 
@@ -364,30 +368,11 @@ CompetitorGroup 与 Competitor 仍是一对多关系；Competitor 通过 `group_
 
 ---
 
-## 10. 当前尚未实现：未来 V1 计划
+## 10. 尚未实现的模型
 
-以下内容仍是长期 V1 目标，但当前没有对应的完整实现，不能当作当前数据模型：
+正式 ORM / API 没有销量快照、销量事件、企业主体、成交/口碑/标签观察或新经营指标。详情销量只是占位；不存在 `sales_increase` 事件。研究来源验证不代表已经入库。
 
-- sales snapshot / sales change；
-- 正式销量趋势展示；
-
-### 10.1 未来但尚未实现的 change_type
-
-以下 1 种属于未来 V1 计划，当前不能生成，也不在当前 ChangeEvent CHECK 中：
-
-| change_type | 当前未实现原因 |
-|---|---|
-| sales_increase | 当前 ProductSnapshot 没有销量字段 |
-
-这些能力具备可靠数据来源和明确规则后，才能通过独立变更加入当前模型。
-
-商品生命周期规则：
-
-- 商品状态只允许 `unknown` / `active` / `offline`；
-- `status` 与 `is_active` 独立，后者只表示是否继续监控；
-- 商品下架不自动停止监控；
-- 商品下架不创建空 `ProductSnapshot`，历史有效快照和其他历史事实保留；
-- 恢复上架时创建新的 `ProductSnapshot`，并生成 `product_online`。
+后续 Track A 先用现有事实定义组内竞争位置；Track B 经营指标增量 POC 可并行，不阻塞 A，仅作为新指标产品化 Gate。未来表、字段和事件必须由独立正式 Spec 决定，本文不预设模型。见 [重构计划书](roadmap/competition-intelligence-restructuring-plan.md) 与 [Spec 索引](specs/README.md)。
 
 ---
 
@@ -440,6 +425,9 @@ mtop.1688...
 ## 14. Single Source of Truth
 
 ~~~text
+Competitor.ownership
+= 当前商品身份（self 或 competitor）
+
 Competitor.group_id
 = 当前组归属
 
@@ -453,10 +441,16 @@ ProductSnapshot / SkuSnapshot
 = 历史采集事实
 
 ChangeEvent
-= 成功采集事实之间检测出的客观变化
+= 快照差异与可靠生命周期状态转换检测出的客观变化
 
 CollectionRun
-= 采集执行状态
+= 持久化单商品采集执行记录
+
+SystemSetting
+= 当前已保存配置
+
+BatchRuntime
+= 进程内当前批次状态（不是 ORM 表）
 ~~~
 
-不要在多个表中重复维护同一份业务事实，也不要把未来 V1 目标描述成当前已经存在的字段、实体或变化类型。
+不要在多个表中重复维护同一份业务事实，也不要把后续规划描述成当前已经存在的字段、实体或变化类型。

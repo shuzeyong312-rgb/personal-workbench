@@ -1,12 +1,14 @@
 # 1688 竞争情报工作台开发规划
 
-> 状态：Product Direction V2
+> 状态：历史产品方向与长期原则；执行状态于 2026-10-08 核对
 >
 > 适用项目：personal-workbench
 >
 > 当前主线：1688 竞争情报
 >
-> 本文优先级高于临时聊天中的功能想法。后续新增需求如果与本文冲突，应先修改本文或对应正式 Spec，再实施代码。
+> 本文保留 Group-first 转向的历史判断，不再作为旧阶段执行清单。当前重构顺序以 [重构计划书](competition-intelligence-restructuring-plan.md) 为准；已实施规则以 [Spec 状态索引](../specs/README.md) 所列后续正式 Spec 为准。临时聊天想法不自动覆盖合同。
+>
+> Group Attention / Group-first Dashboard 已于 `9ebad20` 实施，我方商品管理、采集任务、自动策略与设置视觉试点也已随后实施。下文旧推荐示例不是当前 UI contract，更不是未来 V2 已完成的声明。
 
 ---
 
@@ -224,7 +226,7 @@ Group Detail 可以展示事实差距。
 
 # 6. Dashboard 正式转向 Group-first
 
-当前 Dashboard Group Entry V1 的人工验收暴露了一个产品问题：
+当时 Dashboard Group Entry V1 的人工验收暴露了一个产品问题（后续已由 Group-first 实施解决）：
 
 虽然已经增加 Group Detail 入口，但页面主语仍然是：
 
@@ -262,7 +264,7 @@ Competitor
 
 # 8. Dashboard 推荐信息架构
 
-第一版目标结构：
+当时第一版目标结构（历史示例；当前以 Group-first 与我方商品管理 Spec 为准）：
 
 ```text
 PageHeader
@@ -302,9 +304,7 @@ Y35 暖手宝            建议查看
 采集状态 / 近期整体趋势
 ```
 
-具体视觉设计在正式 Spec 中冻结。
-
-不要现在提前锁死像素和组件结构。
+具体 contract 已由 Group-first Dashboard 及后续我方商品管理 Spec 明确；不从历史示例重新冻结页面。
 
 ---
 
@@ -327,7 +327,7 @@ Group-first Dashboard 不应继续承担：
 
 # 10. 关注优先级系统
 
-需要新增：
+已实现：
 
 > **Attention Priority / 今日关注优先级**
 
@@ -574,7 +574,7 @@ Attention Engine 不能只是：
 - 多个直接竞品同时调整价格；
 - SKU 售罄等结构性变化。
 
-具体规则必须另写正式 Spec，并通过真实例子确认。
+具体规则已在 [Group Attention Priority V1](../specs/group-attention-priority-v1.md) 定义并实施；本节候选不覆盖正式矩阵和强事件规则。
 
 ---
 
@@ -798,31 +798,7 @@ Backend
 
 > Group 管理和基础 Summary。
 
-未来 Group-first Dashboard 的数据需求更复杂：
-
-```text
-今日事件领域
-变化竞品数
-主要变化
-关注层级
-排序依据
-```
-
-不要为了省一个 endpoint，把所有 Dashboard intelligence 强行塞进通用 Group Summary。
-
-正式 Spec 时重新评估：
-
-```text
-扩展现有 Summary
-```
-
-还是：
-
-```text
-建立 Dashboard 专用 group read contract
-```
-
-优先保证职责清楚。
+当前 Group-first 使用独立 `GET /api/dashboard/group-attention` 返回等级、原因、变化竞品数与组级 KPI；Summary 保持管理职责，`/api/dashboard/today` 保持采集与趋势等兼容读取职责。Backend 聚合，Frontend 不从 Summary 自行评分。
 
 ---
 
@@ -856,281 +832,31 @@ Asia/Shanghai 时间规则
 生命周期
 ```
 
-下一阶段只在已有事实链路上增加：
-
-```text
-Group-level Attention Layer
-```
+Group-level Attention Layer 已完成；当前继续复用这些资产，优先补足现有事实的组内竞争位置，不重复建设 Attention。
 
 ---
 
-# 25. 当前 Dashboard Group Entry V1 如何处理
+# 25. Dashboard Group Entry 的历史决策
 
-当前有三个未提交前端文件：
+当时实验虽增加组入口，页面主语仍是竞品事件，因此改为 Group-first。该判断仍有价值；旧工作区暂不 Review / Commit / Push 的指令已经结束，不约束当前任务。
 
-```text
-frontend/src/App.tsx
-frontend/src/App.css
-frontend/src/App.test.tsx
-```
+# 26. 已复用的资产与当前入口
 
-它们属于：
+后续保留组详情导航、区域错误隔离、采集摘要及趋势，使用 Backend Attention 替代旧 Summary 排序。Header 操作曾由批量操作 Spec 移至列表，随后又由我方商品管理 Spec 收敛到大屏“添加监控商品 / 立即采集”；当前列表不承担添加或采集。
 
-> Dashboard Group Entry V1 实验实现。
+# 27. 当前重构优先级
 
-人工验收发现产品定位需要调整。
+- **Track A（优先）**：使用现有快照事实定义我方组内竞争位置、可解释排序与定位，先写独立正式 Spec。不先重做导航、全局 UI 或第二套采集链路。
+- **Track B（可并行）**：继承既有销量来源研究，做经营指标增量 POC，验证字段来源、语义、稳定性和访问条件。它只阻塞新指标产品化，不阻塞 Track A。
+- 可靠新指标接入、Group Detail V2 指标扩展、经营趋势、Dashboard 收敛、管理导航融合及市场机会依重构计划书逐阶段推进；没有因此获得代码、迁移或采集授权。
 
-因此：
-
-**暂不 Code Review。**
-**暂不 Commit。**
-**暂不 Push。**
-
-下一阶段首先重新冻结 Group-first Dashboard Spec。
-
-之后再决定：
-
-- 哪些代码继续复用；
-- 哪些代码删除；
-- 哪些代码调整。
-
-不要直接全部 revert，也不要直接 commit。
+历史 Attention Spec → Group-first Spec → 实现 / 验收流程已结束；不再要求冻结旧实验或保留旧 working tree。新工作仍按协作方式执行 Spec Review、Freeze、验证与授权提交。
 
 ---
 
-# 26. 当前 Group Entry V1 可以复用的部分
+# 28. 当前不主动扩展的功能
 
-大概率仍然有价值：
-
-- Header 的添加竞品；
-- Header 的立即采集；
-- Summary 独立错误状态思路；
-- Group Detail 导航；
-- group_id → Group Detail 的入口能力；
-- Backend / Frontend 状态隔离模式。
-
-但是否保留必须由新 Spec 决定。
-
----
-
-# 27. 下一阶段开发顺序
-
-## Phase 0：冻结当前实验状态
-
-目标：
-
-> 不继续优化旧 Dashboard Group Entry。
-
-动作：
-
-- 保留未提交 working tree；
-- 不 Code Review；
-- 不 commit；
-- 不 push；
-- 不继续修 UI。
-
-进入产品重新定义。
-
----
-
-## Phase 1：Attention Priority Spec
-
-先只讨论业务规则。
-
-输出：
-
-```text
-docs/specs/group-attention-priority-v1.md
-```
-
-冻结：
-
-- 哪些事件重要；
-- 事件基础权重；
-- 商品级价格 vs SKU 价格；
-- 库存降噪；
-- distinct competitor coverage；
-- 多领域变化；
-- 强事件规则；
-- 时间因素；
-- score 如何内部归一；
-- 重点关注 / 建议查看 / 一般变化的边界；
-- 用户可见 reason 如何生成；
-- 同组事件如何去重；
-- 排序稳定性。
-
-本阶段：
-
-**不写代码。**
-
-必须用真实 A19 / Y35 示例人工确认。
-
----
-
-## Phase 2：Group-first Dashboard Spec
-
-Attention Spec 冻结后再设计 Dashboard。
-
-输出：
-
-```text
-docs/specs/group-first-dashboard-v1.md
-```
-
-冻结：
-
-- Dashboard KPI；
-- 今日关注 Group 列表；
-- Group item 内容；
-- 关注等级；
-- fact reasons；
-- 排序；
-- 空状态；
-- 无变化 Group；
-- loading/error；
-- Group Detail navigation；
-- 采集状态；
-- 7 天趋势是否保留；
-- 原 competitor table 如何处理。
-
-本阶段：
-
-**不写代码。**
-
----
-
-## Phase 3：Backend Group Attention Read Model
-
-实现 Backend。
-
-目标：
-
-```text
-Snapshot
-+
-ChangeEvent
-+
-Group Membership
-↓
-Group Attention Result
-```
-
-至少返回：
-
-```text
-group identity
-
-own product
-
-changed competitor count
-
-event domain summary
-
-primary factual reasons
-
-attention level
-
-internal sorting value
-
-latest change time
-```
-
-注意：
-
-内部 sorting score 不需要给用户展示。
-
-API 即使返回 score，也应明确：
-
-> 仅用于系统排序。
-
-更优方案是前端只消费已排序列表和 level。
-
-正式 Spec 决定。
-
----
-
-## Phase 4：Group-first Dashboard Frontend
-
-只消费 Backend contract。
-
-Frontend 不重新评分。
-
-Dashboard 重点实现：
-
-```text
-今天应该先看哪些商品组
-```
-
-每个 Group：
-
-```text
-组名
-关注等级
-变化竞品数量
-核心变化原因
-最近变化
-进入组分析
-```
-
----
-
-## Phase 5：人工验收
-
-人工验收重点不是：
-
-> 页面好不好看。
-
-而是：
-
-> 我进入 Dashboard 后，能不能快速决定今天先看什么？
-
-至少使用真实多个 Group 测试。
-
-例如：
-
-```text
-A19
-Y35
-风扇
-加湿器
-```
-
-验证排序是否符合真实运营直觉。
-
----
-
-## Phase 6：独立 Code Review
-
-人工验收通过以后：
-
-```text
-Standards Review
-+
-Spec Review
-```
-
-必须：
-
-```text
-P0 = 0
-P1 = 0
-P2 = 0
-```
-
-P3 可记录后延。
-
-然后：
-
-```text
-commit
-push
-```
-
----
-
-# 28. 下一阶段暂时不要做的功能
-
-在 Group-first Dashboard 稳定之前，不要开发：
+以下仍不属于当前重构优先项；需要独立需求判断与授权：
 
 - 自动选品；
 - 自动定价；
@@ -1205,7 +931,7 @@ push
 
 # 31. 长期路线
 
-产品长期可能演进为：
+以下 V1–V7 是当时的方向标签，不是当前版本或实施阶段清单。事实监控、Group-level Attention 与 Group Detail V1 已实施；更深的组内排名和经营指标仍按新重构计划推进。长期可能演进为：
 
 ```text
 V1
@@ -1411,56 +1137,13 @@ Competitor Detail
 
 ---
 
-# 35. 当前唯一主线
+# 35. 当前主线
 
-从现在开始，项目唯一主线是：
+Group Attention 已实现并作为工作入口继续保留。当前主线转为 **现有事实的组内竞争位置（Track A）**，经营指标增量 POC（Track B）可并行；不把 POC 设为 Track A 的全局前置门槛。
 
-> **Group-level Attention**
+# 36. 后续 Gate
 
-即：
-
-```text
-如何把大量 ChangeEvent
-↓
-转成少量值得关注的商品组
-↓
-告诉用户为什么值得关注
-↓
-进入 Group Detail 继续分析
-```
-
-在这条主线人工验收稳定之前：
-
-不要开启新的大型 Feature。
-
----
-
-# 36. 下一步
-
-下一步不是写代码。
-
-下一步正式任务：
-
-> **Group Attention Priority V1 需求设计**
-
-需要先冻结：
-
-1. 事件重要程度；
-2. 库存降噪规则；
-3. 同一竞品多事件去重；
-4. 多竞品覆盖加权；
-5. 多领域变化加权；
-6. 强事件规则；
-7. 时间影响；
-8. 关注等级；
-9. 排序稳定规则；
-10. 用户可见事实原因。
-
-完成并人工确认以后，
-
-再进入：
-
-> Group-first Dashboard V1
+先按重构计划书定义独立的组内竞争位置 Spec，再完成正式 Review / Freeze；经营指标仅在字段 POC 通过后进入各自正式 Spec。本文不再要求重新设计或冻结已完成的 Group Attention / Group-first Dashboard，也不提前实施 Group Detail V2 或管理导航融合。
 
 ---
 
@@ -1472,6 +1155,4 @@ Competitor Detail
 
 > 打开 Dashboard 后，不需要逐个检查竞品，就能快速知道今天哪些我方商品最值得查看，以及为什么。
 
-只要这个问题还没有解决，
-
-就不应该把主要开发精力转移到其他方向。
+该目标继续作为已实现 Group-first 入口的使用检验；下一阶段进一步验证进入组分析后能否清楚定位我方与竞品。不得据此把新经营指标或导航融合误写为已完成。
