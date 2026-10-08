@@ -43,8 +43,8 @@ npm --prefix frontend ci
 
 - 固定检查根目录 `.venv\Scripts\python.exe`、`frontend/node_modules` 和 `vite.cmd`。
 - 启动前在 backend 目录执行 `alembic upgrade head`；失败则不启动服务。它会升级本地工作数据库，已有数据启动前应确认备份。
-- Backend：`http://127.0.0.1:8200`，Uvicorn `--reload`；Frontend：`http://127.0.0.1:5300`，Vite `--strictPort --open`，代理 `/api` 到 8200。
-- 两个服务以隐藏 PowerShell 进程启动，日志写入 `logs/backend.log`、`logs/frontend.log`。端口被无关进程占用时不会自动改端口或杀掉该进程；需查看日志处理。
+- Backend：`http://127.0.0.1:8200`，Uvicorn `--reload`；Frontend：每次启动由 Windows 分配可绑定端口，地址显示在启动输出及 `logs/frontend.log`，Vite 自动打开浏览器，代理 `/api` 到 8200。避免固定端口落入 Windows 动态变化的 TCP 保留范围；再次运行脚本仍可停止服务。
+- 两个服务以隐藏 PowerShell 进程启动，日志写入 `logs/backend.log`、`logs/frontend.log`。不会杀掉占用端口的无关进程；Backend 固定端口启动失败时需查看日志处理。
 - 两个项目服务都在运行时，再执行脚本会强制停止两者；只有一个存在时，会清理项目残留再执行 migration 并重新启动。脚本是启动/停止切换器，不是独立 stop 命令；强制停止不等于协作式 shutdown。
 - SQLite 文件为 `backend/data/personal_workbench.db`；正式采集使用根目录 `.browser-profile` 保存登录态。首次使用应确认 Chrome / 1688 登录可用，并在系统设置核对我方店铺。
 - Backend 运行时才检查自动任务，启动即进行首次检查，之后约每 60 秒检查一次（执行耗时会影响间隔）；关机或休眠时不采集。fixed_daily 使用 Backend 所在电脑本地时区，页面“今日”统计使用 Asia/Shanghai。

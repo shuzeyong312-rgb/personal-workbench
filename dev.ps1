@@ -6,7 +6,6 @@ $FrontendDir = Join-Path $Root 'frontend'
 $Python = Join-Path $Root '.venv\Scripts\python.exe'
 $Vite = Join-Path $FrontendDir 'node_modules\.bin\vite.cmd'
 $BackendPort = 8200
-$FrontendPort = 5300
 $LogsDir = Join-Path $Root 'logs'
 
 if (-not (Test-Path -LiteralPath $LogsDir -PathType Container)) {
@@ -50,7 +49,7 @@ function Get-ProjectProcessIds($Port, $Kind, $Processes, $ListenerIds) {
         })
     } else {
         $roots = @($Processes | Where-Object {
-            $_.Name -eq 'node.exe' -and $_.CommandLine -like "*$FrontendDir*node_modules*vite*--port $Port*"
+            $_.Name -eq 'node.exe' -and $_.CommandLine -like "*$FrontendDir*node_modules*vite*--port *"
         })
     }
 
@@ -74,6 +73,15 @@ function Stop-ProjectService($Ids) {
 }
 
 function Start-Project {
+    # Let Windows choose a bindable port on each start, avoiding changing TCP exclusions.
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        $FrontendPort = $listener.LocalEndpoint.Port
+    } finally {
+        $listener.Stop()
+    }
+    Write-Host "Frontend: http://127.0.0.1:$FrontendPort/"
     $backendLog = Join-Path $LogsDir 'backend.log'
     $frontendLog = Join-Path $LogsDir 'frontend.log'
     Push-Location $BackendDir
@@ -94,11 +102,9 @@ function Start-Project {
 
 $processes = @(Get-CimInstance Win32_Process)
 $backendListeners = @(Get-NetTCPConnection -State Listen -LocalPort $BackendPort -ErrorAction SilentlyContinue)
-$frontendListeners = @(Get-NetTCPConnection -State Listen -LocalPort $FrontendPort -ErrorAction SilentlyContinue)
 $backendListenerIds = @($backendListeners | Select-Object -ExpandProperty OwningProcess -Unique)
-$frontendListenerIds = @($frontendListeners | Select-Object -ExpandProperty OwningProcess -Unique)
 $backendIds = @(Get-ProjectProcessIds $BackendPort 'Backend' $processes $backendListenerIds)
-$frontendIds = @(Get-ProjectProcessIds $FrontendPort 'Frontend' $processes $frontendListenerIds)
+$frontendIds = @(Get-ProjectProcessIds $null 'Frontend' $processes @())
 $backendRunning = $backendIds.Count -gt 0
 $frontendRunning = $frontendIds.Count -gt 0
 
