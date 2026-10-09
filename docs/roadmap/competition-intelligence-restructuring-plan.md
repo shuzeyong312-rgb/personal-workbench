@@ -36,21 +36,23 @@
 ### 0.3 正式优先级与并行依赖（统一口径）
 
 ```
-现有 Track A / Group Detail V1 / Snapshot / ChangeEvent（已完成并复用）
+现有 Track A / Snapshot / ChangeEvent（已完成并复用）
     │
-    └── Track B（经营数据两级 Gate）
-           → Gate 1：页面原值采集与原值展示
-           → Gate 2：满足统计口径后才作比较与派生分析
-           → 逐步扩展 Group Detail V2
-                         ↓
-                竞争动态/真实趋势深化
-                         ↓
-             Dashboard 对接与低频导航收敛
-                         ↓
-            市场样本 + 我方利润 → 市场机会
+    └── Track B：Gate 1（十类经营字段页面原值采集 POC）
+           ↓
+       Gate 1 Go：原值观察与保存
+           ├── 原值展示 → Group Detail V2 经营字段扩展（无需 Gate 2）
+           └── Gate 2（按字段及分析类型独立判断）
+                        → 已准入的比较/派生 → Group Detail V2 分析增强
+
+组内分析稳定并获得真实使用反馈
+    ↓
+竞争动态/真实趋势深化 → Dashboard 对接 → 低频导航收敛
+    ↓
+市场样本 + 我方利润 → 市场机会
 ```
 
-**Track A 已完成并继续复用。** Gate 1 仅控制经营字段原值采集/展示的准入；Gate 2 仅控制这些字段参与比较和派生分析。Gate 2 不阻塞已通过 Gate 1 的原值展示，也不阻塞 Group Detail V2 的其他已具备事实能力。
+**Track A 已完成并继续复用。** Gate 1 仅控制经营字段原值采集/展示的准入；Gate 2 仅控制这些字段参与比较和派生分析。**Group Detail V2 的原值展示可在 Gate 1 Go 后独立交付，无须等待 Gate 2；**Gate 2 可按字段及分析类型后续单独启动，不阻塞已具备事实能力。
 
 ---
 
@@ -120,7 +122,7 @@
 | 字段 | 暂定对象/粒度 | 优先级 | 必须核对的口径或风险 | 现有 POC 观察状态 | 当前产品化决策 | 后续 Gate |
 | --- | --- | --- | --- | --- | --- | --- |
 | 公司名称 | 商家/企业 | P0 | 公司主体、店铺展示名是否一致 | 不属于十类经营指标 | Hold，另核来源与 fallback | 身份字段验证 |
-| 上架时间 | Offer | P0 | 首次上架还是最近重上架、显示日期精度 | No-Go（未观察） | Hold | Gate 1 原值；Gate 2 比较 |
+| 上架时间 | Offer | P0 | 首次上架还是最近重上架、显示日期精度 | Unverified（旧 Research 记作 No-Go/Hold） | Hold | Gate 1 原值；Gate 2 比较 |
 | 月成交 | Offer 或店铺待核对 | P0 | 单位、统计主体与窗口；`40+`、`<10` 等不是精确值 | Partial（观察到档位值） | Hold | Gate 1 原值；Gate 2 比较 |
 | 月代销 | 待确认 | P0 候选 | “代销”含义、是否独立指标、是否对应真实成交 | Unverified | Hold | Gate 1 原值；Gate 2 比较 |
 | 年成交件数 | Offer 待核对 | P0 | 年度窗口、成交数量还是商品件数 | Unverified | Hold | Gate 1 原值；Gate 2 比较 |
@@ -129,7 +131,7 @@
 | 好评率 | 商品或店铺 | P1 | 分母、窗口、精度、无评论时的空值 | Unverified | Hold | Gate 1 原值；Gate 2 比较 |
 | 揽收率 | 多为商家/物流维度，待核对 | P1 | 48h、24h 等窗口与指标含义必须保留 | Unverified | Hold | Gate 1 原值；Gate 2 比较 |
 | 收藏数 | Offer | P1 | 实际收藏统计还是界面交互展示值 | Unverified | Hold | Gate 1 原值；Gate 2 比较 |
-| 平台标签 | Offer/SKU/活动待核对 | P1 | 精确识别、新旧状态、来源与粒度 | No-Go（未观察） | Hold | Gate 1 原值；Gate 2 比较须有定义 |
+| 平台标签 | Offer/SKU/活动待核对 | P1 | 精确识别、新旧状态、来源与粒度 | Unverified（旧 Research 记作 No-Go/Hold） | Hold | Gate 1 原值；Gate 2 比较须有定义 |
 | 价格/MOQ/SKU/库存 | 当前 Offer/SKU | 已有 | SKU 混放、完整库存 vs 未知库存 | 不适用 | 直接复用 | 现有能力 |
 
 特殊规则：
@@ -150,7 +152,7 @@
 
 **先复用** [2026-09-20 的 1688 销量数据源验证](../research/1688-sales-source-validation.md)：既有 5 个 active Offer 样本中，3 个捕获采购助手相关响应、2 个未触发；`last30DaysSales` 为 `20+`、`<10` 等不精确字符串，`totalSales` / `totalOrder` 口径不明，**目前没有任何成交字段达到 READY**。不重新做一份相同的“从零验证”。
 
-现有 [经营指标增量 POC](../research/1688-performance-metrics-poc.md) 只记录了月成交、上架时间、平台标签三类的既有证据：月成交为 Partial，上架时间和平台标签为 No-Go。其余七类尚未观察。No-Go 表示当前没有足够证据进入产品化，不代表技术不可行；既有 POC 未做重复观察，也没有验证新增来源或访问授权，本计划不把产品目标变化写成已完成的技术验证。
+此前本地研究报告 `docs/research/1688-performance-metrics-poc.md` **尚未推送到 GitHub，远端暂不可复核全文**。根据已有交付报告，该研究只整理了月成交、上架时间、平台标签三类：月成交已观察档位值，状态 Partial；上架时间和平台标签没有字段级观察，**当前技术观察状态统一为 Unverified**。旧报告使用的 No-Go 仅指当时「暂不进入产品化」的决定，不应当作技术不可行证据；当前三类均为产品化 Hold，其余七类也为 Unverified/Hold。旧 POC 未做新增真实重复观察或验证访问授权，本计划不把产品目标变化写成已完成的技术验证。
 
 后续 Gate 1 POC 覆盖本节列明的十类字段，验证合法来源、Offer 归属、自动读取可行性、稳定性及失败隔离，并按字段记录页面原始值、来源、观察时间和已知粒度。Gate 1 不要求精确数值或完整统计口径；通过字段可按原值展示。
 
@@ -179,7 +181,7 @@ Gate 2 独立判断统计口径、精度、时间窗口及跨 Offer 可比性是
 
 另附：脱敏的最小页面证据（局部截图/可安全保留的片段）、样本清单（Offer ID 可代号化）、成功/失败原因、允许的访问方式说明。绝不提交 Cookie、Token、完整登录 Profile、私有请求密钥或含账号隐私的原始日志。
 
-研究报告路径：`docs/research/1688-performance-metrics-poc.md`（本地文件已存在；其现有证据保持不变）。
+研究报告预定路径：`docs/research/1688-performance-metrics-poc.md`。此前本地工作区已有该报告，但**本次远端 `main` 尚无此文件**；待另行审核并独立提交后才能作为 GitHub 可复核的 Research 引用，本轮仅保留其已报告的历史状态，不修改或代替原始证据。
 
 ### 4.5 Go / Partial / No-Go（拟议决策门槛）
 
@@ -203,14 +205,14 @@ Gate 2 独立判断统计口径、精度、时间窗口及跨 Offer 可比性是
      └── Gate 1 通过的页面原值采集适配
                  ↓
         原值 Observation（来源/观察时间/已知粒度）
-                 ↓
-          原值展示（不要求精确口径）
-                 ↓
-      Gate 2 通过的比较与派生分析
-                 ↓
-             Group Detail V2
-                 ↓
-        Dashboard 摘要及单 Offer 证据
+                 ├──→ 单 Offer 证据 / Group Detail V2 原值展示（无需 Gate 2）
+                 └──→ Gate 2（按需、独立准入）
+                            ↓
+                       比较与派生分析
+                            ↓
+                       Group Detail V2 分析增强
+
+Dashboard 摘要及管理导航收敛：待分析工作流稳定后再决定
 ```
 
 - 新增经营观察数据与现有快照可用**独立逻辑边界**保存，避免一次失败导致现有采集失败；是否独立建表、是否采用 JSON 或 typed columns，由 POC 后的正式 Spec 和 migration 评审决定。
@@ -375,7 +377,7 @@ AI 仅在可靠事实、外部样本和经营收益完整后承担解释与文�
 | **A. 现有事实位置（已完成）** | 已实施的 `group-competitive-position-v1` | 复用公司/店铺主标识、链接展示价、MOQ、SKU 排序与我方定位 | 不重新规划或实现；承接后续 Group Detail V2 | 已完成 |
 | **B. Gate 1 页面原值 POC（可并行）** | 复用既有 POC 证据；十类字段逐项核查 | 验证合法来源、Offer 归属、自动读取可行性、稳定性与失败隔离 | 逐字段记录 Observed / Partial / Unverified / No-Go 和产品化 Hold/Go；不要求精确数值/完整口径 | S～M |
 | **C. Gate 1 原值接入** | 对应字段 Gate 1 Go 且完成正式 Spec | 保留并展示页面原值、来源、观察时间和已知粒度 | 任一字段失败不影响价格、库存、MOQ、SKU；Gate 2 不阻塞原值展示 | M～L |
-| **D. Gate 2 比较与派生分析 / Group Detail V2** | 对应字段统计口径、精度、时间窗口及可比性明确；Gate 1 原值可分批接入 | 仅对 Gate 2 Go 字段提供精确排名、增长计算或综合评分 | 不可比较值仍可显示原值；不产生假名次或假增长 | M |
+| **D. Group Detail V2 分阶段扩展（Gate 2 独立）** | C 中已接入的原值可直接用于展示；Gate 2 仅在比较证据充分时启动 | Gate 1 Go 字段分批加入经营/口碑视图；只有 Gate 2 Go 后才追加对应的比较、精确排名或派生分析 | 不等 Gate 2 即可验收原值展示；未通过 Gate 2 不产生假名次或假增长 | M |
 | **E. 经营趋势与变化** | 真实观察积累一段时间；派生结论满足 Gate 2 | 观察对齐、事实趋势与事件证据 | 未过 Gate 2 时只呈现原值/已观察事实，不作增长推断 | M |
 | **F. Dashboard 收敛** | Group Detail V2 稳定并有真实使用反馈 | 今日优先关注的组与组内关键变动衔接 | 总览入口能快速进入组分析；异常不被掩盖 | S～M |
 | **G. 管理导航简化** | 高频分析路径稳定 | 统一监控管理入口，采集排障入口降级 | 原流程无失能、无大规模状态回归 | M |
@@ -384,7 +386,7 @@ AI 仅在可靠事实、外部样本和经营收益完整后承担解释与文�
 ### 10.1 第一批独立交付建议
 
 - **Track A 已完成**：`docs/specs/group-competitive-position-v1.md` 已实施；后续复用，不重新创建首期 Spec 或重复交付已有位置能力。
-- **现有 Research**：`docs/research/1688-performance-metrics-poc.md` 已存在且仅记录三类字段的既有证据；不把它描述为十类 Gate 1 验证已完成。后续按本计划补足 POC 证据。
+- **本地 Research（待独立提交）**：`docs/research/1688-performance-metrics-poc.md` 此前已在本地生成，但当前远端 `main` 尚不可访问；根据已报告的研究结论，仅涉及三类字段，不能描述为十类 Gate 1 验证已完成。后续先核对该文件，再逐字段补足 POC 证据。
 - **后续经营指标 Feature Spec**：仅为 Gate 1 Go 的字段定义原值观察、采集、存储、降级和展示；精确排名/增长/评分另受 Gate 2 约束。必要时再写 Group Detail V2 扩展 Spec。
 - 后续 Dashboard、管理融合、市场机会分别再写 Spec；**不要一次把所有范围冻结成一个超大 Feature**。
 
