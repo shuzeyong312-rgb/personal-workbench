@@ -18,7 +18,7 @@
 - 列表：`competitor-list` → `competitor-list-pagination-v1` → `competitor-list-batch-actions-v1` → `own-product-management-v1`（统一添加/采集入口回到大屏）。
 - 采集：`batch-collection` → `batch-collection-auto-resume-v1` → `competitor-monitoring-settings-v1`；`daily-collection` → `daily-auto-collection-strategy-v1`。Runtime 与 CollectionRun 不是同一种历史。
 - 设置：我方店铺设置 + 五项 Batch 配置 → 九项完整配置 → `system-settings-visual-refresh-v1`（仅控件/外观，业务不变）。
-- 组分析：`group-intelligence` → `group-detail-v1`，身份叠加 `own-product-management-v1`；未来组内竞争位置与 Group Detail V2 尚无实施合同。
+- 组分析：`group-intelligence` → `group-detail-v1` → 已实施的 `group-competitive-position-v1`，身份叠加 `own-product-management-v1`；Group Detail V2 尚无实施合同。
 
 ## 分类含义
 
@@ -79,10 +79,10 @@
 
 Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增量 POC 可并行，只阻塞新指标产品化。Group Detail V2、公司/企业主体建模、同规格排名、经营指标观察、管理导航融合都不是当前已实现能力，也未因本索引获得开发授权。
 
-## 新增待 Review Spec（2026-10-09）
+## 已 Freeze Spec（2026-10-09）
 
 | Spec | 状态 | 范围与 Gate |
 | --- | --- | --- |
-| [组内竞争情报与竞争位置 V1](group-competitive-position-v1.md) | 正式修订稿，待 ChatGPT Final Spec Review；未冻结、未实施 | 升级现有组详情的目标 UI、真实 Offer 排序/位置和变化证据；R1～R3 已正式确认。原始原型截图已入库，历史明细有界首批/游标加载，排名基于各 Offer 最近有效快照且非实时同步。新经营字段与评分保持未就绪。Freeze 后局部覆盖 Group Detail V1 的我方首行、首屏结构和主要动态呈现，其余事实合同继承。 |
+| [组内竞争情报与竞争位置 V1](group-competitive-position-v1.md) | 已通过 ChatGPT Final Spec Review / 已 Freeze；本轮已实施，最新 UI 已由用户验收，完整验证结果见最终收尾报告；冻结基准 `7bd49355df7ca19a1de2835c0280d140a76b624f` | 升级现有组详情的目标 UI、真实 Offer 排序/位置和变化证据；R1～R3 已正式确认。原始原型截图已入库，历史明细有界首批/游标加载，排名基于各 Offer 最近有效快照且非实时同步。新经营字段与评分保持未就绪。Freeze 后局部覆盖 Group Detail V1 的我方首行、首屏结构和主要动态呈现，其余事实合同继承。 |
 
-以上草案不计入 2026-10-08 的 30 份历史核验分类统计；当前索引共收录 31 份 Spec。现有组分析仍按已实施合同运行，不因本草案新增即视为完成升级。
+以上 Spec 不计入 2026-10-08 的 30 份历史核验分类统计；当前索引共收录 31 份 Spec。组分析现按已实施的 group-competitive-position-v1 及其继承合同运行；完整验证结果见最终收尾报告。

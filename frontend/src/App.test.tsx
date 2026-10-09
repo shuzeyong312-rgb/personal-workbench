@@ -9,7 +9,7 @@ import { expect, test, vi } from "vitest";
 import { competitorPageSize, getBatchRefreshNotice, paginateCompetitors, updatePageSelection } from "./App";
 import { CurrentBatchCard } from "./App";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, GroupDynamics, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -54,12 +54,15 @@ const groupProduct = (overrides: Partial<import("./App").GroupProductFacts> = {}
   id: 10, role: "competitor", platform: "1688", offer_id: "100", url: "https://detail.1688.com/offer/100.html", title: "竞品商品", shop_name: "测试店铺", main_image_url: null, status: "active", is_active: true, last_collected_at: "2026-09-22T10:00:00Z",
   latest_snapshot: { id: 1, captured_at: "2026-09-22T10:00:00Z", price_min: "20.00", price_max: "30.00", min_order_quantity: 2, sku_count: 3, total_stock: 0 }, latest_change: null, ...overrides,
 });
+const emptyEventPage: import("./App").GroupEventPage = { items: [], has_more: false, next_cursor: null, range: "7", mode: "important", limit: 20, window_start: "2026-09-16T16:00:00", window_end: "2026-09-23T16:00:00", through_event_id: 2, important_offer_ids: [10] };
+const testPosition: import("./App").MetricPosition = { default_direction: "asc", group_count: 2, eligible_count: 2, offers: { 7: { eligible: true, reason: null, sort_value: 2, rank_asc: 2, rank_desc: 1 }, 10: { eligible: true, reason: null, sort_value: 1, rank_asc: 1, rank_desc: 2 } } };
 const groupDetailData: import("./App").GroupDetailData = {
+  position: { display_price_min: testPosition, min_order_quantity: testPosition, sku_count: { ...testPosition, default_direction: "desc" }, total_stock: { ...testPosition, default_direction: "desc" } }, event_page: emptyEventPage,
   range_days: 7, group, own_product: groupProduct({ id: 7, role: "own", title: "自有商品", offer_id: "700" }),
   summary: { direct_competitor_count: 1, monitored_competitor_count: 1, changed_competitors_today: 1, price_lower_than_own: { matched_count: 1, comparable_count: 1 }, moq_lower_than_own: { matched_count: 0, comparable_count: 0 }, sku_more_than_own: { matched_count: 0, comparable_count: 1 }, stock_higher_than_own: { matched_count: 0, comparable_count: 0 } },
   competitors: [{ ...groupProduct(), comparison: { price: "lower", min_order_quantity: "lower", sku_count: "more", total_stock: "unknown" } }],
-  today: { own_event_count: 1, competitor_event_count: 2, changed_competitor_count: 1, events: [{ ...latestChange(), snapshot_id: 2, collection_run_id: null, sku_name: null, competitor_id: 7, role: "own", title: "自有商品", offer_id: "700" }, { ...latestChange({ id: 2 }), snapshot_id: 2, collection_run_id: null, sku_name: null, competitor_id: 10, role: "competitor", title: "竞品商品", offer_id: "100" }] },
-  action_window: { days: 7, own_event_count: 1, competitor_event_count: 2, competitors: [{ competitor_id: 10, title: "竞品商品", offer_id: "100", event_count: 2, latest_change_at: "2026-09-22T10:00:00Z", domain_counts: { price: 1, stock: 1, sku: 0, min_order_quantity: 0, lifecycle: 0, title: 0, main_image: 0 } }] },
+  today: { event_pagination: { ...emptyEventPage, range: "today", mode: "all" }, important_offer_ids: [10], own_event_count: 1, competitor_event_count: 2, changed_competitor_count: 1, events: [{ ...latestChange(), snapshot_id: 2, collection_run_id: null, sku_name: null, competitor_id: 7, role: "own", title: "自有商品", offer_id: "700" }, { ...latestChange({ id: 2 }), snapshot_id: 2, collection_run_id: null, sku_name: null, competitor_id: 10, role: "competitor", title: "竞品商品", offer_id: "100" }] },
+  action_window: { important_offer_ids: [10], days: 7, own_event_count: 1, competitor_event_count: 2, competitors: [{ competitor_id: 10, title: "竞品商品", offer_id: "100", event_count: 2, latest_change_at: "2026-09-22T10:00:00Z", domain_counts: { price: 1, stock: 1, sku: 0, min_order_quantity: 0, lifecycle: 0, title: 0, main_image: 0 } }] },
 };
 
 const filterCompetitorFixtures: Competitor[] = [
@@ -1264,12 +1267,12 @@ test("uses neutral group change placeholder and offline snapshot freshness for o
   expect(formatGroupProductFreshness(groupProduct())).toBe("18:00 更新");
 
   const html = renderToStaticMarkup(<GroupDetailPage data={{ ...groupDetailData, own_product: offlineOwn, competitors: [offlineCompetitor] }} status="ready" error={null} days={7} rangeLoading={false} rangeError={null} onRetry={noop} onRangeChange={noop} onBack={noop} onViewCompetitors={noop} onOpenDetail={noop} onNavigate={noop} />);
-  expect(html).toContain(`最后快照 ${formatDate("2026-09-22T10:00:00Z")}`);
-  expect(html).toContain(`最后快照 ${formatDate("2026-09-21T10:00:00Z")}`);
-  expect(html).not.toContain(`最后快照 ${formatDate("2026-09-23T10:00:00Z")}`);
+  expect(html).toContain(`来源快照 #${offlineOwn.latest_snapshot!.id} · ${formatDate("2026-09-22T10:00:00Z")}`);
+  expect(html).toContain(`快照时间：${formatDate("2026-09-21T10:00:00Z")}`);
+  expect(html).not.toContain("最后快照");
   expect(html).toContain("已下架");
   expect(html).not.toContain('<td>暂无变化</td>');
-  expect(html).toContain('<td>—</td><td><button type="button" class="detail-button">查看详情</button></td>');
+  expect(html).toContain("查看详情");
 });
 
 test("summarizes meaningful group differences without turning unknown fields into advantages", () => {
@@ -1278,67 +1281,56 @@ test("summarizes meaningful group differences without turning unknown fields int
   expect(getGroupDifferenceLabels({ price: "unknown", min_order_quantity: "unknown", sku_count: "unknown", total_stock: "unknown" }, false)).toEqual({ primary: ["未建立基准"], stock: [], hasUnknown: false });
 });
 
-test("renders compact group detail states, baseline, comparison, and dynamic modes", () => {
+test("renders competitive workbench states and truthful pending analysis", () => {
   const props = { data: groupDetailData, status: "ready" as const, error: null, days: 7 as const, rangeLoading: false, rangeError: null, onRetry: noop, onRangeChange: noop, onBack: noop, onViewCompetitors: noop, onOpenDetail: noop, onNavigate: noop };
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={null} status="loading" />)).toContain("正在加载组分析");
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={null} status="error" error="竞品组不存在" />)).toContain("竞品组不存在");
+  const html = renderToStaticMarkup(<GroupDetailPage {...props} />);
+  for (const text of ["组内经营景气信号", "评分规则未冻结", "竞品成交与增长数据覆盖", "当前经营决策提示", "仅监控样本，非实时报价", "排名覆盖：", "经营表现", "口碑履约", "平台标签", "待接入", "证据不足", "MOQ ↑", "aria-sort=\"ascending\"", "筛选不改变全组排名", "可查看全部变化", "自有商品", "商品速览", "查看详情"]) expect(html).toContain(text);
+  expect(html.match(/class=\"position-row-actions\"><button class=\"detail-button\">查看详情<\/button><\/div>/g)).toHaveLength(groupDetailData.competitors.length + 1);
+  expect(html).toContain("平台标签 <small class=\"position-tag-pending\">待接入</small>");
+  expect(html.match(/role=\"tab\"/g)).toHaveLength(3);
+  expect(html).not.toContain("role=\"tab\" aria-selected=\"false\" class=\"\">平台标签");
+  expect(html.match(/class=\"position-tag-cell\" aria-label=\"平台标签待接入/g)).toHaveLength(groupDetailData.competitors.length + 1);
+  expect(html).not.toContain("无标签");
+  expect(html).not.toContain("模拟");
+  const rows = html.match(/<tr[^>]*data-offer-id[^>]*>/g)!;
+  expect(rows).toHaveLength(groupDetailData.competitors.length + 1);
+  for (const row of rows) {
+    expect(row).toContain('tabindex="0"');
+    expect(row).toContain("Offer ID：");
+    expect(row).toContain("快照时间：");
+    expect(row).toContain("状态：");
+  }
+  expect(html).not.toContain("position-row-hint");
+  expect(html).not.toContain("最近真实采集");
+  expect(html).toContain(`1 条我方商品 · ${groupDetailData.competitors.length} 条竞品 · 仅监控样本，非实时报价`);
+  expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, own_product: null, competitors: [] }} />)).toContain("0 条我方商品 · 0 条竞品 · 仅监控样本，非实时报价");
+  expect(html).not.toContain("group-own-row");
+  expect(html).toContain("position-own-row");
+  expect(html).not.toContain("position-filter-notice");
+  const body = html.match(/<tbody>(.*?)<\/tbody>/s)![1];
+  expect(body).not.toContain("group-own-label");
+  expect(body).not.toContain("<time");
+  expect(body).not.toContain("title=");
+  expect(body).toContain('class="position-shop"');
+  expect(html.indexOf('data-offer-id="10"')).toBeLessThan(html.indexOf('data-offer-id="7"'));
+  expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, own_product: null }} />)).toContain("尚未绑定我方商品");
+  expect(renderToStaticMarkup(<GroupDetailPage {...props} rangeError="请求失败" />)).toContain("保留上一份事实");
+  expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, competitors: [] }} />)).toContain("仅我方 1 条");
+});
 
-  const normal = renderToStaticMarkup(<GroupDetailPage {...props} />);
-  expect(normal).toContain("自有商品");
-  expect(normal).toContain("测试店铺");
-  expect(normal).toContain("¥20.00");
-  expect(normal).toContain("监控中");
-  expect(normal).toContain("18:00 更新");
-  expect(normal).toContain("明确低价竞品");
-  expect(normal).toContain("更低起批量");
-  expect(normal).toContain("SKU 更多");
-  expect(normal).not.toContain("库存高于我方竞品");
-  expect(normal).not.toContain('<th>角色</th>');
-  expect(normal).not.toContain('<th>最近采集</th>');
-  expect(normal).toContain("低价");
-  expect(normal).toContain("起批更低");
-  expect(normal).toContain("近 7 天");
-  expect(normal).toContain("详情");
-
-  const unbound = renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, own_product: null }} />);
-  expect(unbound).toContain("尚未绑定我方商品");
-  expect(unbound).toContain("未建立基准");
-  expect(unbound).not.toContain("0 / 0");
-
-  const noToday = renderToStaticMarkup(<GroupDynamics data={{ ...groupDetailData, today: { ...groupDetailData.today, events: [], own_event_count: 0, competitor_event_count: 0, changed_competitor_count: 0 } }} days={7} tab="today" rangeLoading={false} rangeError={null} onSelectTab={noop} onOpenDetail={noop} />);
-  expect(noToday).toContain("今日暂无变化");
-  expect(noToday).toContain("变化竞品 0 · 竞品事件 0 · 我方事件 0");
-  expect(noToday).not.toContain("group-action-list");
-  const neutral = renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, competitors: [{ ...groupDetailData.competitors[0], comparison: { price: "overlap", min_order_quantity: "equal", sku_count: "equal", total_stock: "equal" } }] }} />);
-  expect(neutral).toContain("基本持平");
-
-  const partial = renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, competitors: [{ ...groupProduct({ status: "offline", is_active: false, latest_snapshot: null }), comparison: { price: "unknown", min_order_quantity: "unknown", sku_count: "unknown", total_stock: "unknown" } }], summary: { ...groupDetailData.summary, price_lower_than_own: { matched_count: 0, comparable_count: 0 } } }} />);
-  expect(partial).toContain("已下架");
-  expect(partial).toContain("已停止");
-  expect(partial).toContain("未采集");
-  expect(partial).toContain("部分数据未知");
-  expect(partial).toContain("暂无可比数据");
-
-  const sixActions = Array.from({ length: 6 }, (_, index) => ({ ...groupDetailData.action_window.competitors[0], competitor_id: index + 1, title: `竞品 ${index + 1}`, domain_counts: { price: 0, stock: 1, sku: 0, min_order_quantity: 0, lifecycle: 0, title: 0, main_image: 0 } }));
-  const actionList = renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, action_window: { ...groupDetailData.action_window, competitors: sixActions } }} />);
-  expect(actionList).toContain("库存 1");
-  expect(actionList).not.toContain("SKU 0");
-  expect(actionList).toContain("竞品 5");
-  expect(actionList).not.toContain("竞品 6");
-
-  const todayWithEvents = renderToStaticMarkup(<GroupDynamics data={groupDetailData} days={7} tab="today" rangeLoading={false} rangeError={null} onSelectTab={noop} onOpenDetail={noop} />);
-  expect(todayWithEvents).toContain("自有商品");
-  expect(todayWithEvents).toContain("竞品商品");
-  expect(todayWithEvents).toContain("group-dynamic-role-own");
-
-  const thirtyDayMode = renderToStaticMarkup(<GroupDynamics data={{ ...groupDetailData, action_window: { ...groupDetailData.action_window, days: 30 } }} days={30} tab={30} rangeLoading={false} rangeError={null} onSelectTab={noop} onOpenDetail={noop} />);
-  expect(thirtyDayMode).toContain("aria-pressed=\"true\">近 30 天");
-  expect(thirtyDayMode).toContain("竞品 2 次 · 我方 1 次");
-
-  const rangeLoading = renderToStaticMarkup(<GroupDetailPage {...props} rangeLoading />);
-  expect(rangeLoading).toContain("自有商品");
-  expect(rangeLoading).toContain("正在更新动作范围");
-  expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, competitors: [] }} />)).toContain("当前组还没有直接竞品");
+test("sorts using authoritative directional competition ranks, ties by id and unknowns last", () => {
+  const offers = [groupProduct({ id: 4 }), groupProduct({ id: 2 }), groupProduct({ id: 3 }), groupProduct({ id: 1 })];
+  const position = { ...testPosition, offers: {
+    1: { eligible: true, reason: null, sort_value: "9", rank_asc: 1, rank_desc: 2 },
+    2: { eligible: true, reason: null, sort_value: "9", rank_asc: 1, rank_desc: 2 },
+    3: { eligible: true, reason: null, sort_value: "100", rank_asc: 3, rank_desc: 1 },
+    4: { eligible: false, reason: "offline", sort_value: null, rank_asc: null, rank_desc: null },
+  } };
+  expect(sortGroupOffers(offers, position, "asc").map(item => item.id)).toEqual([1, 2, 3, 4]);
+  expect(sortGroupOffers(offers, position, "desc").map(item => item.id)).toEqual([3, 1, 2, 4]);
+  expect(sortGroupOffers(offers, undefined, "desc").map(item => item.id)).toEqual([1, 2, 3, 4]);
 });
 
 test("shows own role in list and detail and limits bind candidates to group members", () => {

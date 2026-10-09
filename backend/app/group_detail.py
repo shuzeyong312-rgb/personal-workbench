@@ -1,11 +1,13 @@
-from collections import defaultdict
+from collections import defaultdict, Counter
+import base64
+import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, and_, or_
 from sqlalchemy.orm import Session
 
 from app.competitor_detail import _display_sku_name
@@ -114,6 +116,35 @@ class GroupEventResponse(ChangeResponse):
     role: Literal["own", "competitor"]
     title: str | None
     offer_id: str
+    shop_name: str | None
+
+
+class EventPageResponse(BaseModel):
+    items: list[GroupEventResponse]
+    has_more: bool
+    next_cursor: str | None
+    range: Literal["today", "7", "30"]
+    mode: Literal["important", "all"]
+    limit: int
+    window_start: datetime
+    window_end: datetime
+    through_event_id: int
+    important_offer_ids: list[int]
+
+
+class OfferPositionResponse(BaseModel):
+    eligible: bool
+    reason: str | None
+    sort_value: str | int | None
+    rank_asc: int | None
+    rank_desc: int | None
+
+
+class MetricPositionResponse(BaseModel):
+    default_direction: Literal["asc", "desc"]
+    group_count: int
+    eligible_count: int
+    offers: dict[int, OfferPositionResponse]
 
 
 class TodayResponse(BaseModel):
@@ -121,6 +152,8 @@ class TodayResponse(BaseModel):
     competitor_event_count: int
     changed_competitor_count: int
     events: list[GroupEventResponse]
+    event_pagination: EventPageResponse
+    important_offer_ids: list[int]
 
 
 class ActionDomainCountsResponse(BaseModel):
@@ -147,6 +180,7 @@ class ActionWindowResponse(BaseModel):
     own_event_count: int
     competitor_event_count: int
     competitors: list[ActionCompetitorResponse]
+    important_offer_ids: list[int]
 
 
 class GroupDetailResponse(BaseModel):
@@ -157,6 +191,8 @@ class GroupDetailResponse(BaseModel):
     competitors: list[CompetitorResponse]
     today: TodayResponse
     action_window: ActionWindowResponse
+    position: dict[str, MetricPositionResponse]
+    event_page: EventPageResponse
 
 
 def _latest_snapshots(db: Session, competitor_ids: list[int]) -> dict[int, ProductSnapshot]:
@@ -235,23 +271,10 @@ def _sku_names(
 
     historical_names: dict[tuple[int, str], str] = {}
     rows = db.execute(
-        select(
-            ProductSnapshot.competitor_id,
-            SkuSnapshot.sku_id,
-            SkuSnapshot.sku_name,
-        )
+        select(ProductSnapshot.competitor_id, SkuSnapshot.sku_id, SkuSnapshot.sku_name)
         .join(ProductSnapshot, ProductSnapshot.id == SkuSnapshot.product_snapshot_id)
-        .where(
-            ProductSnapshot.competitor_id.in_(competitor_ids),
-            SkuSnapshot.sku_id.in_(sku_ids),
-        )
-        .order_by(
-            ProductSnapshot.competitor_id.asc(),
-            SkuSnapshot.sku_id.asc(),
-            ProductSnapshot.captured_at.desc(),
-            ProductSnapshot.id.desc(),
-            SkuSnapshot.id.desc(),
-        )
+        .where(ProductSnapshot.competitor_id.in_(competitor_ids), SkuSnapshot.sku_id.in_(sku_ids))
+        .order_by(ProductSnapshot.captured_at.desc(), ProductSnapshot.id.desc(), SkuSnapshot.id.desc())
     ).all()
     for competitor_id, sku_id, sku_name in rows:
         key = (competitor_id, sku_id)
@@ -305,7 +328,7 @@ def _product_facts(
 ) -> dict[str, object]:
     return {
         "id": competitor.id,
-        "role": competitor.group_role,
+        "role": "own" if competitor.ownership == "self" else "competitor",
         "platform": competitor.platform,
         "offer_id": competitor.offer_id,
         "url": competitor.url,
@@ -390,6 +413,97 @@ def _event_domain(change_type: str) -> str:
     return _EVENT_DOMAIN[change_type]
 
 
+_IMPORTANT_TYPES = tuple(k for k, v in _EVENT_DOMAIN.items() if v in ("price", "sku", "min_order_quantity"))
+
+
+def _positions(facts: list[dict]) -> dict:
+    result = {}
+    for key, field, direction in (("display_price_min", "price_min", "asc"), ("min_order_quantity", "min_order_quantity", "asc"), ("sku_count", "sku_count", "desc"), ("total_stock", "total_stock", "desc")):
+        offers, values = {}, {}
+        for fact in facts:
+            snap = fact["latest_snapshot"]
+            reason = "not_monitored" if not fact["is_active"] else "offline" if fact["status"] == "offline" else "status_unknown" if fact["status"] != "active" else "no_snapshot" if snap is None else None
+            value = snap[field] if snap else None
+            if reason is None:
+                if key == "display_price_min":
+                    high = snap["price_max"]
+                    if value is None or high is None or not Decimal(value).is_finite() or not Decimal(high).is_finite() or Decimal(value) < 0 or Decimal(value) > Decimal(high):
+                        reason = "unknown_value"
+                elif value is None or value < (1 if key == "min_order_quantity" else 0):
+                    reason = "unknown_value"
+            offers[fact["id"]] = dict(eligible=reason is None, reason=reason, sort_value=value if reason is None else None, rank_asc=None, rank_desc=None)
+            if reason is None:
+                values[fact["id"]] = Decimal(value) if key == "display_price_min" else value
+        counts, asc, desc, before = Counter(values.values()), {}, {}, 0
+        for value in sorted(counts):
+            asc[value] = before + 1
+            before += counts[value]
+            desc[value] = len(values) - before + 1
+        for id_, value in values.items():
+            offers[id_].update(rank_asc=asc[value], rank_desc=desc[value])
+        result[key] = dict(default_direction=direction, group_count=len(facts), eligible_count=len(values), offers=offers)
+    return result
+
+
+def _event_context(db: Session, members: list[Competitor], group_id: int, range_: str, mode: str, limit: int, cursor: str | None = None) -> dict:
+    identity = [[m.id, m.ownership, m.group_role] for m in members]
+    expected = dict(group=group_id, range=range_, mode=mode, limit=limit)
+    if cursor is not None:
+        try:
+            if len(cursor) > 100000:
+                raise ValueError()
+            ctx = json.loads(base64.b64decode(cursor.encode(), altchars=b"-_", validate=True))
+            if not isinstance(ctx, dict) or any(ctx.get(k) != v or type(ctx.get(k)) is not type(v) for k, v in expected.items()):
+                raise ValueError()
+            stamps = [datetime.fromisoformat(ctx[k]) for k in ("start", "end", "last_time")]
+            start, end, last = stamps
+            if start.hour != 16 or any((start.minute, start.second, start.microsecond, end.minute, end.second, end.microsecond)) or any(t.tzinfo is not None for t in stamps) or end-start != timedelta(days=1 if range_ == "today" else int(range_)) or not start <= last < end:
+                raise ValueError()
+            if any(type(ctx[k]) is not int or not 0 <= ctx[k] <= 2**63 - 1 for k in ("through", "last_id")) or not 0 < ctx["last_id"] <= ctx["through"] or not isinstance(ctx.get("members"), list):
+                raise ValueError()
+            if any(not isinstance(member, list) or len(member) != 3 or type(member[0]) is not int or not 0 < member[0] <= 2**63 - 1 or member[1] not in ("self", "competitor") or member[2] not in ("own", "competitor") for member in ctx["members"]):
+                raise ValueError()
+        except (ValueError, TypeError, KeyError, OverflowError, UnicodeError):
+            raise HTTPException(422, "invalid group event cursor")
+        if ctx["members"] != identity:
+            raise error("group_event_context_changed", "组成员或角色已变化，请重新加载当前历史", 409)
+        return ctx
+    today, _, end = business_day_bounds()
+    start, _ = business_date_utc_bounds(today-timedelta(days=(1 if range_ == "today" else int(range_))-1))
+    return {**expected, "members": identity, "start": start.isoformat(), "end": end.isoformat(), "through": db.scalar(select(func.max(ChangeEvent.id))) or 0}
+
+
+def _event_filters(ctx: dict) -> list:
+    return [ChangeEvent.competitor_id.in_([m[0] for m in ctx["members"]]), ChangeEvent.detected_at >= datetime.fromisoformat(ctx["start"]), ChangeEvent.detected_at < datetime.fromisoformat(ctx["end"]), ChangeEvent.id <= ctx["through"]]
+
+
+def _event_page(db: Session, members: list[Competitor], ctx: dict, name_cache: dict | None = None) -> dict:
+    filters = _event_filters(ctx)
+    important_ids = list(db.scalars(select(ChangeEvent.competitor_id).where(*filters, ChangeEvent.change_type.in_(_IMPORTANT_TYPES)).distinct().order_by(ChangeEvent.competitor_id)).all())
+    if ctx["mode"] == "important":
+        filters.append(ChangeEvent.change_type.in_(_IMPORTANT_TYPES))
+    if "last_id" in ctx:
+        stamp = datetime.fromisoformat(ctx["last_time"])
+        filters.append(or_(ChangeEvent.detected_at < stamp, and_(ChangeEvent.detected_at == stamp, ChangeEvent.id < ctx["last_id"])))
+    events = list(db.scalars(select(ChangeEvent).where(*filters).order_by(ChangeEvent.detected_at.desc(), ChangeEvent.id.desc()).limit(ctx["limit"]+1)).all())
+    more, events = len(events) > ctx["limit"], events[:ctx["limit"]]
+    names = name_cache if name_cache is not None else {}
+    unnamed = [event for event in events if event.entity_key and (event.id, event.entity_key) not in names]
+    names.update(_sku_names(db, unnamed, list({event.competitor_id for event in unnamed})))
+    by_id = {m.id: m for m in members}
+    items = [{**_change_payload(e, names), "competitor_id": e.competitor_id, "role": "own" if by_id[e.competitor_id].ownership == "self" else "competitor", "title": by_id[e.competitor_id].title, "offer_id": by_id[e.competitor_id].offer_id, "shop_name": by_id[e.competitor_id].shop_name} for e in events]
+    cursor = base64.urlsafe_b64encode(json.dumps({**ctx, "last_time": events[-1].detected_at.isoformat(), "last_id": events[-1].id}, separators=(",", ":")).encode()).decode() if more else None
+    return dict(items=items, has_more=more, next_cursor=cursor, range=ctx["range"], mode=ctx["mode"], limit=ctx["limit"], window_start=ctx["start"], window_end=ctx["end"], through_event_id=ctx["through"], important_offer_ids=important_ids)
+
+
+@router.get("/{group_id}/events", response_model=EventPageResponse)
+def get_group_events(group_id: int, range_: Literal["today", "7", "30"] = Query(default="7", alias="range"), mode: Literal["important", "all"] = "important", limit: int = Query(default=20, ge=1, le=100), cursor: str | None = None, db: Session = Depends(get_db)):
+    if db.get(CompetitorGroup, group_id) is None:
+        raise error("competitor_group_not_found", "竞品组不存在", 404)
+    members = list(db.scalars(select(Competitor).where(Competitor.group_id == group_id).order_by(Competitor.id)).all())
+    return _event_page(db, members, _event_context(db, members, group_id, range_, mode, limit, cursor))
+
+
 @router.get("/{group_id}/detail", response_model=GroupDetailResponse)
 def get_group_detail(
     group_id: int,
@@ -430,23 +544,15 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
             skus_by_snapshot[sku.product_snapshot_id].append(sku)
 
     latest_changes = _latest_changes(db, member_ids)
-    current_date, today_start_utc, today_end_utc = business_day_bounds()
-    first_date = current_date - timedelta(days=days - 1)
-    window_start_utc, _ = business_date_utc_bounds(first_date)
-    period_events = list(
-        db.scalars(
-            select(ChangeEvent)
-            .where(
-                ChangeEvent.competitor_id.in_(member_ids),
-                ChangeEvent.detected_at >= window_start_utc,
-                ChangeEvent.detected_at < today_end_utc,
-            )
-            .order_by(ChangeEvent.detected_at.desc(), ChangeEvent.id.desc())
-        ).all()
-    ) if member_ids else []
-    today_events = [event for event in period_events if event.detected_at >= today_start_utc]
-    all_display_events = list({event.id: event for event in [*period_events, *latest_changes.values()]}.values())
-    sku_names = _sku_names(db, all_display_events, member_ids)
+    context = _event_context(db, members, group_id, str(days), "important", 20)
+    today_context = {**context, "range": "today", "mode": "all", "start": (datetime.fromisoformat(context["end"]) - timedelta(days=1)).isoformat()}
+    sku_names = {}
+    event_page = _event_page(db, members, context, sku_names)
+    today_page = _event_page(db, members, today_context, sku_names)
+    unnamed = [event for event in latest_changes.values() if event.entity_key and (event.id, event.entity_key) not in sku_names]
+    sku_names.update(_sku_names(db, unnamed, list({event.competitor_id for event in unnamed})))
+    counts = db.execute(select(ChangeEvent.competitor_id, ChangeEvent.change_type, func.count(), func.max(ChangeEvent.detected_at)).where(*_event_filters(context)).group_by(ChangeEvent.competitor_id, ChangeEvent.change_type)).all()
+    today_counts = dict(db.execute(select(ChangeEvent.competitor_id, func.count()).where(*_event_filters(today_context)).group_by(ChangeEvent.competitor_id)).all())
 
     facts_by_id: dict[int, dict[str, object]] = {}
     for member in members:
@@ -481,49 +587,19 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
                 if value == expected:
                     matched[key] += 1
 
-    changed_competitor_ids = {
-        event.competitor_id
-        for event in today_events
-        if member_by_id[event.competitor_id].ownership == "competitor"
-    }
-    today_payload = []
-    for event in today_events:
-        member = member_by_id[event.competitor_id]
-        today_payload.append(
-            {
-                **(_change_payload(event, sku_names) or {}),
-                "competitor_id": member.id,
-                "role": member.group_role,
-                "title": member.title,
-                "offer_id": member.offer_id,
-            }
-        )
-
-    action_by_id: dict[int, dict[str, object]] = {}
-    own_event_count = 0
-    competitor_event_count = 0
-    for event in period_events:
-        member = member_by_id[event.competitor_id]
+    changed_competitor_ids = {m.id for m in direct_members if today_counts.get(m.id, 0)}
+    action_by_id = {}
+    own_event_count = competitor_event_count = 0
+    for member_id, change_type, count, latest_at in counts:
+        member = member_by_id[member_id]
         if member.ownership == "self":
-            own_event_count += 1
+            own_event_count += count
             continue
-        competitor_event_count += 1
-        item = action_by_id.setdefault(
-            member.id,
-            {
-                "competitor_id": member.id,
-                "title": member.title,
-                "offer_id": member.offer_id,
-                "event_count": 0,
-                "latest_change_at": event.detected_at,
-                "domain_counts": {domain: 0 for domain in _DOMAINS},
-            },
-        )
-        item["event_count"] = int(item["event_count"]) + 1
-        domain_counts = item["domain_counts"]
-        assert isinstance(domain_counts, dict)
-        domain = _event_domain(event.change_type)
-        domain_counts[domain] = int(domain_counts[domain]) + 1
+        competitor_event_count += count
+        item = action_by_id.setdefault(member_id, dict(competitor_id=member.id, title=member.title, offer_id=member.offer_id, event_count=0, latest_change_at=latest_at, domain_counts={d: 0 for d in _DOMAINS}))
+        item["event_count"] += count
+        item["latest_change_at"] = max(item["latest_change_at"], latest_at)
+        item["domain_counts"][_event_domain(change_type)] += count
 
     action_items = sorted(
         action_by_id.values(),
@@ -532,6 +608,8 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
 
     return {
         "range_days": days,
+        "position": _positions(([own_facts] if own_facts else []) + competitors),
+        "event_page": event_page,
         "group": group,
         "own_product": own_facts,
         "summary": {
@@ -545,19 +623,18 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
         },
         "competitors": competitors,
         "today": {
-            "own_event_count": sum(
-                member_by_id[event.competitor_id].ownership == "self" for event in today_events
-            ),
-            "competitor_event_count": sum(
-                member_by_id[event.competitor_id].ownership == "competitor" for event in today_events
-            ),
+            "own_event_count": sum(today_counts.get(m.id, 0) for m in members if m.ownership == "self"),
+            "competitor_event_count": sum(today_counts.get(m.id, 0) for m in direct_members),
             "changed_competitor_count": len(changed_competitor_ids),
-            "events": today_payload,
+            "events": today_page["items"],
+            "event_pagination": today_page,
+            "important_offer_ids": today_page["important_offer_ids"],
         },
         "action_window": {
             "days": days,
             "own_event_count": own_event_count,
             "competitor_event_count": competitor_event_count,
             "competitors": action_items,
+            "important_offer_ids": event_page["important_offer_ids"],
         },
     }

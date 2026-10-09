@@ -552,3 +552,176 @@ def test_query_count_does_not_scale_with_group_member_count(
         event.remove(engine, "before_cursor_execute", count_selects)
 
     assert select_counts[0] == select_counts[1]
+
+
+def test_positions_competition_ties_numeric_price_and_r2(client):
+    with client[1]() as session:
+        group = add_group(session)
+        offers = [add_member(session, group.id, str(i), role="own" if i == 2 else "competitor") for i in range(9)]
+        for i, offer in enumerate(offers):
+            add_snapshot(session, offer, datetime.now(timezone.utc)-timedelta(days=20+i), moq=1 if i < 2 else 2, price_min=Decimal("9") if i < 3 else Decimal("100"), price_max=Decimal("150"), skus=[("a", "规格", 0)])
+        session.commit()
+    body = client[0].get(f"/api/competitor-groups/{group.id}/detail").json()
+    moq = body["position"]["min_order_quantity"]
+    assert moq["eligible_count"] == 9
+    assert moq["offers"][str(offers[2].id)]["rank_asc"] == 3
+    assert moq["offers"][str(offers[2].id)]["rank_desc"] == 1
+    assert moq["offers"][str(offers[0].id)]["rank_desc"] == 8
+    price = body["position"]["display_price_min"]
+    assert price["offers"][str(offers[0].id)]["rank_asc"] == 1
+    assert price["offers"][str(offers[3].id)]["rank_asc"] == 4
+    assert price["offers"][str(offers[0].id)]["rank_desc"] == 7
+    assert body["position"]["total_stock"]["eligible_count"] == 9
+
+
+@pytest.mark.parametrize("active,status_,snapshot,moq,low,high,reason", [
+    (False, "active", True, 1, "9", "10", "not_monitored"),
+    (True, "offline", True, 1, "9", "10", "offline"),
+    (True, "unknown", True, 1, "9", "10", "status_unknown"),
+    (True, "active", False, 1, "9", "10", "no_snapshot"),
+    (True, "active", True, 1, "9", None, "unknown_value"),
+    (True, "active", True, None, "10", "9", "unknown_value"),
+    (True, "active", True, 2, "0", "0", None),
+])
+def test_position_exclusion_and_valid_zero(client, active, status_, snapshot, moq, low, high, reason):
+    with client[1]() as session:
+        group = add_group(session)
+        member = add_member(session, group.id, "1", active=active, status=status_)
+        if snapshot:
+            add_snapshot(session, member, datetime.now(timezone.utc), moq=moq, price_min=Decimal(low), price_max=Decimal(high) if high else None)
+        session.commit()
+    body = client[0].get(f"/api/competitor-groups/{group.id}/detail").json()
+    value = body["position"]["display_price_min"]["offers"][str(member.id)]
+    assert value["reason"] == reason
+    assert value["eligible"] == (reason is None)
+    assert value["rank_asc"] == (1 if reason is None else None)
+    if snapshot and active and status_ == "active":
+        assert body["position"]["sku_count"]["eligible_count"] == 1
+        assert body["position"]["total_stock"]["eligible_count"] == 0
+
+
+def test_event_paging_fixed_upper_bound_full_counts_and_context(client):
+    with client[1]() as session:
+        group = add_group(session)
+        own = add_member(session, group.id, "own", role="own")
+        other = add_member(session, group.id, "other", active=False, status="offline")
+        stamp = datetime.now(timezone.utc)
+        snapshots = {m.id: add_snapshot(session, m, stamp) for m in [own, other]}
+        ids = []
+        for i in range(45):
+            event = add_event(session, other if i != 0 else own, snapshots[(other if i != 0 else own).id], "price_decrease" if i == 0 else "stock_decrease", stamp, old_value="10", new_value="9")
+            ids.append(event.id)
+        session.commit()
+    body = client[0].get(f"/api/competitor-groups/{group.id}/detail").json()
+    assert len(body["today"]["events"]) == 20
+    assert body["today"]["competitor_event_count"] == 44
+    assert body["today"]["event_pagination"]["has_more"] is True
+    assert body["event_page"]["important_offer_ids"] == [own.id]
+    assert len(body["event_page"]["items"]) == 1
+    url = f"/api/competitor-groups/{group.id}/events"
+    params = {"range": "7", "mode": "all", "limit": 7}
+    first = client[0].get(url, params=params).json()
+    with client[1]() as session:
+        add_event(session, other, snapshots[other.id], "price_increase", stamp)
+        session.commit()
+    pages, current = [], first
+    while True:
+        pages.extend(current["items"])
+        assert current["important_offer_ids"] == [own.id]
+        if not current["has_more"]:
+            assert current["next_cursor"] is None
+            break
+        current = client[0].get(url, params={**params, "cursor": current["next_cursor"]}).json()
+    assert [e["id"] for e in pages] == list(reversed(ids))
+    assert all(e["old_value"] == "10" and e["new_value"] == "9" for e in pages)
+    assert client[0].get(url, params={**params, "limit": 8, "cursor": first["next_cursor"]}).status_code == 422
+    with client[1]() as session:
+        session.get(Competitor, other.id).group_id = None
+        session.commit()
+    assert client[0].get(url, params={**params, "cursor": first["next_cursor"]}).status_code == 409
+
+
+@pytest.mark.parametrize("params", [{"range": "3"}, {"mode": "bad"}, {"limit": 0}, {"limit": 101}, {"cursor": "garbage"}, {"cursor": "e30="}])
+def test_event_invalid_parameters(client, params):
+    with client[1]() as session:
+        group = add_group(session)
+        session.commit()
+    assert client[0].get(f"/api/competitor-groups/{group.id}/events", params=params).status_code == 422
+
+
+@pytest.mark.parametrize("range_", ["today", "7", "30"])
+def test_event_boundaries_precision_and_midnight_context(client, monkeypatch, range_):
+    import app.group_detail as module
+    today = date(2026, 10, 9)
+    start, end = business_date_utc_bounds(today)
+    monkeypatch.setattr(module, "business_day_bounds", lambda: (today, start, end))
+    with client[1]() as session:
+        group = add_group(session)
+        member = add_member(session, group.id, "1")
+        snap = add_snapshot(session, member, start)
+        expected = []
+        for delta in [1, 2, 3]:
+            expected.append(add_event(session, member, snap, "sku_added", start+timedelta(microseconds=delta)).id)
+        add_event(session, member, snap, "sku_added", end)
+        session.commit()
+    url = f"/api/competitor-groups/{group.id}/events"
+    params = {"range": range_, "limit": 1}
+    first = client[0].get(url, params=params).json()
+    monkeypatch.setattr(module, "business_day_bounds", lambda: (today+timedelta(days=1), end, end+timedelta(days=1)))
+    ids, current = [], first
+    while True:
+        ids.extend(e["id"] for e in current["items"])
+        assert current["window_end"] == first["window_end"]
+        if not current["has_more"]:
+            break
+        current = client[0].get(url, params={**params, "cursor": current["next_cursor"]}).json()
+    assert ids == list(reversed(expected))
+    assert len(client[0].get(url, params={**params, "limit": 100}).json()["items"]) >= 1
+
+
+def test_empty_event_metadata_and_missing_group(client):
+    with client[1]() as session:
+        group = add_group(session)
+        session.commit()
+    body = client[0].get(f"/api/competitor-groups/{group.id}/events").json()
+    assert body["items"] == body["important_offer_ids"] == []
+    assert body["through_event_id"] == 0 and body["next_cursor"] is None and not body["has_more"]
+    assert client[0].get("/api/competitor-groups/999/events").status_code == 404
+
+
+def test_malformed_cursor_numeric_and_member_structure(client):
+    import base64, json
+    with client[1]() as session:
+        group = add_group(session)
+        member = add_member(session, group.id, "1")
+        stamp = datetime.now(timezone.utc)
+        snap = add_snapshot(session, member, stamp)
+        for _ in range(2):
+            add_event(session, member, snap, "sku_added", stamp)
+        session.commit()
+    url = f"/api/competitor-groups/{group.id}/events"
+    first = client[0].get(url, params={"limit": 1}).json()
+    original = json.loads(base64.urlsafe_b64decode(first["next_cursor"]))
+    for mutation in [{"through": 2**64}, {"last_id": True}, {"group": True}, {"members": [42]}, {"start": "invalid"}]:
+        cursor = base64.urlsafe_b64encode(json.dumps({**original, **mutation}).encode()).decode()
+        assert client[0].get(url, params={"limit": 1, "cursor": cursor}).status_code == 422
+
+
+@pytest.mark.parametrize("invalid_name", ["&nbsp;", "&#160; \t", " \n\t ", ""])
+def test_invalid_recent_sku_name_falls_back_consistently(client, invalid_name):
+    with client[1]() as session:
+        group = add_group(session)
+        member = add_member(session, group.id, "sku-history")
+        stamp = datetime.now(timezone.utc)
+        add_snapshot(session, member, stamp - timedelta(days=2), skus=[("sku-1", "旧名称", 10)])
+        add_snapshot(session, member, stamp - timedelta(days=1), skus=[("sku-1", "  红色&nbsp; &gt;\t A19  ", 10)])
+        latest = add_snapshot(session, member, stamp, skus=[("sku-1", invalid_name, 9)])
+        change = add_event(session, member, latest, "price_decrease", stamp, entity_key="sku-1", old_value="10", new_value="9")
+        session.commit()
+    response = client[0].get(f"/api/competitor-groups/{group.id}/detail")
+    assert response.status_code == 200
+    body = response.json()
+    single = client[0].get(f"/api/competitors/{member.id}/detail").json()
+    events = client[0].get(f"/api/competitor-groups/{group.id}/events").json()
+    results = [body["competitors"][0]["latest_change"], body["event_page"]["items"][0], body["today"]["events"][0], events["items"][0], single["recent_changes"][0], single["latest_price_change"]]
+    assert all(item["id"] == change.id and item["sku_name"] == "红色 > A19" for item in results)

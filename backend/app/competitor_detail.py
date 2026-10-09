@@ -107,7 +107,7 @@ def calculate_total_stock(skus: Sequence[SkuSnapshot]) -> int | None:
 def _display_sku_name(value: str | None) -> str | None:
     if value is None:
         return None
-    name = unescape(value).strip()
+    name = " ".join(unescape(value).split())
     return name or None
 
 
