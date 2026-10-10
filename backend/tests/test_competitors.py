@@ -14,7 +14,7 @@ from app.database import get_db
 from app.main import app
 from app.collection.service import BATCH_RUNTIME, COLLECTION_LOCK
 from app.collection.types import ProductData, SkuData
-from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot, SystemSetting
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot, SystemSetting
 
 
 @pytest.fixture()
@@ -51,11 +51,14 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
-    with patch("app.competitors.collect_product", side_effect=fake_collect_product):
-        with TestClient(app) as test_client:
+    test_client = TestClient(app)
+    try:
+        with patch("app.competitors.collect_product", side_effect=fake_collect_product):
             yield test_client, session_factory
-    app.dependency_overrides.clear()
-    engine.dispose()
+    finally:
+        test_client.close()
+        app.dependency_overrides.clear()
+        engine.dispose()
 
 
 def test_adds_competitor_and_normalizes_url(client: tuple[TestClient, sessionmaker[Session]]) -> None:
@@ -354,6 +357,13 @@ def test_updates_competitor_group_assignment_and_preserves_history(
         )
         session.add(snapshot)
         session.flush()
+        run = CollectionRun(
+            competitor_id=competitor_id,
+            started_at=now,
+            finished_at=now,
+            status="success",
+            operating_metrics_status="success",
+        )
         session.add_all(
             [
                 ChangeEvent(
@@ -364,14 +374,15 @@ def test_updates_competitor_group_assignment_and_preserves_history(
                     new_value="历史商品",
                     detected_at=now,
                 ),
-                CollectionRun(
-                    competitor_id=competitor_id,
-                    started_at=now,
-                    finished_at=now,
-                    status="success",
-                ),
+                run,
             ]
         )
+        session.flush()
+        session.add(OperatingMetricObservation(
+            competitor_id=competitor_id, collection_run_id=run.id, platform="1688", offer_id="123456789",
+            metric_key="monthly_deal", status="observed", raw_value="20+",
+            source="1688_official_procurement_assistant_top", observed_at=now,
+        ))
         session.commit()
 
     moved = test_client.patch(f"/api/competitors/{competitor_id}/group", json={"group_id": second_group_id})
@@ -713,6 +724,7 @@ def test_delete_removes_all_competitor_history_but_not_group(
         assert session.scalar(select(ProductSnapshot)) is None
         assert session.scalar(select(SkuSnapshot)) is None
         assert session.scalar(select(ChangeEvent)) is None
+        assert session.scalar(select(OperatingMetricObservation)) is None
         assert session.scalar(select(CollectionRun)) is None
         assert session.get(CompetitorGroup, group_id) is not None
     assert test_client.get("/api/competitor-groups/summary").json()["groups"][0]["own_product"] is None
@@ -814,6 +826,14 @@ def test_delete_rolls_back_when_history_delete_fails(
                 detected_at=now,
             )
         )
+        run = CollectionRun(competitor_id=competitor_id, started_at=now, finished_at=now, status="success")
+        session.add(run)
+        session.flush()
+        session.add(OperatingMetricObservation(
+            competitor_id=competitor_id, collection_run_id=run.id, platform="1688", offer_id="123456789",
+            metric_key="monthly_deal", status="observed", raw_value="20+",
+            source="1688_official_procurement_assistant_top", observed_at=now,
+        ))
         session.commit()
 
     with patch.object(Session, "commit", side_effect=RuntimeError("commit failed")):
@@ -828,6 +848,7 @@ def test_delete_rolls_back_when_history_delete_fails(
         assert session.get(Competitor, competitor_id) is not None
         assert session.scalar(select(ProductSnapshot)) is not None
         assert session.scalar(select(ChangeEvent)) is not None
+        assert session.scalar(select(OperatingMetricObservation)) is not None
 
 
 def test_batch_monitoring_updates_only_changed_ids_and_preserves_other_fields(
@@ -1087,6 +1108,17 @@ def test_batch_delete_rolls_back_when_commit_fails(
         ).json()["id"]
         for offer in ("910", "911")
     ]
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with session_factory() as session:
+        run = CollectionRun(competitor_id=ids[0], started_at=now, finished_at=now, status="success")
+        session.add(run)
+        session.flush()
+        session.add(OperatingMetricObservation(
+            competitor_id=ids[0], collection_run_id=run.id, platform="1688", offer_id="910",
+            metric_key="monthly_deal", status="observed", raw_value="20+",
+            source="1688_official_procurement_assistant_top", observed_at=now,
+        ))
+        session.commit()
 
     with patch.object(Session, "commit", side_effect=RuntimeError("commit failed")):
         response = test_client.post("/api/competitors/delete-batch", json={"competitor_ids": ids})
@@ -1098,3 +1130,32 @@ def test_batch_delete_rolls_back_when_commit_fails(
     }
     with session_factory() as session:
         assert [session.get(Competitor, competitor_id) is not None for competitor_id in ids] == [True, True]
+        assert session.scalar(select(OperatingMetricObservation)) is not None
+
+
+def test_batch_delete_removes_operating_metric_history(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    competitor_id = test_client.post(
+        "/api/competitors", json={"url": "https://detail.1688.com/offer/912.html"}
+    ).json()["id"]
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with session_factory() as session:
+        run = CollectionRun(competitor_id=competitor_id, started_at=now, finished_at=now, status="success")
+        session.add(run)
+        session.flush()
+        session.add(OperatingMetricObservation(
+            competitor_id=competitor_id, collection_run_id=run.id, platform="1688", offer_id="912",
+            metric_key="monthly_deal", status="observed", raw_value="20+",
+            source="1688_official_procurement_assistant_top", observed_at=now,
+        ))
+        session.commit()
+
+    response = test_client.post("/api/competitors/delete-batch", json={"competitor_ids": [competitor_id]})
+
+    assert response.status_code == 200
+    with session_factory() as session:
+        assert session.scalar(select(OperatingMetricObservation)) is None
+        assert session.scalar(select(CollectionRun)) is None
+        assert session.get(Competitor, competitor_id) is None

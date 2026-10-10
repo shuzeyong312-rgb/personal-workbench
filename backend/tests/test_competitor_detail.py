@@ -30,10 +30,13 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
+    test_client = TestClient(app)
+    try:
         yield test_client, session_factory
-    app.dependency_overrides.clear()
-    engine.dispose()
+    finally:
+        test_client.close()
+        app.dependency_overrides.clear()
+        engine.dispose()
 
 
 def add_competitor(session: Session, *, active: bool = True) -> Competitor:
@@ -619,7 +622,7 @@ def test_recent_changes_and_collection_runs_are_limited_and_stably_ordered(
 
     assert len(body["recent_changes"]) == 20
     assert all("sku_name" in item for item in body["recent_changes"])
-    assert query_count[0] <= 10
+    assert query_count[0] <= 11
     assert [item["id"] for item in body["recent_changes"]] == sorted(
         (item["id"] for item in body["recent_changes"]), reverse=True
     )

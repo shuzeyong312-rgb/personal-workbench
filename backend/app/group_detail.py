@@ -15,6 +15,7 @@ from app.competitors import _price_text, error
 from app.dashboard import business_date_utc_bounds, business_day_bounds
 from app.database import get_db
 from app.models import ChangeEvent, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
+from app.operating_metrics import OPERATING_METRICS, load_operating_metrics
 
 
 router = APIRouter(prefix="/api/competitor-groups", tags=["group-detail"])
@@ -83,6 +84,8 @@ class ProductFactsResponse(BaseModel):
     last_collected_at: datetime | None
     latest_snapshot: LatestSnapshotResponse | None
     latest_change: ChangeResponse | None
+    latest_collection_run: dict[str, object] | None
+    operating_metrics: list[dict[str, object]]
 
 
 class ComparisonResponse(BaseModel):
@@ -193,6 +196,7 @@ class GroupDetailResponse(BaseModel):
     action_window: ActionWindowResponse
     position: dict[str, MetricPositionResponse]
     event_page: EventPageResponse
+    operating_metrics_coverage: dict[str, dict[str, int]]
 
 
 def _latest_snapshots(db: Session, competitor_ids: list[int]) -> dict[int, ProductSnapshot]:
@@ -544,6 +548,7 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
             skus_by_snapshot[sku.product_snapshot_id].append(sku)
 
     latest_changes = _latest_changes(db, member_ids)
+    operating_data = load_operating_metrics(db, member_ids)
     context = _event_context(db, members, group_id, str(days), "important", 20)
     today_context = {**context, "range": "today", "mode": "all", "start": (datetime.fromisoformat(context["end"]) - timedelta(days=1)).isoformat()}
     sku_names = {}
@@ -564,6 +569,9 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
             latest_changes.get(member.id),
             sku_names,
         )
+        facts_by_id[member.id].update(operating_data.get(member.id, {
+            "latest_collection_run": None, "operating_metrics": [],
+        }))
 
     own_facts = facts_by_id.get(own_member.id) if own_member is not None else None
     competitors = []
@@ -609,6 +617,17 @@ def _build_group_detail(db: Session, group_id: int, days: int) -> dict[str, obje
     return {
         "range_days": days,
         "position": _positions(([own_facts] if own_facts else []) + competitors),
+        "operating_metrics_coverage": {
+            key: {
+                "has_history_valid_values": sum(
+                    any(metric["metric_key"] == key and metric["latest_valid"] is not None
+                        for metric in operating_data.get(member.id, {}).get("operating_metrics", []))
+                    for member in members if member.is_active
+                ),
+                "active_offers": sum(member.is_active for member in members),
+            }
+            for key, _, _ in OPERATING_METRICS
+        },
         "event_page": event_page,
         "group": group,
         "own_product": own_facts,

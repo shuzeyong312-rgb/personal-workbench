@@ -6,7 +6,7 @@ export async function installApiMock(page: Page, options: { competitors: Competi
   let competitors = options.competitors;
   const groups = options.groups ?? [];
   let nextId = Math.max(0, ...competitors.map((competitor) => competitor.id)) + 1;
-  let batchStatus = options.batchStatus ?? { status: "idle", outcome_code: null, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, items: [] };
+  let batchStatus = options.batchStatus ?? { status: "idle", outcome_code: null, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, operating_metrics_counts: { not_attempted: 0, success: 0, partial: 0, no_values: 0, failed: 0, blocked: 0 }, items: [] };
   const responses: Record<string, unknown> = {
     "GET /api/dashboard/today": { date: "2026-09-28", stats: { monitored_competitors: 0, active_monitored_products: options.activeMonitoredProducts ?? 0, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] },
     "GET /api/dashboard/group-attention": { date: "2026-09-28", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] },
@@ -51,7 +51,7 @@ export async function installApiMock(page: Page, options: { competitors: Competi
       const body = request.postDataJSON() as { mode?: string; competitor_ids?: number[] };
       if (body.mode !== "all_active" || body.competitor_ids) { unexpected.push(`${key} ${JSON.stringify(body)}`); }
       const activeCount = options.activeMonitoredProducts ?? competitors.filter((competitor) => competitor.is_active).length;
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "completed", outcome_code: "completed", total: activeCount, completed: activeCount, succeeded: activeCount, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, items: [] }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "completed", outcome_code: "completed", total: activeCount, completed: activeCount, succeeded: activeCount, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, operating_metrics_counts: { not_attempted: 0, success: activeCount, partial: 0, no_values: 0, failed: 0, blocked: 0 }, items: [] }) });
       return;
     }
     const groupMatch = requestUrl.pathname.match(/^\/api\/competitors\/(\d+)\/group$/);

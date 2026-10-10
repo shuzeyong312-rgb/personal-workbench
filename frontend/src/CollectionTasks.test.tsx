@@ -58,9 +58,9 @@ test("batch details are collapsed by default and expand in Backend order", async
     await page.route("**/api/competitors/collect-batch/status", route => route.fulfill({ json: {
       ...idleBatchState, status: "completed", total: 3, completed: 3, succeeded: 1, failed: 1, remaining: 0, verification_required: 1,
       items: [
-        { competitor_id: 3, status: "success", outcome: "active", error_code: null, message: null },
-        { competitor_id: 2, status: "failed", outcome: null, error_code: "collection_timeout", message: "商品页面加载超时" },
-        { competitor_id: 1, status: "verification_required", outcome: null, error_code: "1688_verification_required", message: "需要完成验证" },
+        { competitor_id: 3, status: "success", outcome: "active", operating_metrics_status: "success", error_code: null, message: null },
+        { competitor_id: 2, status: "failed", outcome: null, operating_metrics_status: "not_attempted", error_code: "collection_timeout", message: "商品页面加载超时" },
+        { competitor_id: 1, status: "verification_required", outcome: null, operating_metrics_status: "blocked", error_code: "1688_verification_required", message: "需要完成验证" },
       ],
     } }));
     await open(page);
@@ -74,7 +74,7 @@ test("batch details are collapsed by default and expand in Backend order", async
       expect.stringContaining("固定竞品 02"),
       expect.stringContaining("搜索目标竞品 01"),
     ]);
-    await ui(page.getByText("采集成功 · 在售", { exact: true })).toBeVisible();
+    await ui(rows.nth(0)).toContainText("采集成功 · 在售");
     await ui(page.getByText("collection_timeout", { exact: true })).toBeVisible();
     await ui(page.getByText("1688_verification_required", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "收起本批次明细" }).click();

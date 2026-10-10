@@ -28,9 +28,9 @@ from app.collection.parser_1688 import (
     OfferIdMismatchError,
     normalize_main_image_url,
 )
-from app.collection.types import ProductData, SkuData
+from app.collection.types import CollectionPageResult, OperatingMetricData, ProductData, SkuData
 from app.changes import detect_changes
-from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, CollectionRun, Competitor, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
 from app.ownership import apply_collected_ownership
 from app.settings import competitor_monitoring_defaults
 
@@ -59,6 +59,7 @@ class BatchItemResult:
     error_code: str | None = None
     message: str | None = None
     outcome: str | None = None
+    operating_metrics_status: str = "not_attempted"
 
 
 class BatchRuntime:
@@ -73,6 +74,7 @@ class BatchRuntime:
         self.succeeded = 0
         self.failed = 0
         self.verification_required = 0
+        self.operating_metrics_counts = {key: 0 for key in ("not_attempted", "success", "partial", "no_values", "failed", "blocked")}
         self.current_competitor_id: int | None = None
         self.browser_open = False
         self.runner_active = False
@@ -108,6 +110,7 @@ class BatchRuntime:
             self.succeeded = 0
             self.failed = 0
             self.verification_required = 0
+            self.operating_metrics_counts = {key: 0 for key in self.operating_metrics_counts}
             self.current_competitor_id = None
             self.browser_open = False
             self.runner_active = True
@@ -244,6 +247,7 @@ class BatchRuntime:
                 self.verification_required += 1
             else:
                 self.failed += 1
+            self.operating_metrics_counts[result.operating_metrics_status] += 1
 
     def finish(self, outcome_code: str, *, status: str = "completed") -> None:
         with self._lock:
@@ -365,6 +369,7 @@ class BatchRuntime:
                 "failed": self.failed,
                 "remaining": max(self.total - self.completed, 0),
                 "verification_required": self.verification_required,
+                "operating_metrics_counts": dict(self.operating_metrics_counts),
                 "current_competitor_id": self.current_competitor_id,
                 "browser_open": self.browser_open,
                 "runner_active": self.runner_active,
@@ -379,6 +384,7 @@ class BatchRuntime:
                         "error_code": item.error_code,
                         "message": item.message,
                         "outcome": item.outcome,
+                        "operating_metrics_status": item.operating_metrics_status,
                     }
                     for item in self.items
                 ],
@@ -421,10 +427,11 @@ class CollectionPartialDataError(ValueError):
 
 
 class CollectionError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, operating_metrics_status: str = "not_attempted") -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.operating_metrics_status = operating_metrics_status
 
 
 @dataclass(frozen=True)
@@ -434,6 +441,19 @@ class CollectionResult:
     collection_run: CollectionRun
     sku_count: int
     outcome: str
+    operating_metrics_status: str = "not_attempted"
+    operating_metrics: list[OperatingMetricObservation] = field(default_factory=list)
+
+
+def operating_metrics_status(observations: list[OperatingMetricData]) -> str:
+    observed = sum(item.status == "observed" for item in observations)
+    if observed == 8:
+        return "success"
+    if observed:
+        return "partial"
+    if len(observations) == 8 and all(item.status == "placeholder" for item in observations):
+        return "no_values"
+    return "failed"
 
 
 def collection_failure_details(exc: BaseException) -> tuple[str, str]:
@@ -595,12 +615,14 @@ def _mark_failed(
     run_id: int,
     error_type: str,
     error_message: str,
+    operating_status: str = "not_attempted",
 ) -> None:
     db.rollback()
     run = db.scalar(select(CollectionRun).where(CollectionRun.id == run_id))
     if run is None:
         return
     run.status = "failed"
+    run.operating_metrics_status = operating_status
     run.finished_at = datetime.now(timezone.utc)
     run.error_type = error_type
     run.error_message = error_message
@@ -635,6 +657,7 @@ def collect_competitor(
             competitor_id=competitor.id,
             started_at=started_at,
             status="running",
+            operating_metrics_status="not_attempted",
         )
         db.add(run)
         try:
@@ -648,15 +671,31 @@ def collect_competitor(
         try:
             if on_external_access is not None:
                 on_external_access()
-            if browser_context is None:
-                product = collect_1688_product(competitor_url, competitor_offer_id)
-            else:
-                product = collect_1688_product(
-                    competitor_url,
-                    competitor_offer_id,
-                    context=browser_context,
+            page_result = (
+                collect_1688_product(competitor_url, competitor_offer_id)
+                if browser_context is None
+                else collect_1688_product(competitor_url, competitor_offer_id, context=browser_context)
+            )
+            if isinstance(page_result, ProductData):
+                page_result = CollectionPageResult(
+                    page_result.offer_id, page_result, None,
+                    [OperatingMetricData(key, "source_unavailable", None,
+                        "1688_official_procurement_assistant_top", competitor_offer_id,
+                        datetime.now(timezone.utc), "未提供经营指标读取结果")
+                     for key in ("listing_time", "monthly_deal", "monthly_dropship", "annual_units", "annual_orders", "review_count", "positive_rate", "pickup_rate")],
                 )
-            product = _normalize_product(product, competitor_offer_id)
+            if competitor.platform != "1688" or not isinstance(page_result, CollectionPageResult) or page_result.offer_id != competitor_offer_id:
+                raise OfferIdMismatchError("page Offer ID does not match the monitored Offer")
+            expected_keys = {"listing_time", "monthly_deal", "monthly_dropship", "annual_units", "annual_orders", "review_count", "positive_rate", "pickup_rate"}
+            if (
+                len(page_result.operating_metrics) != 8
+                or {item.metric_key for item in page_result.operating_metrics} != expected_keys
+                or any(item.offer_id != competitor_offer_id for item in page_result.operating_metrics)
+                or any(item.status not in {"observed", "placeholder", "loading", "source_unavailable", "read_failed"} for item in page_result.operating_metrics)
+            ):
+                raise OfferIdMismatchError("page metric identity or source could not be verified")
+            product = _normalize_product(page_result.product, competitor_offer_id) if page_result.product is not None else None
+            metrics_status = operating_metrics_status(page_result.operating_metrics)
         except OfflineProductDetected:
             try:
                 now = datetime.now(timezone.utc)
@@ -677,6 +716,7 @@ def collect_competitor(
                 competitor.last_collected_at = now
                 competitor.updated_at = now
                 run.status = "success"
+                run.operating_metrics_status = "not_attempted"
                 run.finished_at = now
                 run.error_type = None
                 run.error_message = None
@@ -690,11 +730,43 @@ def collect_competitor(
                 collection_run=run,
                 sku_count=0,
                 outcome="offline",
+                operating_metrics_status="not_attempted",
             )
         except Exception as exc:
             error_type, error_message = collection_failure_details(exc)
-            _mark_failed(db, run_id, error_type, error_message)
-            raise CollectionError(error_type, error_message) from exc
+            operating_status = "blocked" if isinstance(exc, (VerificationRequiredError, OfferIdMismatchError)) else "not_attempted"
+            _mark_failed(db, run_id, error_type, error_message, operating_status)
+            raise CollectionError(error_type, error_message, operating_status) from exc
+
+        metric_rows = [OperatingMetricObservation(
+            competitor_id=competitor_id_value,
+            collection_run_id=run_id,
+            platform="1688",
+            offer_id=item.offer_id,
+            metric_key=item.metric_key,
+            status=item.status,
+            raw_value=item.raw_value,
+            source=item.source,
+            observed_at=item.observed_at,
+            reason=item.reason,
+        ) for item in page_result.operating_metrics]
+
+        if product is None:
+            error_type, error_message = collection_failure_details(
+                page_result.product_error or CollectionParseError("product facts unavailable")
+            )
+            try:
+                db.add_all(metric_rows)
+                run.status = "failed"
+                run.operating_metrics_status = metrics_status
+                run.finished_at = datetime.now(timezone.utc)
+                run.error_type = error_type
+                run.error_message = error_message
+                db.commit()
+            except Exception as exc:
+                _mark_failed(db, run_id, "collection_save_failed", "采集结果保存失败", "failed")
+                raise CollectionError("collection_save_failed", "采集结果保存失败", "failed") from exc
+            raise CollectionError(error_type, error_message, metrics_status)
 
         try:
             previous = db.scalar(
@@ -729,6 +801,7 @@ def collect_competitor(
                 ],
             )
             db.add(snapshot)
+            db.add_all(metric_rows)
             db.flush()
 
             detected_at = datetime.now(timezone.utc)
@@ -773,13 +846,14 @@ def collect_competitor(
             apply_collected_ownership(db, competitor, product.shop_name)
 
             run.status = "success"
+            run.operating_metrics_status = metrics_status
             run.finished_at = now
             run.error_type = None
             run.error_message = None
             db.commit()
         except Exception as exc:
-            _mark_failed(db, run_id, "collection_save_failed", "采集结果保存失败")
-            raise CollectionError("collection_save_failed", "采集结果保存失败") from exc
+            _mark_failed(db, run_id, "collection_save_failed", "采集结果保存失败", "failed")
+            raise CollectionError("collection_save_failed", "采集结果保存失败", "failed") from exc
 
         return CollectionResult(
             competitor=competitor,
@@ -787,6 +861,8 @@ def collect_competitor(
             collection_run=run,
             sku_count=len(product.skus),
             outcome="active",
+            operating_metrics_status=metrics_status,
+            operating_metrics=metric_rows,
         )
     finally:
         COLLECTION_LOCK.release()
@@ -923,6 +999,7 @@ def run_batch_collection(
                                         status="verification_required",
                                         error_code=exc.code,
                                         message=exc.message,
+                                        operating_metrics_status="blocked",
                                     )
                                 )
                                 runtime.mark_verification()
@@ -960,9 +1037,10 @@ def run_batch_collection(
                                 move_context_offscreen(context)
                             retry_current = True
                             continue
-                        runtime.record(
-                            _batch_error_item(competitor_id, exc.code, exc.message)
-                        )
+                        runtime.record(BatchItemResult(
+                            competitor_id, "failed", exc.code, exc.message,
+                            operating_metrics_status=exc.operating_metrics_status,
+                        ))
                     except CompetitorNotFoundError:
                         runtime.record(
                             _batch_error_item(competitor_id, "competitor_not_found", "竞品不存在")
@@ -977,6 +1055,7 @@ def run_batch_collection(
                                 competitor_id,
                                 "success",
                                 outcome=getattr(collection_result, "outcome", None),
+                                operating_metrics_status=getattr(collection_result, "operating_metrics_status", "not_attempted"),
                             )
                         )
                     finally:
@@ -1019,11 +1098,15 @@ def run_batch_collection(
             runtime.finish("collect_failed")
         elif snapshot["status"] in {"running", "pausing", "paused", "resting", "cooling_down"} and snapshot["remaining"] == 0:
             runtime.finish(
-                "partial_failure" if runtime.has_failures() else "success"
+                "partial_failure" if runtime.has_failures() else "partial_success" if any(
+                    item.operating_metrics_status != "success" for item in runtime.items
+                ) else "success"
             )
         elif runtime.is_running():
             runtime.finish(
-                "partial_failure" if runtime.has_failures() else "success"
+                "partial_failure" if runtime.has_failures() else "partial_success" if any(
+                    item.operating_metrics_status != "success" for item in runtime.items
+                ) else "success"
             )
         if lock_acquired:
             COLLECTION_LOCK.release()

@@ -455,6 +455,17 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .position-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .position-facts dt { font-size: 10px; color: #7484a3; }
 .position-facts dd { margin: 4px 0 0; color: #355d9a; font-weight: 600; font-size: 13px; }
+.operating-metrics-panel { height: auto; min-height: 0; margin-bottom: 14px; }
+.operating-metric-group h3 { margin: 10px 0 6px; color: #526785; font-size: 12px; }
+.operating-metric-group dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 0; }
+.operating-metric-group dl > div { min-width: 0; padding: 8px 10px; border-radius: 8px; background: #f7f9fc; }
+.operating-metric-group dt { color: #6d7f99; font-size: 11px; }
+.operating-metric-group dd { display: grid; gap: 3px; margin: 3px 0 0; color: #2f4668; font-size: 12px; overflow-wrap: anywhere; }
+.operating-metric-group dd small, .operating-run-status { color: #8291a7; font-size: 10px; font-weight: 400; }
+.operating-metric-group dd strong { font-size: 13px; }
+.operating-run-status { margin: 0 0 8px; }
+.position-metric-raw { color: #3d5e8c; font-size: 12px; white-space: nowrap; }
+@media (max-width: 680px) { .operating-metric-group dl { grid-template-columns: 1fr; } }
 .position-event-list { list-style: none; margin: 0; padding: 0 14px; display: grid; gap: 8px; }
 .position-event-list li { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; padding: 12px; border: 1px solid #e8edf7; border-radius: 8px; font-size: 11px; overflow-wrap: anywhere; }
 .position-event-list li.important { background: #f7f9ff; color: #405f94; }
@@ -524,3 +535,4 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .collection-overview-actions .collection-end-button:active:not(:disabled) { box-shadow: inset 0 1px 3px rgba(45, 63, 94, .12); transform: translateY(0); }
 .collection-overview-actions .collection-pause-button:focus-visible,
 .collection-overview-actions .collection-end-button:focus-visible { outline: 2px solid #7ba9e8; outline-offset: 2px; }
+.collection-runs-table td:nth-child(3) { white-space: nowrap; }

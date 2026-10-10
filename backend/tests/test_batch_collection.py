@@ -45,12 +45,15 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
 
     app.dependency_overrides[get_db] = override_get_db
     BATCH_RUNTIME.finish("success")
-    with TestClient(app) as test_client:
+    test_client = TestClient(app)
+    try:
         yield test_client, session_factory
-    BATCH_RUNTIME.request_stop()
-    BATCH_RUNTIME.mark_runner_stopped()
-    app.dependency_overrides.clear()
-    engine.dispose()
+    finally:
+        test_client.close()
+        BATCH_RUNTIME.request_stop()
+        BATCH_RUNTIME.mark_runner_stopped()
+        app.dependency_overrides.clear()
+        engine.dispose()
 
 
 def add_competitor(session_factory: sessionmaker[Session], competitor_id: int | None = None, active: bool = True) -> int:
@@ -190,6 +193,89 @@ def test_pause_and_resume_batch_endpoints_return_authoritative_status(
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "running"
     BATCH_RUNTIME.finish("success")
+
+
+def test_batch_counts_each_terminal_item_in_its_operating_metrics_status():
+    statuses = ("not_attempted", "success", "partial", "no_values", "failed", "blocked")
+    runtime = BatchRuntime()
+    runtime.reserve(list(range(1, len(statuses) + 1)))
+    for competitor_id, operating_status in enumerate(statuses, 1):
+        runtime.record(BatchItemResult(competitor_id, "success", operating_metrics_status=operating_status))
+
+    snapshot = runtime.snapshot()
+    assert snapshot["completed"] == len(statuses)
+    assert sum(snapshot["operating_metrics_counts"].values()) == snapshot["completed"]
+    assert snapshot["operating_metrics_counts"] == {status: 1 for status in statuses}
+
+
+@pytest.mark.parametrize("operating_status", ["partial", "no_values"])
+def test_batch_partial_success_when_base_collection_succeeds(
+    client: tuple[TestClient, sessionmaker[Session]], operating_status: str,
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    runtime.reserve([competitor_id])
+    result = SimpleNamespace(outcome="active", operating_metrics_status=operating_status)
+
+    def collect(_db: Session, _competitor_id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        return result
+
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(FakeContext())), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect):
+        run_batch_collection(client[1], [competitor_id], runtime, config=_test_config(item_interval_seconds=0, batch_rest_seconds=0))
+
+    snapshot = runtime.snapshot()
+    assert snapshot["status"] == "completed"
+    assert snapshot["outcome_code"] == "partial_success"
+
+
+def test_five_successful_base_items_with_mixed_operating_status_finish_partial_success(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_ids = [add_competitor(client[1], competitor_id) for competitor_id in range(1, 6)]
+    statuses = ["success", "success", "partial", "partial", "failed"]
+    runtime = BatchRuntime()
+    runtime.reserve(competitor_ids)
+
+    def collect(_db: Session, competitor_id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        return SimpleNamespace(outcome="active", operating_metrics_status=statuses[competitor_id - 1])
+
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(FakeContext())), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect):
+        run_batch_collection(client[1], competitor_ids, runtime, config=_test_config(item_interval_seconds=0, batch_rest_seconds=0))
+
+    snapshot = runtime.snapshot()
+    assert snapshot["succeeded"] == 5
+    assert snapshot["failed"] == 0
+    assert snapshot["operating_metrics_counts"] == {
+        "not_attempted": 0, "success": 2, "partial": 2, "no_values": 0, "failed": 1, "blocked": 0,
+    }
+    assert snapshot["outcome_code"] == "partial_success"
+
+
+def test_batch_base_failure_takes_priority_over_partial_operating_metrics(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    runtime.reserve([competitor_id])
+
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(FakeContext())), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=CollectionError(
+            "collection_failed", "基础采集失败", operating_metrics_status="partial"
+        )):
+        run_batch_collection(client[1], [competitor_id], runtime, config=_test_config(item_interval_seconds=0, batch_rest_seconds=0))
+
+    snapshot = runtime.snapshot()
+    assert snapshot["status"] == "completed"
+    assert snapshot["outcome_code"] == "partial_failure"
 
 
 def test_end_batch_endpoint_requests_safe_shutdown(
@@ -434,6 +520,30 @@ def test_batch_success_marks_each_saved_product_active(
         } == {"active"}
 
 
+def test_batch_keeps_operating_status_when_commit_expires_run_orm_fields(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    client[1].configure(expire_on_commit=True)
+    runtime = BatchRuntime()
+    runtime.reserve([competitor_id])
+    playwright = FakePlaywright(FakeContext())
+
+    try:
+        with patch("app.collection.service.sync_playwright", return_value=playwright), patch(
+            "app.collection.service.move_context_offscreen"
+        ), patch("app.collection.service.collect_1688_product", return_value=_collected_product("1000000000001")):
+            run_batch_collection(client[1], [competitor_id], runtime)
+    finally:
+        client[1].configure(expire_on_commit=False)
+
+    snapshot = runtime.snapshot()
+    assert snapshot["status"] == "completed"
+    assert snapshot["completed"] == 1
+    assert snapshot["items"][0]["status"] == "success"
+    assert snapshot["items"][0]["operating_metrics_status"] == "failed"
+
+
 def test_verification_closes_context_and_enters_cooldown_without_completing_current_item(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
@@ -529,6 +639,7 @@ def test_second_verification_enters_second_cooldown_and_final_verification_is_ma
             "error_code": "1688_verification_required",
             "message": "需要验证 3",
             "outcome": None,
+            "operating_metrics_status": "blocked",
         }
     ]
     assert collect.call_count == 3

@@ -137,6 +137,10 @@ class CollectionRun(Base):
             "status IN ('running', 'success', 'failed')",
             name="ck_collection_runs_status",
         ),
+        CheckConstraint(
+            "operating_metrics_status IN ('not_attempted', 'success', 'partial', 'no_values', 'failed', 'blocked')",
+            name="ck_collection_runs_operating_metrics_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -144,8 +148,47 @@ class CollectionRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    operating_metrics_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="not_attempted", server_default="not_attempted"
+    )
     error_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+
+class OperatingMetricObservation(Base):
+    __tablename__ = "operating_metric_observations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('observed', 'placeholder', 'loading', 'source_unavailable', 'read_failed')",
+            name="ck_operating_metric_observations_status",
+        ),
+        CheckConstraint(
+            "metric_key IN ('listing_time', 'monthly_deal', 'monthly_dropship', 'annual_units', 'annual_orders', 'review_count', 'positive_rate', 'pickup_rate')",
+            name="ck_operating_metric_observations_metric_key",
+        ),
+        CheckConstraint(
+            "(status IN ('observed', 'placeholder') AND raw_value IS NOT NULL AND raw_value != '') OR "
+            "(status IN ('loading', 'source_unavailable', 'read_failed') AND raw_value IS NULL)",
+            name="ck_operating_metric_observations_raw_value",
+        ),
+        UniqueConstraint("collection_run_id", "metric_key", name="uq_operating_metric_run_key"),
+        Index(
+            "ix_operating_metric_competitor_key_time_id",
+            "competitor_id", "metric_key", "observed_at", "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    competitor_id: Mapped[int] = mapped_column(ForeignKey("competitors.id"), nullable=False)
+    collection_run_id: Mapped[int] = mapped_column(ForeignKey("collection_runs.id"), nullable=False)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    offer_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    raw_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source: Mapped[str] = mapped_column(String(128), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
 class ChangeEvent(Base):

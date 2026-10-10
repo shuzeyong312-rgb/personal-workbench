@@ -33,7 +33,8 @@ def test_scheduler_starts_reserved_batch_runner(monkeypatch: pytest.MonkeyPatch)
     assert started[0][1]["batch_reservation"] == 3
 
 
-def test_scheduler_stop_wakes_wait() -> None:
+def test_scheduler_stop_wakes_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "prepare_auto_batch", lambda *_args, **_kwargs: None)
     async def run() -> None:
         stop = asyncio.Event(); thread = Event(); task = asyncio.create_task(main._daily_collection_loop(stop, thread))
         await asyncio.sleep(0); stop.set(); thread.set(); await asyncio.wait_for(task, .1)

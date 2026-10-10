@@ -15,6 +15,8 @@ from app.collection.collector_1688 import (
     _is_verification_page,
     collect_1688_product,
     collect_1688_product_in_context,
+    _ASSISTANT_HEADER,
+    _METRIC_LABELS,
 )
 from app.collection.parser_1688 import (
     CollectionParseError,
@@ -112,6 +114,42 @@ class FakeContext:
         self.closed = True
 
 
+class AssistantLocator:
+    def __init__(self, page: "AssistantPage", depth: int = 0):
+        self.page = page
+        self.depth = depth
+
+    def is_visible(self) -> bool:
+        return True
+
+    def evaluate(self, _script: str):
+        return [{"depth": 1, "text": self.page.assistant_text}] if self.page.assistant_visible else []
+
+    def locator(self, _selector: str):
+        return AssistantLocator(self.page, self.depth + 1)
+
+    def inner_text(self) -> str:
+        if self.page.assistant_read_error:
+            raise PlaywrightError("assistant read failed")
+        return self.page.assistant_text
+
+
+class AssistantMatches(list):
+    def all(self):
+        return self
+
+
+class AssistantPage(FakePage):
+    def __init__(self, html: str, assistant_text: str, *, visible: bool = True):
+        super().__init__(html)
+        self.assistant_text = assistant_text
+        self.assistant_visible = visible
+        self.assistant_read_error = False
+
+    def get_by_text(self, text: str, exact: bool = False):
+        return AssistantMatches([AssistantLocator(self)] if exact and text == _ASSISTANT_HEADER and self.assistant_visible else [])
+
+
 class FakePlaywright:
     def __init__(self, context: FakeContext):
         self.context = context
@@ -145,6 +183,8 @@ class LifecyclePage(FakePage):
     def goto(self, url: str, **kwargs):
         self.goto_urls.append(url)
         self.url = url
+        offer_id = url.rsplit("/", 1)[-1].split(".", 1)[0]
+        self.html = f'<script>{{"offerId":"{offer_id}"}}</script>'
         return super().goto(url, **kwargs)
 
     def close(self) -> None:
@@ -373,7 +413,7 @@ def test_collects_html_and_passes_expected_offer_id() -> None:
         "user_data_dir": str(Path(__file__).resolve().parents[2] / ".browser-profile"),
         "channel": "chrome",
         "headless": False,
-        "ignore_default_args": ["--no-sandbox"],
+        "ignore_default_args": ["--no-sandbox", "--disable-extensions"],
     }
     assert page.goto_args == (
         PRODUCT_URL,
@@ -441,12 +481,15 @@ def test_normal_product_text_containing_verification_word_reaches_parser() -> No
 
 
 def test_parser_exception_keeps_original_semantics_and_closes_resources() -> None:
-    page = FakePage((FIXTURES / "malformed_product.html").read_text(encoding="utf-8"))
+    page = FakePage((FIXTURES / "malformed_product.html").read_text(encoding="utf-8"), url="https://detail.1688.com/offer/3000000000000.html")
     playwright, context = fake_runtime(page)
 
     with patch("app.collection.collector_1688.sync_playwright", return_value=playwright):
-        with pytest.raises(CollectionParseError, match="missing required product fields"):
-            collect_1688_product(PRODUCT_URL, "3000000000000")
+        result = collect_1688_product(PRODUCT_URL, "3000000000000")
+
+    assert result.product is None
+    assert isinstance(result.product_error, CollectionParseError)
+    assert "missing required product fields" in str(result.product_error)
 
     assert page.closed and context.closed and playwright.stopped
 
@@ -460,3 +503,48 @@ def test_offer_id_mismatch_exception_keeps_original_semantics() -> None:
             collect_1688_product(PRODUCT_URL, "other-offer")
 
     assert page.closed and context.closed and playwright.stopped
+
+
+def test_same_page_reads_all_eight_official_assistant_values_from_sanitized_fixture() -> None:
+    html = (FIXTURES / "operating_metrics_page.html").read_text(encoding="utf-8")
+    values = ["2026-09-07", "100+", "<10", "100+", "60+", "2", "100%", "96%"]
+    page = AssistantPage(html, " ".join([_ASSISTANT_HEADER, *sum(([label, value] for label, value in zip(_METRIC_LABELS.values(), values)), [])]))
+    result = collect_1688_product_in_context(FakeContext(page), PRODUCT_URL, "1081895898799")
+
+    assert page.goto_args[0] == PRODUCT_URL
+    assert result.product is not None
+    assert [item.raw_value for item in result.operating_metrics] == values
+    assert {item.status for item in result.operating_metrics} == {"observed"}
+    assert {item.offer_id for item in result.operating_metrics} == {"1081895898799"}
+    assert {item.source for item in result.operating_metrics} == {"1688_official_procurement_assistant_top"}
+    assert all(item.observed_at.tzinfo is not None for item in result.operating_metrics)
+
+
+def test_assistant_placeholder_and_unavailable_fields_remain_distinct() -> None:
+    html = (FIXTURES / "operating_metrics_page.html").read_text(encoding="utf-8")
+    values = ["2026-09-07", "-", "<10", "100+", "60+", "2", "-", "96%"]
+    page = AssistantPage(html, " ".join([_ASSISTANT_HEADER, *sum(([label, value] for label, value in zip(_METRIC_LABELS.values(), values)), [])]))
+    result = collect_1688_product_in_context(FakeContext(page), PRODUCT_URL, "1081895898799")
+    assert result.operating_metrics[1].status == "placeholder"
+    assert result.operating_metrics[1].raw_value == "-"
+    assert result.operating_metrics[6].status == "placeholder"
+    page.assistant_visible = False
+    missing = collect_1688_product_in_context(FakeContext(page), PRODUCT_URL, "1081895898799")
+    assert {item.status for item in missing.operating_metrics} == {"source_unavailable"}
+
+
+def test_assistant_read_failure_and_ambiguous_labels_are_field_read_failures() -> None:
+    html = (FIXTURES / "operating_metrics_page.html").read_text(encoding="utf-8")
+    values = ["2026-09-07", "20+", "<10", "20+", "10+", "1", "100%", "100%"]
+    text = " ".join([_ASSISTANT_HEADER, *sum(([label, value] for label, value in zip(_METRIC_LABELS.values(), values)), [])])
+    page = AssistantPage(html, text)
+    page.assistant_read_error = True
+    failed_read = collect_1688_product_in_context(FakeContext(page), PRODUCT_URL, "1081895898799")
+    assert {item.status for item in failed_read.operating_metrics} == {"read_failed"}
+
+    page = AssistantPage(html, text + " 月成交 30+")
+    ambiguous = collect_1688_product_in_context(FakeContext(page), PRODUCT_URL, "1081895898799")
+    monthly_deal = next(item for item in ambiguous.operating_metrics if item.metric_key == "monthly_deal")
+    assert monthly_deal.status == "read_failed"
+    assert "重复字段标签" in (monthly_deal.reason or "")
+    assert all(item.status == "observed" for item in ambiguous.operating_metrics if item.metric_key != "monthly_deal")

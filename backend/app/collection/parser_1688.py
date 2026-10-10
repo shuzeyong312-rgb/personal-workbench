@@ -65,6 +65,11 @@ def _offer_id(values: list[Any]) -> str | None:
     return None
 
 
+def parse_1688_offer_id(html: str) -> str | None:
+    """Read the page's embedded Offer identity independently of product fields."""
+    return _offer_id(_embedded_values(html, "offerId"))
+
+
 def _text_value(values: list[Any]) -> str | None:
     for value in values:
         if isinstance(value, str) and value.strip():
@@ -259,7 +264,7 @@ def _sku_id(value: Any) -> str | None:
 
 def parse_1688_html(html: str, expected_offer_id: str | None = None) -> ProductData:
     """Parse only HTML/embedded JSON into the internal collection contract."""
-    offer_id = _offer_id(_embedded_values(html, "offerId"))
+    offer_id = parse_1688_offer_id(html)
     if not offer_id:
         raise CollectionParseError("missing or invalid offer_id")
     if expected_offer_id is not None and offer_id != str(expected_offer_id):

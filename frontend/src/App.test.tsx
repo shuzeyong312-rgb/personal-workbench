@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { expect, test, vi } from "vitest";
 
-import { competitorPageSize, getBatchRefreshNotice, paginateCompetitors, updatePageSelection } from "./App";
+import { competitorPageSize, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, updatePageSelection } from "./App";
 import { CurrentBatchCard } from "./App";
 
 import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
@@ -91,6 +91,7 @@ const makeBatchState = (status: BatchState["status"], overrides: Partial<BatchSt
   failed: 0,
   remaining: 1,
   verification_required: 0,
+  operating_metrics_counts: { not_attempted: 0, success: 0, partial: 0, no_values: 0, failed: 0, blocked: 0 },
   current_competitor_id: 1,
   browser_open: status === "running",
   runner_active: status === "running" || status === "cooling_down",
@@ -1221,6 +1222,16 @@ test("keeps collection task labels in user-facing language", () => {
   expect(html).not.toMatch(/BatchRuntime|Runtime|持久化|单商品采集尝试/);
 });
 
+test("formats the independent base and operating statuses for collection records", () => {
+  expect(formatCollectionRunStatus("success", "success")).toBe("成功 · 经营成功");
+  expect(formatCollectionRunStatus("success", "partial")).toBe("成功 · 经营部分成功");
+  expect(formatCollectionRunStatus("success", "no_values")).toBe("成功 · 经营页面暂无值");
+  expect(formatCollectionRunStatus("success", "failed")).toBe("成功 · 经营失败");
+  expect(formatCollectionRunStatus("success", "blocked")).toBe("成功 · 经营已阻止");
+  expect(formatCollectionRunStatus("success", "not_attempted")).toBe("成功 · 经营未尝试");
+  expect(formatCollectionRunStatus("failed", undefined)).toBe("失败 · 经营未采集");
+});
+
 test.each([
   [{ price_min: null, price_max: null }, "暂无价格"],
   [{ price_min: "39.00", price_max: "39.00" }, "¥39.00"],
@@ -1298,7 +1309,7 @@ test("renders competitive workbench states and truthful pending analysis", () =>
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={null} status="loading" />)).toContain("正在加载组分析");
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={null} status="error" error="竞品组不存在" />)).toContain("竞品组不存在");
   const html = renderToStaticMarkup(<GroupDetailPage {...props} />);
-  for (const text of ["组内经营景气信号", "评分规则未冻结", "竞品成交与增长数据覆盖", "当前经营决策提示", "仅监控样本，非实时报价", "排名覆盖：", "经营表现", "口碑履约", "平台标签", "待接入", "证据不足", "MOQ ↑", "aria-sort=\"ascending\"", "筛选不改变全组排名", "可查看全部变化", "自有商品", "商品速览", "查看详情"]) expect(html).toContain(text);
+  for (const text of ["组内经营景气信号", "评分规则未冻结", "经营字段历史有效值", "当前经营决策提示", "仅监控样本，非实时报价", "排名覆盖：", "经营表现", "口碑履约", "平台标签", "待接入", "证据不足", "MOQ ↑", "aria-sort=\"ascending\"", "筛选不改变全组排名", "可查看全部变化", "自有商品", "商品速览", "查看详情"]) expect(html).toContain(text);
   expect(html.match(/class=\"position-row-actions\"><button class=\"detail-button\">查看详情<\/button><\/div>/g)).toHaveLength(groupDetailData.competitors.length + 1);
   expect(html).toContain("平台标签 <small class=\"position-tag-pending\">待接入</small>");
   expect(html.match(/role=\"tab\"/g)).toHaveLength(3);
@@ -1696,6 +1707,42 @@ test("renders detail overview, mapped group, inactive status and latest sku null
   expect(html).toContain("—");
 });
 
+test("single-product detail renders original operating metric values and missing states", () => {
+  const source = "1688_official_procurement_assistant_top";
+  const definitions = [
+    ["listing_time", "上架时间", "经营表现", "observed", "2025-01-02"],
+    ["monthly_deal", "月成交", "经营表现", "observed", "20+"],
+    ["monthly_dropship", "月代销", "经营表现", "placeholder", "-"],
+    ["annual_units", "年成交件数", "经营表现", "loading", null],
+    ["annual_orders", "年成交笔数", "经营表现", "source_unavailable", null],
+    ["review_count", "评论数", "口碑履约", "read_failed", null],
+    ["positive_rate", "好评率", "口碑履约", "observed", "95.6%"],
+    ["pickup_rate", "揽收率", "口碑履约", "placeholder", "-"],
+  ] as const;
+  const operatingMetrics = definitions.map(([metric_key, label, section, status, raw_value], index) => ({
+    metric_key, label, section, eligible: true, status,
+    latest_attempt: { collection_run_id: 9, status, raw_value, source, observed_at: `2026-10-10T0${index}:00:00Z`, reason: status === "observed" || status === "placeholder" ? null : "脱敏 Fixture 状态" },
+    latest_valid: status === "observed" ? { collection_run_id: 9, raw_value: raw_value!, source, observed_at: `2026-10-10T0${index}:00:00Z` } : null,
+  }));
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={{
+    ...detailData,
+    latest_collection_run: { id: 9, started_at: "2026-10-10T00:00:00Z", finished_at: "2026-10-10T00:08:00Z", status: "success", operating_metrics_status: "partial", error_type: null, error_message: null },
+    operating_metrics: [...operatingMetrics, { metric_key: "favorite_count", label: "收藏数", section: "口碑履约", eligible: false, status: "not_attempted", latest_attempt: null, latest_valid: null }],
+  }} status="ready" error={null} />);
+
+  for (const [, label] of definitions) expect(html).toContain(label);
+  for (const [, , , status, rawValue] of definitions) if (status === "observed" && rawValue) expect(html).toContain(rawValue);
+  expect(html).toContain("经营采集：部分成功");
+  expect(html).toContain("有效值来源：1688 官方采购助手顶部区域");
+  expect(html).toContain("有效值时间：");
+  expect(html).toContain("页面显示占位符（-）");
+  expect(html).toContain("仍在加载");
+  expect(html).toContain("来源不可用");
+  expect(html).toContain("读取失败");
+  expect(html).toContain("收藏数");
+  expect(html).toContain("待接入");
+});
+
 test("renders monitored offline notice and lifecycle recent change", () => {
   const html = renderToStaticMarkup(
     <DetailPage
@@ -1719,11 +1766,20 @@ test("renders monitored offline notice and lifecycle recent change", () => {
 test("keeps detail history cards and their scoped scroll containers", () => {
   const data = { ...detailData, recent_changes: [{ ...latestChange({ change_type: "stock_changed", entity_key: "6298697170559", old_value: "998", new_value: "994" }), sku_name: "粉色>A19" }] };
   const html = renderToStaticMarkup(<DetailPage {...detailProps} data={data} status="ready" error={null} />);
-  expect((html.match(/detail-section-card/g) || []).length).toBe(3);
+  expect((html.match(/detail-section-card/g) || []).length).toBe(4);
   expect((html.match(/detail-table-scroll/g) || []).length).toBe(2);
   expect(html).toContain("detail-record-list");
   expect(html).toContain("粉色&gt;A19 · 库存 998 → 994");
   expect(html).not.toContain("onWheel");
+});
+
+test("detail collection history shows operating status and legacy runs as not collected", () => {
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, recent_collection_runs: [
+    { id: 8, started_at: "2026-10-10T00:00:00Z", finished_at: "2026-10-10T00:00:02Z", status: "success", operating_metrics_status: "partial", error_type: null, error_message: null },
+    { id: 7, started_at: "2026-10-09T00:00:00Z", finished_at: "2026-10-09T00:00:02Z", status: "failed", error_type: "collection_timeout", error_message: "请求超时" },
+  ] }} status="ready" error={null} />);
+  expect(html).toContain("成功 · 经营部分成功");
+  expect(html).toContain("失败 · 经营未采集");
 });
 
 test("detail keeps status in the summary and exposes group assignment", () => {

@@ -13,6 +13,7 @@ from app.competitors import _price_text, error
 from app.dashboard import business_date_for_utc, business_date_utc_bounds, business_day_bounds
 from app.database import get_db
 from app.models import ChangeEvent, CollectionRun, Competitor, ProductSnapshot, SkuSnapshot
+from app.operating_metrics import load_operating_metrics
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitor-detail"])
@@ -82,6 +83,7 @@ class DetailCollectionRunResponse(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     status: str
+    operating_metrics_status: str
     error_type: str | None
     error_message: str | None
 
@@ -95,6 +97,8 @@ class CompetitorDetailResponse(BaseModel):
     daily_trend: list[DailyTrendResponse]
     recent_changes: list[DetailChangeResponse]
     recent_collection_runs: list[DetailCollectionRunResponse]
+    latest_collection_run: dict[str, object] | None
+    operating_metrics: list[dict[str, object]]
 
 
 def calculate_total_stock(skus: Sequence[SkuSnapshot]) -> int | None:
@@ -279,6 +283,11 @@ def get_competitor_detail(
             .limit(20)
         ).all()
     )
+    operating_data = load_operating_metrics(
+        db,
+        [competitor_id],
+        latest_runs={competitor_id: collection_runs[0] if collection_runs else None},
+    )[competitor_id]
     change_sku_names = _change_sku_names(db, competitor_id, changes)
 
     daily_trend = []
@@ -331,4 +340,5 @@ def get_competitor_detail(
         "daily_trend": daily_trend,
         "recent_changes": [_change_response(change, change_sku_names) for change in changes],
         "recent_collection_runs": collection_runs,
+        **operating_data,
     }

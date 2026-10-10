@@ -25,6 +25,7 @@ class CollectionRunItemResponse(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     status: str
+    operating_metrics_status: str
     error_type: str | None
     error_message: str | None
     duration_seconds: float | None
@@ -86,6 +87,7 @@ def list_collection_runs(
                 started_at=run.started_at,
                 finished_at=run.finished_at,
                 status=run.status,
+                operating_metrics_status=run.operating_metrics_status,
                 error_type=run.error_type,
                 error_message=run.error_message,
                 duration_seconds=_duration_seconds(run),

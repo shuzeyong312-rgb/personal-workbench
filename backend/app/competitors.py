@@ -24,7 +24,7 @@ from app.collection.service import (
     start_batch_task,
 )
 from app.database import get_db
-from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
 from app.ownership import get_own_shop_name, identify_ownership
 from app.settings import batch_config_values, get_competitor_monitoring_settings
 
@@ -152,6 +152,7 @@ class CollectionRunResponse(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     status: str
+    operating_metrics_status: str
     error_type: str | None
     error_message: str | None
 
@@ -174,6 +175,7 @@ class BatchItemResponse(BaseModel):
     error_code: str | None
     message: str | None
     outcome: Literal["active", "offline"] | None
+    operating_metrics_status: Literal["not_attempted", "success", "partial", "no_values", "failed", "blocked"]
 
 
 class BatchStatusResponse(BaseModel):
@@ -185,6 +187,7 @@ class BatchStatusResponse(BaseModel):
     failed: int
     remaining: int
     verification_required: int
+    operating_metrics_counts: dict[str, int]
     current_competitor_id: int | None
     browser_open: bool
     runner_active: bool
@@ -420,6 +423,7 @@ def _collection_run_payload(result: CollectionResult) -> dict[str, object]:
         "started_at": run.started_at,
         "finished_at": run.finished_at,
         "status": run.status,
+        "operating_metrics_status": run.operating_metrics_status,
         "error_type": run.error_type,
         "error_message": run.error_message,
     }
@@ -867,6 +871,7 @@ def _delete_competitor_history(db: Session, competitors: list[Competitor]) -> No
     competitor_ids = [competitor.id for competitor in competitors]
     snapshot_ids = select(ProductSnapshot.id).where(ProductSnapshot.competitor_id.in_(competitor_ids))
     db.execute(delete(ChangeEvent).where(ChangeEvent.competitor_id.in_(competitor_ids)))
+    db.execute(delete(OperatingMetricObservation).where(OperatingMetricObservation.competitor_id.in_(competitor_ids)))
     db.execute(delete(CollectionRun).where(CollectionRun.competitor_id.in_(competitor_ids)))
     db.execute(delete(SkuSnapshot).where(SkuSnapshot.product_snapshot_id.in_(snapshot_ids)))
     db.execute(delete(ProductSnapshot).where(ProductSnapshot.competitor_id.in_(competitor_ids)))

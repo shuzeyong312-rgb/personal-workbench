@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import get_db
 from app.main import app
 from app.dashboard import business_date_utc_bounds, business_day_bounds
-from app.models import Base, ChangeEvent, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
+from app.models import Base, ChangeEvent, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
 
 
 @pytest.fixture()
@@ -29,10 +29,13 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
+    test_client = TestClient(app)
+    try:
         yield test_client, session_factory
-    app.dependency_overrides.clear()
-    engine.dispose()
+    finally:
+        test_client.close()
+        app.dependency_overrides.clear()
+        engine.dispose()
 
 
 def test_missing_group_returns_stable_error(
@@ -68,6 +71,65 @@ def test_unbound_group_returns_empty_real_facts_and_default_range(
     }
     assert body["today"]["events"] == []
     assert body["action_window"]["days"] == 7
+
+
+def test_operating_metrics_coverage_counts_active_offers_including_own_and_offline(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    with client[1]() as session:
+        group = add_group(session)
+        own = add_member(session, group.id, "101", role="own", active=True)
+        offline = add_member(session, group.id, "102", active=True, status="offline")
+        stopped = add_member(session, group.id, "103", active=False)
+        run = CollectionRun(
+            competitor_id=offline.id,
+            started_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+            status="success",
+            operating_metrics_status="success",
+        )
+        session.add(run)
+        session.flush()
+        session.add(OperatingMetricObservation(
+            competitor_id=offline.id, collection_run_id=run.id, platform="1688", offer_id=offline.offer_id,
+            metric_key="monthly_deal", status="observed", raw_value="20+",
+            source="1688_official_procurement_assistant_top", observed_at=run.started_at,
+        ))
+        session.commit()
+
+    body = client[0].get(f"/api/competitor-groups/{group.id}/detail").json()
+    assert body["operating_metrics_coverage"]["monthly_deal"] == {"has_history_valid_values": 1, "active_offers": 2}
+    offline_facts = next(item for item in body["competitors"] if item["id"] == offline.id)
+    metric = next(item for item in offline_facts["operating_metrics"] if item["metric_key"] == "monthly_deal")
+    assert metric["latest_valid"]["raw_value"] == "20+"
+    assert own.id == body["own_product"]["id"]
+    assert next(member for member in body["competitors"] if member["id"] == stopped.id)["is_active"] is False
+
+
+def test_operating_metrics_queries_are_bounded_for_many_group_members(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    with client[1]() as session:
+        group = add_group(session)
+        members = [add_member(session, group.id, str(200 + index)) for index in range(30)]
+        session.commit()
+
+    engine = client[1].kw["bind"]
+    metric_queries: list[str] = []
+
+    def count_metric_queries(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if "operating_metric_observations" in statement.lower():
+            metric_queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count_metric_queries)
+    try:
+        response = client[0].get(f"/api/competitor-groups/{group.id}/detail")
+    finally:
+        event.remove(engine, "before_cursor_execute", count_metric_queries)
+
+    assert response.status_code == 200
+    assert len(response.json()["competitors"]) == len(members)
+    assert len(metric_queries) == 2
 
 
 @pytest.mark.parametrize("days", [0, 8, 14, 31])

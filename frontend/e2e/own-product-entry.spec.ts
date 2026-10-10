@@ -58,7 +58,7 @@ test("adds competitor from Dashboard and keeps it in the competitor list", async
 });
 
 test("pauses and resumes collection from the Dashboard overview", async ({ page }) => {
-  const mock = await installApiMock(page, { competitors: [], batchStatus: { status: "running", outcome_code: null, total: 2, completed: 0, succeeded: 0, failed: 0, remaining: 2, verification_required: 0, current_competitor_id: null, browser_open: true, runner_active: true, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, items: [] } });
+  const mock = await installApiMock(page, { competitors: [], batchStatus: { status: "running", outcome_code: null, total: 2, completed: 0, succeeded: 0, failed: 0, remaining: 2, verification_required: 0, current_competitor_id: null, browser_open: true, runner_active: true, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, operating_metrics_counts: { not_attempted: 0, success: 0, partial: 0, no_values: 0, failed: 0, blocked: 0 }, items: [] } });
   await page.goto("/");
   const overview = page.locator(".collection-overview");
   await expect(overview.getByRole("button", { name: "暂停采集" })).toBeVisible();

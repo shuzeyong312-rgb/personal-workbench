@@ -27,10 +27,13 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
+    test_client = TestClient(app)
+    try:
         yield test_client, session_factory
-    app.dependency_overrides.clear()
-    engine.dispose()
+    finally:
+        test_client.close()
+        app.dependency_overrides.clear()
+        engine.dispose()
 
 
 def add_competitor(

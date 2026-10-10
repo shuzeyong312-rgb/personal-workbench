@@ -38,6 +38,56 @@ test("compact rows have no hover or focus popup and select same-shop Offers inde
   await mock.expectNoUnexpectedApi();
 });
 
+test("operating metrics keep original values, attempts, and source visible in all three group views", async ({ page }) => {
+  const source = "1688_official_procurement_assistant_top";
+  const definitions = [
+    ["listing_time", "上架时间", "经营表现", "observed", "2025-01-02"],
+    ["monthly_deal", "月成交", "经营表现", "observed", "20+"],
+    ["monthly_dropship", "月代销", "经营表现", "placeholder", "-"],
+    ["annual_units", "年成交件数", "经营表现", "loading", null],
+    ["annual_orders", "年成交笔数", "经营表现", "source_unavailable", null],
+    ["review_count", "评论数", "口碑履约", "read_failed", null],
+    ["positive_rate", "好评率", "口碑履约", "observed", "95.6%"],
+    ["pickup_rate", "揽收率", "口碑履约", "placeholder", "-"],
+  ] as const;
+  const operatingMetrics = definitions.map(([metric_key, label, section, status, raw_value], index) => ({
+    metric_key, label, section, eligible: true, status,
+    latest_attempt: { collection_run_id: 77, status, raw_value, source, observed_at: `2026-10-10T0${index}:00:00Z`, reason: status === "observed" || status === "placeholder" ? null : "脱敏 Fixture 状态" },
+    latest_valid: status === "observed" ? { collection_run_id: 77, raw_value: raw_value!, source, observed_at: `2026-10-10T0${index}:00:00Z` } : null,
+  })).concat([
+    { metric_key: "favorite_count", label: "收藏数", section: "口碑履约", eligible: false, status: "not_attempted", latest_attempt: null, latest_valid: null },
+    { metric_key: "platform_tag_new", label: "新品", section: "平台标签", eligible: false, status: "not_attempted", latest_attempt: null, latest_valid: null },
+  ] as const);
+  const fixture: GroupDetailData = {
+    ...detail,
+    own_product: { ...detail.own_product!, latest_collection_run: { id: 77, started_at: "2026-10-10T00:00:00Z", finished_at: "2026-10-10T00:08:00Z", status: "success", operating_metrics_status: "partial", error_type: null, error_message: null }, operating_metrics: operatingMetrics },
+    operating_metrics_coverage: Object.fromEntries(definitions.map(([key]) => [key, { has_history_valid_values: key === "monthly_deal" ? 1 : 0, active_offers: 7 }])),
+  };
+  const mock = await openWorkbench(page, fixture);
+  const preview = page.locator(".position-aside");
+  await expect(preview).toContainText("基础采集：成功 · 经营采集：部分成功");
+  await expect(preview).toContainText("有效值来源：1688 官方采购助手顶部区域");
+  await expect(preview).toContainText("收藏数");
+  await expect(preview).toContainText("新品");
+  await expect(preview).toContainText("收藏数待接入");
+  await expect(preview).toContainText("20+");
+  await expect(preview).toContainText("页面显示占位符（-）");
+  await expect(preview).toContainText("仍在加载");
+  await expect(preview).toContainText("来源不可用");
+  await expect(preview).toContainText("读取失败");
+  await expect(preview).toContainText("有历史有效值 1/7");
+  await expect(page.locator(".position-table")).toContainText("20+");
+  await page.getByRole("tab", { name: "经营表现" }).click();
+  await expect(page.locator(".position-table")).toContainText("2025-01-02");
+  await expect(page.locator(".position-table")).toContainText("页面显示 -");
+  await expect(page.locator(".position-table")).toContainText("仍在加载");
+  await page.getByRole("tab", { name: "口碑履约" }).click();
+  await expect(page.locator(".position-table")).toContainText("95.6%");
+  await expect(page.locator(".position-table")).toContainText("页面显示 -");
+  await expect(preview).toContainText("尝试来源：1688 官方采购助手顶部区域");
+  await mock.expectNoUnexpectedApi();
+});
+
 test("hidden-own notice follows actual filters and clears with keyboard location", async ({ page }, testInfo) => {
   const mock = await openWorkbench(page);
   const notice = page.locator(".position-filter-notice");
@@ -348,7 +398,7 @@ test("header sorting, tied positions, filtering, own location and pending views"
   await page.getByRole("tab", { name: "经营表现", exact: true }).click();
   expect(await rowIds(page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   await expect(page.locator('th[aria-sort="descending"]')).toHaveCount(0);
-  await expect(page.locator(".position-table")).toContainText("待接入");
+  await expect(page.locator(".position-table")).toContainText("未采集");
   await page.getByRole("tab", { name: "竞争总览", exact: true }).click();
   expect(await rowIds(page)).toEqual([3, 4, 5, 6, 1, 2, 7, 8, 9]);
   await page.getByRole("button", { name: "展示报价 ↕", exact: true }).click();
