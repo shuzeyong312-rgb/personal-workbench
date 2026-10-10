@@ -177,7 +177,7 @@ class BatchItemResponse(BaseModel):
 
 
 class BatchStatusResponse(BaseModel):
-    status: Literal["idle", "running", "resting", "cooling_down", "completed", "verification_required"]
+    status: Literal["idle", "running", "pausing", "paused", "stopping", "stopped", "resting", "cooling_down", "completed", "verification_required"]
     outcome_code: str | None
     total: int
     completed: int
@@ -585,6 +585,27 @@ async def collect_batch(
 
 @router.get("/collect-batch/status", response_model=BatchStatusResponse)
 def collect_batch_status() -> dict[str, object]:
+    return BATCH_RUNTIME.snapshot()
+
+
+@router.post("/collect-batch/pause", response_model=BatchStatusResponse)
+def pause_collect_batch() -> dict[str, object]:
+    if not BATCH_RUNTIME.request_pause():
+        raise error("batch_not_running", "当前没有可暂停的采集任务", status.HTTP_409_CONFLICT)
+    return BATCH_RUNTIME.snapshot()
+
+
+@router.post("/collect-batch/resume", response_model=BatchStatusResponse)
+def resume_collect_batch() -> dict[str, object]:
+    if not BATCH_RUNTIME.resume():
+        raise error("batch_not_paused", "当前采集任务未暂停", status.HTTP_409_CONFLICT)
+    return BATCH_RUNTIME.snapshot()
+
+
+@router.post("/collect-batch/end", response_model=BatchStatusResponse)
+def end_collect_batch() -> dict[str, object]:
+    if not BATCH_RUNTIME.request_end():
+        raise error("batch_not_running", "当前没有可结束的采集任务", status.HTTP_409_CONFLICT)
     return BATCH_RUNTIME.snapshot()
 
 

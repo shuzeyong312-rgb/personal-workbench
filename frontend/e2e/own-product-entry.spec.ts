@@ -56,3 +56,19 @@ test("adds competitor from Dashboard and keeps it in the competitor list", async
   await expect(page.getByRole("menuitem", { name: /采集/ })).toHaveCount(0);
   await mock.expectNoUnexpectedApi();
 });
+
+test("pauses and resumes collection from the Dashboard overview", async ({ page }) => {
+  const mock = await installApiMock(page, { competitors: [], batchStatus: { status: "running", outcome_code: null, total: 2, completed: 0, succeeded: 0, failed: 0, remaining: 2, verification_required: 0, current_competitor_id: null, browser_open: true, runner_active: true, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, items: [] } });
+  await page.goto("/");
+  const overview = page.locator(".collection-overview");
+  await expect(overview.getByRole("button", { name: "暂停采集" })).toBeVisible();
+  await overview.getByRole("button", { name: "暂停采集" }).click();
+  await expect(overview.getByText("采集已暂停 · 0 / 2")).toBeVisible();
+  await overview.getByRole("button", { name: "继续采集" }).click();
+  await expect(overview.getByText("采集中 0 / 2")).toBeVisible();
+  await overview.getByRole("button", { name: "结束采集" }).click();
+  await expect(overview.getByRole("button", { name: "结束中…" })).toBeVisible();
+  await expect(overview.getByText("采集已结束 · 0 / 2")).toBeVisible();
+  await expect(overview.getByRole("button", { name: "暂停采集" })).toHaveCount(0);
+  await mock.expectNoUnexpectedApi();
+});

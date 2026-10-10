@@ -83,6 +83,10 @@ class BatchRuntime:
         self.external_access_count = 0
         self.items: list[BatchItemResult] = []
         self.stop_event = Event()
+        self.resume_event = Event()
+        self.resume_event.set()
+        self._paused_status: str | None = None
+        self._end_requested = False
         self.task: asyncio.Task[Any] | None = None
         self._reservation_sequence = 0
         self._active_reservation: int | None = None
@@ -114,6 +118,10 @@ class BatchRuntime:
             self.external_access_count = 0
             self.items = []
             self.stop_event = Event()
+            self.resume_event = Event()
+            self.resume_event.set()
+            self._paused_status = None
+            self._end_requested = False
             self.task = None
             return True
 
@@ -137,11 +145,15 @@ class BatchRuntime:
         with self._lock:
             self.browser_open = value
 
-    def set_running(self) -> None:
+    def set_running(self) -> bool:
         with self._lock:
+            if self.stop_event.is_set() or not self.resume_event.is_set():
+                return False
             self.status = "running"
             self.cooldown_remaining_seconds = 0
             self.resting_remaining_seconds = 0
+            self._paused_status = None
+            return True
 
     def begin_auto_resume(self) -> None:
         with self._lock:
@@ -149,13 +161,25 @@ class BatchRuntime:
 
     def enter_cooldown(self, seconds: float) -> None:
         with self._lock:
-            self.status = "cooling_down"
+            if self.stop_event.is_set():
+                return
+            if self.resume_event.is_set():
+                self.status = "cooling_down"
+            else:
+                self._paused_status = "cooling_down"
+                self.status = "paused"
             self.cooldown_remaining_seconds = max(0, ceil(seconds))
             self.resting_remaining_seconds = 0
 
     def enter_resting(self, seconds: float) -> None:
         with self._lock:
-            self.status = "resting"
+            if self.stop_event.is_set():
+                return
+            if self.resume_event.is_set():
+                self.status = "resting"
+            else:
+                self._paused_status = "resting"
+                self.status = "paused"
             self.resting_remaining_seconds = max(0, ceil(seconds))
             self.cooldown_remaining_seconds = 0
 
@@ -166,20 +190,37 @@ class BatchRuntime:
         return self._wait_with_remaining(seconds, "resting_remaining_seconds")
 
     def _wait_with_remaining(self, seconds: float, field: str) -> bool:
-        deadline = monotonic() + max(0, seconds)
+        remaining = max(0, seconds)
         while True:
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                with self._lock:
-                    setattr(self, field, 0)
-                return True
             with self._lock:
-                setattr(self, field, max(0, ceil(remaining)))
                 stop_event = self.stop_event
-            if stop_event.wait(min(remaining, 0.1)):
+                stopped = stop_event.is_set()
+                paused = not self.resume_event.is_set()
+                if remaining <= 0 and not stopped and not paused:
+                    setattr(self, field, 0)
+                    self.status = "running"
+                    self.cooldown_remaining_seconds = 0
+                    self.resting_remaining_seconds = 0
+                    self._paused_status = None
+                    return True
+                setattr(self, field, max(0, ceil(remaining)))
+            if stopped:
                 with self._lock:
                     setattr(self, field, 0)
                 return False
+            if paused:
+                if not self.wait_for_resume():
+                    with self._lock:
+                        setattr(self, field, 0)
+                    return False
+                continue
+            started = monotonic()
+            if self.wait_for_stop(min(remaining, 0.1)):
+                with self._lock:
+                    setattr(self, field, 0)
+                return False
+            if not self.pause_requested():
+                remaining = max(0, remaining - (monotonic() - started))
 
     def record_external_access(self) -> None:
         with self._lock:
@@ -213,11 +254,16 @@ class BatchRuntime:
             self._active_reservation = None
             self.cooldown_remaining_seconds = 0
             self.resting_remaining_seconds = 0
+            self._paused_status = None
+            self.resume_event.set()
 
     def mark_verification(self) -> None:
         with self._lock:
+            if self.stop_event.is_set():
+                return
             self.status = "verification_required"
             self.outcome_code = "verification_required"
+            self.resume_event.set()
 
     def is_running(self) -> bool:
         with self._lock:
@@ -238,15 +284,75 @@ class BatchRuntime:
     def request_stop(self) -> None:
         with self._lock:
             self.stop_event.set()
+            self.resume_event.set()
+
+    def request_end(self) -> bool:
+        with self._lock:
+            if not self.runner_active or self.status not in {"running", "pausing", "paused", "resting", "cooling_down", "verification_required"}:
+                return False
+            self._end_requested = True
+            self.status = "stopping"
+            self.stop_event.set()
+            self.resume_event.set()
+            return True
+
+    def end_requested(self) -> bool:
+        with self._lock:
+            return self._end_requested
+
+    def request_pause(self) -> bool:
+        with self._lock:
+            if not self.runner_active or self.stop_event.is_set() or self.status not in {"running", "resting", "cooling_down"}:
+                return False
+            was_collecting = self.status == "running" and self.current_competitor_id is not None
+            self._paused_status = self.status
+            self.resume_event.clear()
+            self.status = "pausing" if was_collecting else "paused"
+            return True
+
+    def resume(self) -> bool:
+        with self._lock:
+            if not self.runner_active or self.status not in {"paused", "pausing"}:
+                return False
+            self.status = self._paused_status or "running"
+            self._paused_status = None
+            self.resume_event.set()
+            return True
+
+    def pause_requested(self) -> bool:
+        return not self.resume_event.is_set()
+
+    def mark_paused(self) -> None:
+        with self._lock:
+            if self.stop_event.is_set() or self.resume_event.is_set():
+                return
+            self.status = "paused"
+            self.current_competitor_id = None
+
+    def wait_for_resume(self) -> bool:
+        while not self.resume_event.wait(0.1):
+            if self.stop_requested():
+                return False
+        return not self.stop_requested()
 
     def stop_requested(self) -> bool:
         with self._lock:
             return self.stop_event.is_set()
 
     def wait_for_stop(self, timeout: float) -> bool:
-        with self._lock:
-            stop_event = self.stop_event
-        return stop_event.wait(timeout)
+        deadline = monotonic() + max(0, timeout)
+        while True:
+            with self._lock:
+                stop_event = self.stop_event
+                resume_event = self.resume_event
+            if stop_event.is_set():
+                return True
+            if not resume_event.is_set():
+                return False
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return False
+            stop_event.wait(min(remaining, 0.1))
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
@@ -766,9 +872,31 @@ def run_batch_collection(
             runtime.set_browser_open(True)
             move_context_offscreen(context)
 
+            def pause_if_requested() -> bool:
+                nonlocal context
+                if not runtime.pause_requested():
+                    return False
+                if runtime.snapshot()["remaining"] == 0:
+                    return False
+                _close_quietly(context)
+                context = None
+                runtime.set_browser_open(False)
+                if runtime.stop_requested():
+                    return True
+                runtime.mark_paused()
+                if not runtime.wait_for_resume():
+                    return True
+                context = _launch_context(playwright)
+                runtime.set_browser_open(True)
+                move_context_offscreen(context)
+                return False
+
             stop_batch = False
             continuous_accesses = 0
             for position, competitor_id in enumerate(runnable_ids):
+                if pause_if_requested():
+                    stop_batch = True
+                    break
                 while True:
                     if runtime.stop_requested():
                         stop_batch = True
@@ -822,9 +950,14 @@ def run_batch_collection(
                                 stop_batch = True
                                 break
                             runtime.set_running()
-                            context = _launch_context(playwright)
-                            runtime.set_browser_open(True)
-                            move_context_offscreen(context)
+                            if runtime.pause_requested():
+                                if pause_if_requested():
+                                    stop_batch = True
+                                    break
+                            else:
+                                context = _launch_context(playwright)
+                                runtime.set_browser_open(True)
+                                move_context_offscreen(context)
                             retry_current = True
                             continue
                         runtime.record(
@@ -855,6 +988,9 @@ def run_batch_collection(
                 if runtime.stop_requested():
                     stop_batch = True
                     break
+                if pause_if_requested():
+                    stop_batch = True
+                    break
                 if runtime.external_accesses() <= external_accesses_before:
                     continue
                 continuous_accesses += 1
@@ -876,8 +1012,15 @@ def run_batch_collection(
     finally:
         _close_quietly(context)
         runtime.mark_runner_stopped()
-        if runtime.stop_requested() and runtime.snapshot()["status"] in {"running", "resting", "cooling_down"}:
+        snapshot = runtime.snapshot()
+        if runtime.end_requested() and snapshot["status"] == "stopping":
+            runtime.finish("user_ended", status="stopped")
+        elif runtime.stop_requested() and snapshot["status"] in {"running", "pausing", "paused", "resting", "cooling_down"}:
             runtime.finish("collect_failed")
+        elif snapshot["status"] in {"running", "pausing", "paused", "resting", "cooling_down"} and snapshot["remaining"] == 0:
+            runtime.finish(
+                "partial_failure" if runtime.has_failures() else "success"
+            )
         elif runtime.is_running():
             runtime.finish(
                 "partial_failure" if runtime.has_failures() else "success"

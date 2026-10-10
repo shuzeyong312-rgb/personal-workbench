@@ -503,3 +503,24 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .position-filter-notice button:hover { color: #2f59ce; text-decoration: underline; }
 
 .position-table .position-own-row .position-shop { color: #30486e; font-weight: 650; }
+.collection-overview-actions { display: flex; align-items: center; gap: 8px; }
+.collection-batch-pausing { color: #8b6724; background: #fffaf0; }
+.collection-batch-paused { color: #526a8e; background: #f2f6fc; }
+.collection-batch-status-pausing { color: #8b6724; background: #fff3dc; }
+.collection-batch-status-paused { color: #526a8e; background: #edf2fa; }
+.collection-batch-stopping { color: #8b6724; background: #fffaf0; }
+.collection-batch-stopped { color: #526a8e; background: #f2f6fc; }
+.collection-batch-status-stopping { color: #8b6724; background: #fff3dc; }
+.collection-batch-status-stopped { color: #526a8e; background: #edf2fa; }
+
+.collection-overview-actions .overview-status { display: inline-flex; min-height: 32px; box-sizing: border-box; align-items: center; }
+.collection-overview-actions .collection-pause-button,
+.collection-overview-actions .collection-end-button { display: inline-flex; width: 92px; height: 32px; min-height: 32px; box-sizing: border-box; align-items: center; justify-content: center; padding: 0 10px; border-radius: 8px; font-size: 12px; font-weight: 700; transition: background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
+.collection-overview-actions .collection-pause-button { color: #365985; border-color: #cbd9ee; background: linear-gradient(180deg, #fff, #f5f8fd); box-shadow: 0 2px 5px rgba(55, 81, 126, .09), inset 0 1px rgba(255, 255, 255, .9); }
+.collection-overview-actions .collection-pause-button:hover:not(:disabled) { border-color: #a9c3e9; background: linear-gradient(180deg, #fff, #edf4ff); box-shadow: 0 4px 9px rgba(55, 100, 170, .14); transform: translateY(-1px); }
+.collection-overview-actions .collection-end-button { color: #a34f4f; border-color: #e8caca; background: linear-gradient(180deg, #fff, #fff5f5); box-shadow: 0 2px 5px rgba(130, 65, 65, .08), inset 0 1px rgba(255, 255, 255, .9); }
+.collection-overview-actions .collection-end-button:hover:not(:disabled) { border-color: #dfaead; background: linear-gradient(180deg, #fff, #ffeded); box-shadow: 0 4px 9px rgba(160, 70, 70, .13); transform: translateY(-1px); }
+.collection-overview-actions .collection-pause-button:active:not(:disabled),
+.collection-overview-actions .collection-end-button:active:not(:disabled) { box-shadow: inset 0 1px 3px rgba(45, 63, 94, .12); transform: translateY(0); }
+.collection-overview-actions .collection-pause-button:focus-visible,
+.collection-overview-actions .collection-end-button:focus-visible { outline: 2px solid #7ba9e8; outline-offset: 2px; }

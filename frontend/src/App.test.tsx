@@ -1189,6 +1189,16 @@ test("renders workspace module placeholders", () => {
   expect(collectionTasks).toContain("采集记录");
 });
 
+test("shows the frozen wait countdown while a batch is paused", () => {
+  const pausedCooling = renderDashboard({ batchState: { ...idleBatchState, status: "paused", total: 3, completed: 1, remaining: 2, cooldown_remaining_seconds: 9, runner_active: true } });
+  expect(pausedCooling).toContain("风控冷却已暂停");
+  expect(pausedCooling).toContain("9 秒");
+
+  const pausedResting = renderDashboard({ batchState: { ...idleBatchState, status: "paused", total: 3, completed: 1, remaining: 2, resting_remaining_seconds: 17, runner_active: true } });
+  expect(pausedResting).toContain("计划休息已暂停");
+  expect(pausedResting).toContain("17 秒");
+});
+
 test("renders Collection Tasks runtime states and preserves missing current product IDs", () => {
   const productById = new Map([[1, { ...competitor, title: "当前商品", offer_id: "offer-1", shop_name: "测试店铺" }]]);
   const render = (batchState: BatchState) => renderToStaticMarkup(<CurrentBatchCard batchState={batchState} status="ready" error={null} onRetry={noop} productById={productById} />);
@@ -1198,6 +1208,8 @@ test("renders Collection Tasks runtime states and preserves missing current prod
   expect(render({ ...idleBatchState, status: "running", total: 2, completed: 1, remaining: 1, current_competitor_id: 99 })).toContain("商品 ID：99");
   expect(render({ ...idleBatchState, status: "resting", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, resting_remaining_seconds: 17, browser_open: true, runner_active: true })).toContain("计划内主动休息");
   expect(render({ ...idleBatchState, status: "resting", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, resting_remaining_seconds: 17, browser_open: true, runner_active: true })).toContain("休息剩余：17 秒");
+  expect(render({ ...idleBatchState, status: "paused", total: 2, completed: 1, remaining: 1, resting_remaining_seconds: 17, runner_active: true })).toContain("计划休息剩余：17 秒");
+  expect(render({ ...idleBatchState, status: "paused", total: 2, completed: 1, remaining: 1, cooldown_remaining_seconds: 17, runner_active: true })).toContain("风控冷却剩余：17 秒");
   expect(render({ ...idleBatchState, status: "cooling_down", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, cooldown_remaining_seconds: 17, auto_resume_attempt: 1 })).toContain("风控冷却中");
   expect(render({ ...idleBatchState, status: "verification_required", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, browser_open: true, runner_active: true })).toContain("需要人工验证");
   expect(render({ ...idleBatchState, status: "completed", total: 2, completed: 2, succeeded: 1, failed: 1, outcome_code: "completed" })).toContain("结果码：completed");

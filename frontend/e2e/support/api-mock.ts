@@ -1,17 +1,17 @@
 import { expect, type Page } from "@playwright/test";
 import type { Competitor } from "../../src/App";
 
-export async function installApiMock(page: Page, options: { competitors: Competitor[]; groups?: { id: number; name: string; created_at: string }[]; addProducts?: Record<string, "self" | "competitor">; activeMonitoredProducts?: number; collectionRuns?: unknown }) {
+export async function installApiMock(page: Page, options: { competitors: Competitor[]; groups?: { id: number; name: string; created_at: string }[]; addProducts?: Record<string, "self" | "competitor">; activeMonitoredProducts?: number; collectionRuns?: unknown; batchStatus?: Record<string, unknown> }) {
   const unexpected: string[] = [];
   let competitors = options.competitors;
   const groups = options.groups ?? [];
   let nextId = Math.max(0, ...competitors.map((competitor) => competitor.id)) + 1;
+  let batchStatus = options.batchStatus ?? { status: "idle", outcome_code: null, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, items: [] };
   const responses: Record<string, unknown> = {
     "GET /api/dashboard/today": { date: "2026-09-28", stats: { monitored_competitors: 0, active_monitored_products: options.activeMonitoredProducts ?? 0, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] },
     "GET /api/dashboard/group-attention": { date: "2026-09-28", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] },
     "GET /api/settings/own-shop-name": { configured: true, own_shop_name: "测试店铺" },
     "GET /api/settings/competitor-monitoring": { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "09:30", auto_collection_missed_policy: "catch_up" },
-    "GET /api/competitors/collect-batch/status": { status: "idle", outcome_code: null, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, items: [] },
     "GET /api/competitors": competitors,
     "GET /api/collection-runs": options.collectionRuns ?? { items: [], total: 0, page: 1, page_size: 20 },
     "GET /api/competitor-groups": groups,
@@ -21,6 +21,16 @@ export async function installApiMock(page: Page, options: { competitors: Competi
     const request = route.request();
     const key = `${request.method()} ${new URL(request.url()).pathname}`;
     const requestUrl = new URL(request.url());
+    if (key === "GET /api/competitors/collect-batch/status") {
+      if (batchStatus.status === "stopping") batchStatus = { ...batchStatus, status: "stopped", runner_active: false, browser_open: false };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(batchStatus) });
+      return;
+    }
+    if (["POST /api/competitors/collect-batch/pause", "POST /api/competitors/collect-batch/resume", "POST /api/competitors/collect-batch/end"].includes(key)) {
+      batchStatus = { ...batchStatus, status: key.endsWith("/pause") ? "paused" : key.endsWith("/end") ? "stopping" : "running" };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(batchStatus) });
+      return;
+    }
     if (key === "POST /api/competitors") {
       const body = request.postDataJSON() as { url: string; group_id?: number | null };
       const offerId = body.url.match(/\/offer\/(\d+)\.html/i)?.[1] ?? String(nextId);

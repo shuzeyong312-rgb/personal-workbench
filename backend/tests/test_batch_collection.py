@@ -179,6 +179,30 @@ def test_selected_batch_validates_as_a_whole_and_returns_202(
     assert client[0].get("/api/competitors/collect-batch/status").json()["completed"] == 0
 
 
+def test_pause_and_resume_batch_endpoints_return_authoritative_status(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    BATCH_RUNTIME.reserve([1])
+    paused = client[0].post("/api/competitors/collect-batch/pause")
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+    resumed = client[0].post("/api/competitors/collect-batch/resume")
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "running"
+    BATCH_RUNTIME.finish("success")
+
+
+def test_end_batch_endpoint_requests_safe_shutdown(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    BATCH_RUNTIME.reserve([1])
+    response = client[0].post("/api/competitors/collect-batch/end")
+    assert response.status_code == 200
+    assert response.json()["status"] == "stopping"
+    assert BATCH_RUNTIME.stop_requested()
+    BATCH_RUNTIME.finish("user_ended", status="stopped")
+
+
 def test_selected_not_found_and_inactive_are_rejected_without_starting(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
@@ -858,3 +882,142 @@ def test_stop_interrupts_resting_before_the_next_collector_and_releases_resource
     assert runtime.is_busy() is False
     assert COLLECTION_LOCK.acquire(blocking=False)
     COLLECTION_LOCK.release()
+
+
+def test_pause_waits_for_current_item_then_resumes_remaining_batch(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    runtime = BatchRuntime()
+    runtime.reserve([1, 2])
+    contexts = [FakeContext(), FakeContext()]
+    first_started = Event()
+    finish_first = Event()
+    calls: list[int] = []
+
+    def collect(_db: Session, item_id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        calls.append(item_id)
+        if item_id == 1:
+            first_started.set()
+            assert finish_first.wait(2)
+        return SimpleNamespace(outcome="active")
+
+    worker = Thread(target=run_batch_collection, args=(client[1], [1, 2], runtime), kwargs={"config": _test_config(item_interval_seconds=0, batch_rest_seconds=0)})
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(contexts)), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect):
+        worker.start()
+        assert first_started.wait(timeout=2)
+        assert runtime.request_pause()
+        assert runtime.snapshot()["status"] == "pausing"
+        finish_first.set()
+        for _ in range(200):
+            if runtime.snapshot()["status"] == "paused":
+                break
+            Event().wait(0.01)
+        assert runtime.snapshot()["status"] == "paused"
+        assert runtime.snapshot()["browser_open"] is False
+        assert calls == [1]
+        assert contexts[0].closed is True
+        assert runtime.resume()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert calls == [1, 2]
+    assert contexts[1].closed is True
+    assert runtime.snapshot()["status"] == "completed"
+
+
+def test_end_finishes_current_item_then_stops_remaining_batch(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    add_competitor(client[1], 2)
+    runtime = BatchRuntime()
+    runtime.reserve([1, 2])
+    context = FakeContext()
+    first_started = Event()
+    finish_first = Event()
+    calls: list[int] = []
+
+    def collect(_db: Session, item_id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        calls.append(item_id)
+        if item_id == 1:
+            first_started.set()
+            assert finish_first.wait(2)
+        return SimpleNamespace(outcome="active")
+
+    worker = Thread(target=run_batch_collection, args=(client[1], [1, 2], runtime), kwargs={"config": _test_config(item_interval_seconds=0, batch_rest_seconds=0)})
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(context)), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect):
+        worker.start()
+        assert first_started.wait(timeout=2)
+        assert runtime.request_end()
+        assert runtime.snapshot()["status"] == "stopping"
+        finish_first.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert calls == [1]
+    assert context.closed is True
+    assert runtime.snapshot()["status"] == "stopped"
+    assert runtime.snapshot()["outcome_code"] == "user_ended"
+    assert runtime.snapshot()["remaining"] == 1
+
+
+@pytest.mark.parametrize(
+    ("phase", "remaining_field"),
+    [("cooldown", "cooldown_remaining_seconds"), ("resting", "resting_remaining_seconds")],
+)
+def test_pause_freezes_wait_countdown_until_resumed(phase: str, remaining_field: str) -> None:
+    runtime = BatchRuntime()
+    runtime.reserve([1])
+    getattr(runtime, f"enter_{phase}")(2)
+    worker = Thread(target=getattr(runtime, f"wait_for_{phase}"), args=(2,))
+    worker.start()
+
+    assert runtime.request_pause()
+    for _ in range(100):
+        if runtime.snapshot()["status"] == "paused":
+            break
+        Event().wait(0.01)
+    paused_remaining = runtime.snapshot()[remaining_field]
+    Event().wait(0.2)
+    assert runtime.snapshot()[remaining_field] == paused_remaining
+
+    assert runtime.resume()
+    worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert runtime.snapshot()["status"] == "running"
+
+
+def test_pause_requested_during_last_item_does_not_hold_completed_batch(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    runtime.reserve([1])
+    context = FakeContext()
+
+    def collect(_db: Session, _item_id: int, *, on_external_access: object = None, **_kwargs: object) -> SimpleNamespace:
+        assert callable(on_external_access)
+        on_external_access()
+        assert runtime.request_pause()
+        return SimpleNamespace(outcome="active")
+
+    worker = Thread(target=run_batch_collection, args=(client[1], [1], runtime), kwargs={"config": _test_config(item_interval_seconds=0, batch_rest_seconds=0)})
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(context)), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect):
+        worker.start()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert runtime.snapshot()["status"] == "completed"
+    assert runtime.snapshot()["remaining"] == 0
