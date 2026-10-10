@@ -67,7 +67,7 @@
 | [daily-auto-collection-strategy-v1.md](daily-auto-collection-strategy-v1.md) | 当前有效 | 7e9dbd7；main.py、collection/daily.py、settings.py | 九项完整设置、两策略、电脑本地时间、missed policy、统一 Batch 编排已实现；策略控件外观按 [system-settings-visual-refresh-v1.md](system-settings-visual-refresh-v1.md)，业务语义不变。 |
 | [collection-tasks-ui-v2.md](collection-tasks-ui-v2.md) | 当前有效 | 826c2f5；App.tsx CollectionTasksPage、App.css、CollectionTasks.test.tsx | 已实施 UI V2：当前状态/默认折叠明细/历史分层，items 保持 Backend 原顺序；不是 Group Detail V2。 |
 | [system-settings-visual-refresh-v1.md](system-settings-visual-refresh-v1.md) | 当前有效 | a083047 Freeze 记录；b71f822 实施；App.tsx SettingsPage、App.css settings scoped | 仅设置页视觉试点，继承九项设置及独立模块保存语义，不代表全局换肤。 |
-| [1688-operating-metrics-integration-v1.md](1688-operating-metrics-integration-v1.md) | 待核验 | 本地 Gate 1 五链接报告与现有 Collector / Batch Runner 证据；尚未实现 | 待 ChatGPT Final Spec Review / Freeze；八项助手顶部指标限定原值；收藏和八标签 Hold。验证弹窗漏检是独立已知问题，不是本 Spec 门槛。 |
+| [1688-operating-metrics-integration-v1.md](1688-operating-metrics-integration-v1.md) | 已冻结（2026-10-10；ChatGPT 独立 Final Spec Review 通过，P0/P1/P2/P3 = 0/0/0/0） | 本地 Gate 1 五链接报告与现有 Collector / Batch Runner 证据；尚未实现 | 八项助手顶部指标限定原值；收藏和八标签 Hold。验证弹窗漏检是独立已知问题，不是本 Spec 门槛。待按冻结 Spec 实施。 |
 
 ## 仍待核验的流程事实与文档边界
 

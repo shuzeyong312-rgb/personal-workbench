@@ -1,6 +1,6 @@
 # 1688 经营指标正式集成 V1 Spec
 
-状态：待 ChatGPT 独立 Final Spec Review；未 Freeze，禁止进入 Implement。<br>
+状态：Frozen / 已冻结；2026-10-10 经 ChatGPT 独立 Final Spec Review 通过（P0/P1/P2/P3 = 0/0/0/0）。<br>
 范围：只把已准入的 1688 Offer 经营指标原值接入现有采集、存储和详情展示。<br>
 证据基线：本地 Gate 1 五链接报告 `experiments/1688-gate1-visible-poc/five-extension-enabled-20261010-135701.jsonl`；正式批次 `formal-batch-10-20261010-103506.jsonl`；Research §11–12。所有样本均为 2026-10-10 本地观察，不表示持续覆盖率或平台许可。
 
