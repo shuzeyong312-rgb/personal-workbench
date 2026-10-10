@@ -67,6 +67,7 @@
 | [daily-auto-collection-strategy-v1.md](daily-auto-collection-strategy-v1.md) | 当前有效 | 7e9dbd7；main.py、collection/daily.py、settings.py | 九项完整设置、两策略、电脑本地时间、missed policy、统一 Batch 编排已实现；策略控件外观按 [system-settings-visual-refresh-v1.md](system-settings-visual-refresh-v1.md)，业务语义不变。 |
 | [collection-tasks-ui-v2.md](collection-tasks-ui-v2.md) | 当前有效 | 826c2f5；App.tsx CollectionTasksPage、App.css、CollectionTasks.test.tsx | 已实施 UI V2：当前状态/默认折叠明细/历史分层，items 保持 Backend 原顺序；不是 Group Detail V2。 |
 | [system-settings-visual-refresh-v1.md](system-settings-visual-refresh-v1.md) | 当前有效 | a083047 Freeze 记录；b71f822 实施；App.tsx SettingsPage、App.css settings scoped | 仅设置页视觉试点，继承九项设置及独立模块保存语义，不代表全局换肤。 |
+| [1688-operating-metrics-integration-v1.md](1688-operating-metrics-integration-v1.md) | 待核验 | 本地 Gate 1 五链接报告与现有 Collector / Batch Runner 证据；尚未实现 | 待 ChatGPT Spec Review / Freeze；八项助手顶部指标限定原值；收藏和八标签 Hold。验证弹窗漏检为实现前 P1，适用数据使用许可待确认。 |
 
 ## 仍待核验的流程事实与文档边界
 
@@ -85,4 +86,4 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | --- | --- | --- |
 | [组内竞争情报与竞争位置 V1](group-competitive-position-v1.md) | 已通过 ChatGPT Final Spec Review / 已 Freeze；本轮已实施，最新 UI 已由用户验收，完整验证结果见最终收尾报告；冻结基准 `7bd49355df7ca19a1de2835c0280d140a76b624f` | 升级现有组详情的目标 UI、真实 Offer 排序/位置和变化证据；R1～R3 已正式确认。原始原型截图已入库，历史明细有界首批/游标加载，排名基于各 Offer 最近有效快照且非实时同步。新经营字段与评分保持未就绪。Freeze 后局部覆盖 Group Detail V1 的我方首行、首屏结构和主要动态呈现，其余事实合同继承。 |
 
-以上 Spec 不计入 2026-10-08 的 30 份历史核验分类统计；当前索引共收录 31 份 Spec。组分析现按已实施的 group-competitive-position-v1 及其继承合同运行；完整验证结果见最终收尾报告。
+以上 Spec 不计入 2026-10-08 的 30 份历史核验分类统计；当前索引共收录 32 份 Spec。组分析现按已实施的 group-competitive-position-v1 及其继承合同运行；完整验证结果见最终收尾报告。
