@@ -58,7 +58,7 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 - **竞品监控大屏**：批量采集唯一实时进度及控制入口，保留立即采集、暂停、继续、结束、计划休息、验证冷却及自动恢复进度。继续使用唯一 `BatchRuntime` 状态轮询；不得在采集记录页增加控制器或第二个 polling loop。
 - **左侧导航**：“采集任务”更名为“采集记录”。
-- **采集记录首页**：批次列表展示开始时间、触发方式、计划商品数、基础采集结果、经营结果、补采情况、访问数和终态。默认优先显示有技术异常或最终失败的批次，正常完成记录仍可通过筛选查看；保留历史单次记录独立区块。
+- **采集记录首页**：批次列表展示开始时间、触发方式、计划商品数、基础采集结果、经营结果、补采情况、访问数和终态。默认按真实 `started_at DESC, batch_id DESC` 排序，最近批次永远优先；异常筛选、醒目状态及异常数用于定位，不改变时间顺序。保留历史单次记录独立区块。
 - **批次详情**：摘要区域区分计划商品数、实际页面访问次数、首次成功、补采成功、最终失败、未执行；商品明细按异常优先呈现，正常商品可折叠。每个商品可查看基础结果、八项经营字段当前最终结果、每项原因以及按时间排序的每次 CollectionRun / Observation。补采成功不得清除或覆盖前次失败记录。
 - 筛选至少包括：页面占位、官方来源不可用、字段加载失败、字段读取失败、基础采集失败。可同时覆盖商品级最终状态及其任一历史 attempt，筛选不得把历史失败从详情中删除。
 - 文案要分别呈现“经营部分指标可用”和“存在需要处理的技术异常”。页面占位明确提示“页面显示 -，无需补采”；来源异常展示字段级保存的具体原因。商品基础采集失败与经营字段部分可用允许同时出现。
@@ -76,27 +76,32 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 ### 批次商品状态和汇总
 
-每个批次商品具有固定的计划位置、执行状态、最终基础结果和最终经营状态；建议最小执行状态为 `queued / running / completed / failed / not_executed`。在符合补采资格且尚未耗尽限额时，商品仍为处理中；首轮失败保留为其真实 CollectionRun，不提前计入最终完成。`not_executed` 用于任务结束前尚未访问的计划商品；`failed` 按最终基础失败计数，不等同于经营 `failed`。
+每个批次商品具有固定计划位置、执行状态、最终基础结果、最终经营状态和一个互斥的 `final_result`：`first_pass_success / retry_success / final_failed / not_executed`。`queued / running / completed / failed / not_executed` 是执行状态；`failed` 只表示最终基础采集失败，不表示经营指标 `failed`。终态前符合补采资格的商品保持 `running`，首轮失败保留为其 CollectionRun，不提前计入最终结果。
 
 批次摘要必须分开提供：
 
 - `planned_products`：批次固定计划中的不同商品数；
-- `page_visits`：开始过的真实 CollectionRun 数；
-- `first_pass_success`：首轮基础采集成功的商品数；
-- `retry_success`：补采后达到所需成功条件的商品数（只计商品数，不计访问数）；
-- `final_failed`：最终基础采集失败或经营来源/字段技术故障尚未恢复的商品数；
-- `not_executed`：未发生商品页面访问的计划商品数。
+- `attempts_started`：已持久化创建并置为 `running` 的 CollectionRun 数，包括随后因浏览器/导航前故障而未访问页面的 Run；
+- `page_visits`：已确认调用浏览器页面导航命令的次数；页面未必成功加载或被平台接收；
+- `page_visits_unknown`：进程中断/持久化故障发生在导航调用与确认记录之间、无法证明命令是否已发出的次数；不伪装为已确认访问，访问预算按 `page_visits + page_visits_unknown` 保守计算；
+- `retry_visits`：`attempt_number > 1` 且已确认导航或处于导航确认不确定状态的子集，即 `retry_visits ≤ page_visits + page_visits_unknown`；同页等待不增加计数；
+- `first_pass_success`：首轮结束时基础采集成功，且八项 Observation 中没有未解决的 `loading / source_unavailable / read_failed` 的商品数。有效经营指标可少于八项；真实 placeholder 不使其失败；不可补采的技术异常也不能算首轮成功；
+- `retry_success`：本批次至少发生一次补采，且补采的本批次新 Observation 证明首轮可重试技术异常已恢复的商品数。它不是要求八项全 `observed`；
+- `final_failed`：最终基础采集失败，或经营指标存在未恢复的技术异常，按商品去重计数；
+- `not_executed`：批次终止时从未发起页面导航的计划商品数。
 
-经营 `partial`、`placeholder` 不自动算成“最终失败”。计划商品始终只计一次，页面访问每轮计一次；实时 `completed` 只有商品已确定最终结果后递增。保留现有 `completed + remaining = total` 产品计数语义，并另报访问次数/补采队列，禁止用访问次数推动商品进度条。
+首轮技术异常仅在本批次后续 attempt 的新 Observation 不再有相应 `loading / source_unavailable / read_failed`，且字段被真实读取为 `observed` 或真实 `placeholder` 时视为恢复。示例：首轮助手整组不可用，补采得到 6 个 `observed`、2 个真实 `placeholder`，即技术异常恢复并计入 `retry_success`；原有 `latest_valid` 值、其他批次 Observation 或旧快照不得冒充本批次补采证据。保留首轮异常 Observation，不将其改写成成功。补采后仍有技术异常则 `final_failed`；同时基础结果如实记录。经营字段全为真实 placeholder 且无技术失败时为成功（可显示“经营无有效值”），不触发补采。
 
-建议的批次持久化终态为 `completed / partial_failure / verification_required / ended / interrupted / collect_failed`；暂停、继续、计划休息和验证冷却等活动中状态继续由唯一 `BatchRuntime` 提供。失败、提前结束和未执行数量均需保留可解释摘要。
+`first_pass_success`、`retry_success`、`final_failed` 对已执行并终结的商品互斥，且三者之和等于 `completed`；每个计划商品至多计入一个结果。若兼容接口输出 `failed` 计数，它等于商品级 `final_failed`，不是访问次数。`technical_exception_products` 是 `final_failed` 中仍有经营技术异常的唯一商品子集；`base_failed_products` 是其中基础失败的唯一商品子集，两者可能重叠，不相加替代 `final_failed`。持久化/运行状态始终满足 `completed + remaining = planned_products`。`completed` 是已有最终商品结果（含 final_failed）的商品数；活动批次 `remaining` 含 queued/running，终止后未执行项仍在 `remaining`，并且 `not_executed ≤ remaining`。访问数与商品进度完全分离。
+
+持久批次字段分离为生命周期 `lifecycle_status = created / running / terminal` 和仅终态设置的 `outcome_code`。`outcome_code` 使用持久化合同：`success / partial_success / partial_failure / user_ended / verification_required / collect_failed / infrastructure_error / interrupted`。先按实际终止原因判定：重启恢复=`interrupted`；持久化/浏览器基础设施故障=`infrastructure_error`；验证阻断=`verification_required`；用户结束=`user_ended`。只有自然结束才按结果派生：所有计划商品均成功且无未执行项=`success`；无基础失败、但至少一件商品仍有经营技术异常=`partial_success`（即使没有成功商品）；存在基础失败且至少一件商品成功=`partial_failure`；没有任何成功商品且至少一件基础失败=`collect_failed`。成功商品数为 `first_pass_success + retry_success`。出现无法归因的未执行商品时不得伪报 success，归为 `infrastructure_error` 并保留原因。补采恢复的商品按成功处理。终止原因优先级为 `interrupted > infrastructure_error > verification_required > user_ended > result-derived`，但只适用于实际发生的终止原因。`BatchRuntime.status` 继续只表达运行状态（`idle/running/pausing/paused/stopping/stopped/resting/cooling_down/completed/verification_required`）；现有 API `outcome_code`（`success/partial_success/partial_failure/user_ended/collect_failed/verification_required/collection_in_progress`）含义不变。持久批次字段不复用 Runtime status 枚举；适配层不得重定义现有 Runtime/API 语义。持久化的 `infrastructure_error`、`interrupted` 在旧 Runtime outcome 没有对应值时不得伪造映射；旧 API 仅按其已有合同报告运行态/可表达结果。
 
 ## 补采规则
 
 ### 首轮采集与同页面等待
 
 1. 所有计划商品先按冻结顺序进行一次首次访问。只有首轮结束后，Runner 才消费补采队列；不在首轮中途插队补采。
-2. 对同次可信 Offer 页面，Collector 在官方助手目标区域或字段可见后进行有界等待和再次读取，避免读到首帧 loading 就立刻启动另一次页面访问。建议单次页面访问最多等待 5 秒；该值是 Spec 提案，需 ChatGPT Review 确认或调整。等待期间不新建 Page / 导航，不增加 `CollectionRun`，也不阻断暂停、结束和验证检测。
+2. 对同次可信 Offer 页面，Collector 在官方助手目标区域或字段可见后最多额外等待 5 秒，并再次读取；若助手已就绪则立即读取，不固定等待满 5 秒。等待期间不新建 Page / 导航，不增加 CollectionRun、attempt 或访问数。每个安全检查点按现有逻辑检测验证；暂停/结束请求遵循现有安全边界，完成或安全中止当前读取后执行控制，不屏蔽验证信号。
 3. 页面显示 `-` 的字段固定记 `placeholder`。真实 placeholder 不作为补采资格；指标不足 8/8 不是重试条件。
 
 ### 补采资格
@@ -107,10 +112,10 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 ### 有限队列和停机保护
 
-- 补采项进入当前首轮队列尾部；每个商品保留自己的重试次数和 attempt 历史。
+- 所有首轮商品结束后才构造补采队列；符合条件的商品按原计划顺序进入队尾，每个商品保留补采次数和 attempt 历史。一次队列项至多发起一次补采页面访问。
 - 初始允许范围为 **0～2 次最大补采**，默认 **0**。每次批次创建时将该值复制为不可变批次配置快照；进行中的任务不受随后设置更改影响。
-- 建议首次功能默认只启用 1 次上限；2 次供用户显式配置。每个计划商品的总商品页访问上限为 `1 + operating_metrics_retry_max`。每次补采仍遵守原 item interval，访问计数纳入现有连续采集数及计划休息节奏，不能重置或缩短。
-- 若连续 3 个不同商品的首轮都出现“官方助手整组来源不可用”（8 项同源 `source_unavailable`），对本批次剩余商品停用助手补采和额外 readiness wait；仍按原计划对商品各做一次基础页面访问及一次即时助手读取，除非已有登录/验证/访问限制信号要求 Runner 按现有机制停止。继续保存每页真实字段状态和来源原因。该阈值是基于“防止整组助手失效导致逐商品补采”的初始建议，诊断样本没有达到该阈值，需 Review 确认。
+- 产品默认仍为 0；用户启用后建议默认选择 1，允许显式设置 2。每计划商品最多 `1 + operating_metrics_retry_max` 次已发起的页面导航；导航前失败不计页面访问，也不产生无限重试。每次补采遵守原 item interval，纳入现有连续采集数及计划休息节奏，不重置或缩短。
+- 连续异常保护：连续 3 个**不同商品**的首轮 attempt 均有八字段整组 `source_unavailable` 时，立即熔断本批次新增补采。此前已排队但未开始的补采全部标记 `cancelled_circuit_breaker`，记录取消数和熔断原因；不得再发起补采访问。该熔断不停止其他商品首轮的正常页面访问、即时读取及有界同页等待，也不影响基础采集；平台验证/限制仍由既有 Runner 机制优先停止。只有后续首轮商品出现可信助手来源恢复（至少一个助手字段为 observed 或真实 placeholder，且无整组 unavailable）才将连续计数清零；同商品补采不能累计或重置连续首轮计数。批次详情展示触发原因、连续计数及被抑制商品数。
 - 访问限制、验证、登录失效、Offer 不匹配、批次取消或结束始终优先于 retry queue；不得绕过现有验证冷却或人工处理状态。
 - `operating_metrics_retry_max` 与 `auto_resume_max` 完全独立。前者控制经营指标额外页面访问，后者继续只控制验证冷却后的恢复次数。
 
@@ -124,19 +129,20 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 新增 `collection_batches` 与 `collection_batch_items` 两表：
 
-- `CollectionBatch`：数据库 ID、不可变且唯一的真实任务 ID（建议 UUID）、触发方式 (`manual_selected / manual_all_active / scheduled`)、创建/开始/结束时间、持久化终态、冻结的重试设置、计划商品数及批次级错误码/安全摘要。其他摘要统计优先从商品行和 CollectionRun 聚合，避免与事实重复写入。
-- `CollectionBatchItem`：batch FK、稳定 position、可空 competitor FK、执行/最终基础状态、最终经营状态及批次保护/停止原因。每批每个商品只创建一行。不得复制不必要的标题、店铺、Offer URL、Cookie 或原始页面内容。
-- `CollectionRun`：增加 nullable `collection_batch_item_id` 与 nullable `attempt_number`；对 V1.2 新批次每次页面访问分别创建 `CollectionRun`，attempt 从 1 开始递增。没有可证明归属的既有 Run 保持两个字段 NULL，绝不回填推测批次。
+- `CollectionBatch`：数据库 ID、不可变且唯一的真实 task ID（建议 UUID）、触发方式 (`manual_selected / manual_all_active / scheduled`)、创建/真实开始/结束时间、`lifecycle_status`、`outcome_code`、冻结设置、计划商品数、批次保护/安全错误摘要及定时 occurrence 幂等键。`created` 仅表示批次与计划已提交、Runner 还未确认开始。
+- `CollectionBatchItem`：batch FK、稳定 position、可空 competitor FK、执行状态、互斥 final_result、最终基础/经营状态、批次保护/停止原因及匿名统计快照：`attempts_started / page_visits / page_visits_unknown / retry_visits`、终态结果分类和必要异常计数。每批每商品仅一行；不复制 Offer ID、店铺、标题、URL 或原始页面内容。计数由关联 Run 事务递增，商品删除时保留该匿名快照。
+- `CollectionRun`：增加 nullable `collection_batch_item_id`、nullable `attempt_number`、导航已发起时间/标志及终结来源。每次尝试在导航前创建 Run，attempt 从 1 开始递增；旧 Run 关联字段保持 NULL，不推测归批。
 - `OperatingMetricObservation` 继续 FK 到单次 CollectionRun；字段原因保留在 Observation `reason` 中。失败 attempt 记录不因后续成功而修改或删除。
 
-批次创建和固定商品计划应一次事务提交成功后再启动唯一 Runner。每次真实访问先创建并提交 running CollectionRun，再执行页面访问。单次访问的基础事实、八项 Observation 和 Run 终态沿用现有原子保存事务；保存失败回滚全部本次业务事实，再用安全的独立事务把已存在 Run 标记为真实保存失败。Batch item 的状态推进与该 attempt 的终态在同一事务中提交；若无法同事务，须实现按 `CollectionRun` 关联重建的幂等恢复 seam，不能产生“访问已完成但商品被重复计数”。
+批次创建和固定商品计划一次事务提交后才调用唯一 Runner；Runner 确认已获锁并开始才将批次从 `created` 转为 `running`。每次访问先提交 running CollectionRun；浏览器已启动后，在调用导航命令前持久化一次性 dispatch claim，随后调用浏览器导航命令并持久化“已确认调用”事件。确认事件计入 `page_visits`；若进程在 claim 与确认记录间中断，恢复为 `page_visits_unknown`，不假定成功或未发生。导航调用报错但调用已发出仍计一次；浏览器启动失败、验证在导航前暂停、dispatch claim 提交失败不调用导航且不计访问。item 匿名统计保留 `attempts_started / page_visits / page_visits_unknown / retry_visits`；批次计数由 item 快照求和，不另存重复总数。单次访问的基础事实、Observation 和 Run 终态沿用现有原子保存事务；Run、item 计数/状态推进及 attempt 终态尽量同事务提交。保存失败不得重访；用安全独立事务记录保存失败/未知结果，幂等启动核对不得重复 Snapshot/Observation/计数。访问预算按已确认和 unknown 访问合计执行，不把导航发起宣称为页面成功加载。
 
 不要单独新增第二个 Runner、队列服务、分布式任务系统或第二个持久化执行状态机。持久化批次是既有唯一 Runner 与历史查询的事实记录；运行中的暂停/继续/结束/冷却控制仍使用现有 `BatchRuntime`、`COLLECTION_LOCK` 和 API。
 
 ### 服务重启和批次中途结束
 
-- 重启后不自动续跑、不自动导航、不重开 Profile；旧进程的 `running` 批次由启动恢复检查标记 `interrupted`，未启动商品标记/汇总为 `not_executed`。启动恢复不得把 `CollectionRun` 改成成功。
-- 若 CollectionRun 仍为 `running`，标记为 interruption/technical failure 的具体规则需与现有 `_mark_failed` 事务约定对齐；不确定已保存事实时不得重复 Snapshot/Observation。若该 Run 已有终态，则从其 batch item/attempt 关联恢复批次统计。
+- 重启启动阶段只执行数据库核对，不创建/打开 Chrome，不自动续跑、不自动导航、不重开 Profile。旧进程遗留的 `created`（Runner 尚未确认开始）或 `running` 批次均转 `terminal/interrupted`；旧批次不自动重放。Scheduler 随后按照原有 fixed_daily/rolling_24h 与 catch_up/skip 配置决定是否创建**新** occurrence/batch；新批次不是恢复旧批次，也不修改用户配置。
+- 幂等核对规则：批次 `created` 表示计划已提交但 Runner 未确认启动，重启后中断，商品均未执行；Run `running` 且无 dispatch claim 则计一次 `attempts_started`、零访问，以 `interrupted_before_navigation` 收口；有 claim 且无确认事件则计入 `page_visits_unknown` 并以 `interrupted_navigation_unknown` 收口；已确认导航事件保留一次 `page_visits`，以 `interrupted_after_navigation` 收口，不补造成功 Observation/Snapshot；Run 已终态但 item 未更新时，只根据唯一 Run/attempt 关联补齐 item 与匿名计数快照，使用唯一约束/幂等更新防止二次累计。若 Run/item 状态提交原子性无法证明，保留安全错误并终止，不重访。
+- 终态已写入但 batch outcome/汇总未完成时，依据持久化 item/Run 事实重建一次；终态批次不得被恢复成活动态。
 - 用户“结束”表示当前商品按既有 runner 规则完成其可安全提交的事务后停止，不再启动剩余初次访问或补采；未完成计划数和排队 retry 不应冒充失败访问。
 - 暂停发生在页面访问/事务中时沿用既有安全边界：当前 CollectionRun 得到一致终态后关闭/停放浏览器并进入 paused；补采队列和已发生 attempt 保留，继续时不重新运行已经终态的 attempt。冷却与 auto-resume 完全继续沿用 V1 状态机。
 
@@ -144,13 +150,14 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 以下是建议新增/扩展合同，实际实现遵循现有 FastAPI Pydantic schema 和统一错误 envelope。
 
-- 保持 `POST /api/competitors/collect-batch`、`GET /api/competitors/collect-batch/status`、`POST .../pause|resume|end` 的路径及现有状态控制语义。每个新 POST 返回/后续 status 增加 `batch_id`、`task_id`、当前首轮/补采阶段、page visit count、retry progress 及固定商品数摘要。既有 `total` 始终是不同计划商品数，`items` 仍每商品一项。
+- 保持 `POST /api/competitors/collect-batch`、`GET /api/competitors/collect-batch/status`、`POST .../pause|resume|end` 的路径及现有状态控制语义。新 POST/status 增加 `batch_id`、`task_id`、`lifecycle_status`、终态持久化 `batch_outcome_code`、当前首轮/补采阶段、`attempts_started/page_visits/page_visits_unknown/retry_visits`、重试进度和固定商品摘要。现有 Runtime `status` 和 `outcome_code` 字段含义/取值不变；持久化值必须使用不同字段名，避免语义冲突。既有 `total` 始终是不同计划商品数，`items` 仍每商品一项；`completed + remaining = total`，补采不重复推动 completed。
 - 现有 `GET /api/collection-runs` 默认过滤行为与字段兼容。新增 nullable `collection_batch_item_id`、`attempt_number` 和 batch task ID 展示字段；既有旧客户端忽略新增字段应可用。增加 `batch_id` 查询过滤及异常类型过滤；只有显式 `unbatched=true` 才筛选没有持久批次关联的记录。
-- 新增只读 `GET /api/collection-batches`，以分页/筛选返回批次摘要，支持时间、触发方式、终态和异常类别。新 endpoint 默认异常优先排序；提供稳定时间/ID 次排序。
+- 新增只读 `GET /api/collection-batches`，以分页/筛选返回批次摘要，支持时间、触发方式、终态和异常类别。默认 `started_at DESC, batch_id DESC`；异常筛选仅过滤结果，不改变排序。
 - 新增只读 `GET /api/collection-batches/{batch_id}`，返回批次快照和商品列表；attempt 历史含关联 CollectionRun、两路 Run 状态、八项 Observation 状态/原值/安全原因/时间。分页策略按现有数据量最小实现；不得 N+1 查询商品、Run 或 Observation。
-- 批次列表响应的摘要字段固定为 `batch_id / task_id / trigger / status / started_at / finished_at / planned_products / page_visits / first_pass_success / retry_success / final_failed / not_executed / retry_max / retry_visits / exception_types`，并含分页 `items / total / page / page_size`。详情的每个商品含 `position / competitor_id / execution_status / base_status / operating_metrics_status / attempts`；每个 attempt 含 `collection_run_id / attempt_number / started_at / finished_at / base_status / operating_metrics_status / error_type / safe_error_message / fields`。`fields` 一项对应一条真实 Observation 的 `metric_key / status / raw_value / reason / observed_at`；全局失败 Run 没有字段 Observation 时返回空数组，不补八条假字段。
+- 批次列表摘要包含 `batch_id / task_id / trigger / lifecycle_status / batch_outcome_code / started_at / finished_at / planned_products / completed / remaining / attempts_started / page_visits / page_visits_unknown / retry_visits / first_pass_success / retry_success / final_failed / technical_exception_products / base_failed_products / not_executed / retry_max / exception_types` 及分页信息。详情每个商品包含 `position / competitor_id / execution_status / final_result / base_status / operating_metrics_status / attempts / deletion_notice`；每个 attempt 包含 Run ID、attempt number、导航事件时间、终态、错误码/安全消息及 fields。fields 只对应真实 Observation；没有 Observation 返回空数组。商品已删除时 competitor_id 为 NULL，详情显示“商品已删除，字段明细已随商品删除”，不得伪造 Observation；匿名计数快照仍返回。
 - 触发类型由创建批次的路径明确定义，不按 Run 时间、调用栈、商品顺序或 `CollectionRun` 现有字段推断。
 - 请求参数校验错误维持 4xx 和既有 error code 格式；未知批次返回稳定 404。权限、鉴权沿用当前本地工作台 API，不新建用户角色或外部服务。
+- 新增 Scheduler occurrence 唯一键：同一现有调度器认定的 due occurrence 在事务/重启竞争下最多创建一个批次。键使用现有策略计算出的 occurrence 身份/`scheduled_for`，并带策略身份；不得改变现有 due 计算。不得用商品 ID 或当前毫秒时间临时生成幂等键。catch_up/skip 是否创建完全由现有策略决策；skip 不创建，catch_up 对既有规则认定的每个待补 occurrence 仅创建一次。获取运行锁失败不留下可执行空批次；已占用 occurrence 不重复启动。
 
 ## 设置
 
@@ -162,13 +169,14 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 ## 单商品、手动批次与 Scheduler 边界
 
 - **手动批次**：大屏立即采集入口继续使用唯一现有 POST/Batch Runner。选中集合在创建时固定；触发方式记录为 `manual_selected` 或 `manual_all_active`。暂停、继续、结束操作仍从大屏进入。
-- **定时采集**：沿用现有 daily scheduler 的 due 商品判断、`rolling_24h / fixed_daily`、catch-up/skip、互斥和配置快照；scheduler 将一次真正启动的 due 集合交给同一个 Batch Runner 并持久化为 `scheduled`。Scheduler 不创建第二个 Runner，也不在 Settings 或采集记录页单独执行逐商品补采循环。调度关闭、已完成/未到期、无 due ID、获取锁失败时不得造 batch。
+- **定时采集**：沿用现有 due 判断、`rolling_24h / fixed_daily`、catch-up/skip、互斥和配置快照；一次 due occurrence 由唯一键去重并交给同一个 Batch Runner。获取锁失败不创建可执行重复批次；重启后的新触发遵守现有 missed policy，不恢复旧批次。调度关闭、已完成/未到期、无 due ID 时不建批次，不修改用户设置。
 - **单商品立即采集**：现有单商品 API/详情操作保持独立，无 `CollectionBatch`；每次真实访问仍保留独立 CollectionRun 及 Observation，不运行补采逻辑，`batch_id` 为空。其 CollectionRun 可进入历史单次记录。
 - “历史单次记录”仅展示可靠证实为 unbatched 的记录。升级前 run 一律保留为 unbatched；V1.2 新创建、由现有 Runner 正式启动的批次页访问可由 nullable item FK 直接判别。
 
 ## Scheduler、验证与节奏兼容
 
 - `COLLECTION_LOCK` 仍是单商品、手动批次、定时批次之间的互斥边界。Runner 仍串行使用 headed Browser/Context；不并发访问，不增加 browser profile，不绕过平台验证。
+- Scheduler 启动时的批次恢复只读写数据库状态；任何 Chrome/Profile 启动必须来自新的、去重后的合法调度 occurrence 或用户操作。occurrence 幂等键不改变现有 fixed_daily/rolling_24h、catch_up/skip 选择结果。
 - 每次真实页面访问（首轮和补采）都执行现有验证检测与人工处理。验证触发必须停止开始新的商品访问/补采，保留当前页及 Runner 现有可见性、关闭 Browser、冷却倒计时、恢复次数和人工处理行为。
 - 现有 item interval、连续采集次数、计划休息、暂停/继续/结束都要覆盖补采访问。页面读取等待只在当前一次访问内进行，不构成访问间隔或重试次数。
 - 设置修改只作用于后续批次；运行批次继续使用它开始时的 interval、rest、cooldown、auto-resume 和 metrics retry 快照。新 metrics retry 设置不能消费、重置或扩大 verification `auto_resume_max`。
@@ -178,9 +186,9 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 - 仅新增 Alembic 迁移，不执行正式迁移；实现阶段另行按仓库 SQLite/Alembic 安全门槛进行预检和隔离验证。
 - 迁移新增批次和商品关系表、必要 FK/check/索引；`CollectionRun` 新增 nullable 批次商品 FK/attempt 序号。不得为旧 CollectionRun 回填批次，也不得从密集的同日 runs 构造旧批次或 `CollectionBatchItem`。
 - 保留现有 `latest_attempt`（Observation 最近真实尝试）、`latest_valid`（只从 observed 且非空 raw value 选取）、基础 Snapshot 和 Observation 规则；`placeholder/loading/source_unavailable/read_failed` 均不覆盖最新有效值。
-- 沿用现有单事务显式删除路径及 NO ACTION 原則，不能为方便批次页面改成不受控的数据库级联。批次行须能在关联商品被删除后保留批次汇总。**建议删除时保留批次和该商品的去身份化 item 汇总，将 item 的 competitor 引用置空并按现有顺序删除 ChangeEvent、Observation、CollectionRun、SKU Snapshot、ProductSnapshot、Competitor；不保留标题、店铺、Offer ID、URL。** 因此已删除商品的页面级 attempt/字段历史会按现有商品删除约定清除，详情显示“商品已删除，商品采集明细已随商品删除”。此规则兼顾批次计数连续性和既有删除/隐私预期，需 ChatGPT Review 确认。
-- 删除及批量删除必须一次事务处理；任一 FK/提交步骤失败整体回滚。Batch item 已发生尝试时也不得阻止用户使用现有商品永久删除入口。
-- 新增约束/索引建议包括 `(batch_id, position)`、`(batch_item_id, attempt_number)`、批次终态/触发枚举和分页排序索引；具体迁移不得暗中重建/修复既有无关 Schema。发现正式库 schema drift 必须遵循独立安全门槛停止。
+- 沿用现有单事务显式删除路径及 NO ACTION 原则，不改成不受控级联。获准保留去身份化 item 汇总：在既有原子删除事务中先保存/确认该 item 的 attempt、page/retry/unknown visit、最终结果和必要异常分类快照，再将 competitor FK 置空，并按现有顺序删除 ChangeEvent、Observation、CollectionRun、Snapshot 和商品。快照不得包含可反推出商品身份的信息（Offer ID、店铺、标题、URL、原始页面内容）。批次所有计数只依赖 item 匿名快照/关联现存 item，不依赖已删除的 Run 行，因此删除前后计划数、访问/尝试数、执行结果和异常统计一致。字段明细没有了就明确显示已随商品删除，禁止生成合成 Observation。
+- 删除及批量删除必须一次事务处理；任一 FK/提交步骤失败整体回滚。存在 `created/running` 批次商品计划时，删除与批次创建/Runner 启动共享事务或互斥检查，返回现有 409 语义，避免已提交计划在取得 Runner 锁前被删除；采集运行中沿用现有互斥/409 保护。item 终结后不得阻止商品永久删除。
+- 新增约束/索引包括 `(batch_id, position)` 唯一、`(batch_item_id, attempt_number)` 唯一、非空 Scheduler occurrence key 唯一、导航标记单次写入约束，以及批次 lifecycle/outcome/trigger 合法值和分页排序索引。具体迁移不得暗中重建/修复既有无关 Schema；旧 Run 外键仍 nullable。发现正式库 schema drift 必须遵循独立安全门槛停止。
 
 ## 测试方案
 
@@ -188,25 +196,27 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 ### Backend / 数据库
 
-1. 批次创建一次性原子写入任务 ID、触发方式、设置快照和不重复商品集合；校验拒绝时无 Batch/Item/CollectionRun。
+1. 批次创建一次性原子写入任务 ID、触发方式、设置快照和不重复商品集合；校验拒绝时无 Batch/Item/CollectionRun；创建成功但 Runner 尚未确认启动即模拟崩溃时，启动核对将其幂等终结为 interrupted 且商品未执行。
 2. 单 Runner/锁保护跨手动、scheduled 与单商品；批次每商品仅一行，多个真实页面访问对应多个 CollectionRun，attempt 编号递增，商品计数不增加。
 3. 同一页面的 bounded wait 能最终读到助手数据则只有一条 CollectionRun；wait 超时后只有符合资格的 item 入尾队列。
-4. 先全部完成首次访问后才开始补采；placeholder 不补；达到 0/1/2 上限后停止；访问次数从不超过 `N×(1+r)`；rest/interval 对 retry 访问生效。
-5. 基础成功 + 经营部分/占位、补采成功与失败、字段级原因、基础失败 + 经营部分、真实下架分别正确计数/展示；首轮失败历史保留，补采成功更新最终结果但不改写旧 Observation。
+4. 先全部完成首次访问后才开始补采；placeholder 不补；达到 0/1/2 上限后停止；访问次数从不超过 `N×(1+r)`；rest/interval 对 retry 访问生效；同页等待最多 5 秒、就绪立即读取且不增加访问计数。
+5. 补采后 6 observed + 2 个真实 placeholder 能将首轮来源异常判为已恢复并计一次 retry_success；仅本批次新 Observation 可作恢复证据；首轮失败历史保留。商品级互斥结果计数、base/technical 异常子集以及 completed/remaining/not_executed 不变量一致。
 6. 登录失效、验证、访问限制、Offer 不符、已确认下架、数据库事务错误不盲目补采；验证冷却/自动恢复次数独立且行为与既有测试一致。
-7. 三个连续不同商品的助手整组 unavailable 后停止安排后续助手补采；不中断已有验证检测，按策略继续首轮基础采集或按既有平台安全状态结束。
-8. 重启恢复将活动批次标记 interrupted、不自动续跑；根据已提交 CollectionRun 恢复访问数及终态，不重复计数；未执行 item 保持未执行。
-9. 用户暂停时当前安全事务完成后不丢队列；继续不重访终态 attempt；结束不访问剩余/重试商品。
-10. CollectionRun / Observation / BatchItem 联合事务提交失败无半写入；已存在 Run 以稳定错误状态收口；批次统计可重建且不假成功。
-11. 事务性商品删除遵守明确顺序；批次汇总保留、已删除 item 去身份化、attempt FK 不悬空；任一步失败完全 rollback。
-12. 迁移旧数据后全部旧 run 的 batch 关联仍 NULL，旧 Observation/Snapshot/latest valid 一致；migration downgrade 与现有约束可验证。
+7. 三个连续不同商品的首轮助手整组 unavailable 后熔断新增补采，取消未执行队列并记录原因/数量；同商品补采不影响连续计数；后续首轮真实来源恢复才重置；其余首轮等待/验证检测行为不变。
+8. 分别覆盖导航前浏览器失败、导航调用发起后失败、验证暂停、访问保存失败、进程中断；attempts_started/page_visits/page_visits_unknown/retry_visits 按事件规则计数，同页等待不创建 Run。
+9. 重启仅做 DB 核对，活动/未启动批次标 interrupted、不自动续跑；Run running 且无 dispatch claim 为 0 次访问，有 claim 无确认事件计一次 unknown，确认事件保留一次 page visit；Run 已终态而 item 未更新时幂等补齐；不得重复计数或重访。
+10. 同一 fixed_daily/rolling occurrence 在重启或并发调度下最多创建一个批次；catch_up/skip 保持现有决策，新的合法 occurrence 新建批次而非恢复旧批次。
+11. 用户暂停时当前安全事务完成后不丢队列；补采暂停后恢复不重访终态 attempt；结束不访问剩余/排队补采商品。
+12. CollectionRun / Observation / BatchItem 联合事务提交失败无半写入；已存在 Run 以稳定错误状态收口；批次统计可重建且不假成功；Run/item 更新错序可幂等修复。
+13. 事务性单个/批量删除遵守明确顺序；汇总删除前后相同、item 去身份化、attempt FK 不悬空、字段明细显示随商品删除；采集中走互斥/409；任一步失败完全 rollback。
+14. 迁移旧数据后全部旧 run 的 batch 关联仍 NULL，旧 Observation/Snapshot/latest valid 一致；migration downgrade 与现有约束可验证。
 
 ### API / 前端 / 浏览器
 
 1. 旧批量 start/status/pause/resume/end 与旧 CollectionRun 客户端合同兼容；settings 新旧字段范围严格校验。
 2. 首页批次分页/触发/状态/异常过滤准确；旧无批次数据出现在“历史单次记录”，不显示虚构批次；按 batch detail 返回 attempt 与字段原因，无 N+1。
 3. Dashboard 仍是唯一实时控制入口且 counters 分离产品数/访问数；页面 refresh 消费 authoritative status，不生成第二个 polling loop。
-4. 采集记录列表异常优先，筛选页面占位/来源不可用/loading/read failed/基础失败；detail 展示八项状态和所有 attempts，placeholder 显示无需补采。
+4. 采集记录列表按真实批次开始时间倒序；筛选页面占位/来源不可用/loading/read failed/基础失败不改变顺序；detail 可异常优先呈现商品，但保留原计划位置和 attempt 时间，placeholder 显示无需补采。
 5. 删除后批次展示去身份化 item 和稳定汇总；无 Offer、店铺或历史页面内容泄漏。
 6. Frontend 使用既有组件和 fail-closed `/api/**` Playwright mock 验证首页 → 筛选 → 批次详情 → attempt 展开；不向真实数据库或平台请求。
 
@@ -227,7 +237,7 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 - 不新增第二个 Runner、并发采集、分布式队列、Redis/Celery、WebSocket/SSE、自动验证/验证码绕过、无限重试或“保证 8/8”。
 - 不因单个 `-`、缺少 8/8 指标、成功基础采集或确认下架自动补采。
 - 本地诊断只反映现存 SQLite 行。来源不可用原因现存数据明确到“助手标题不存在或不唯一”，不能进一步断定是助手未加载、页面 DOM 改版或平台行为；需要真实页面 POC 才能细分，后续 QA 不得只靠数据库日志声称解决。
-- 5 秒同页等待、连续 3 商品来源保护阈值和删除商品时保留去身份化 item 汇总是建议的初始规则，需 ChatGPT Review 确认。若需要调整，在 Spec Review 阶段修改本文件，不能 Implement 时静默改规则。
+- 5 秒同页等待、连续 3 商品来源保护阈值、发生导航命令即计访问，以及删除商品时保留去身份化 item 汇总为本版明确规则；如 Review 需调整，应在 Spec Review 阶段修改本文件，不能在 Implement 时静默改规则。
 - 基础采集重试不包含在 V1.2 经营指标设置内；若后续要覆盖，需要再定义可验证的瞬态错误码和独立访问预算。
 
 ## 与现有实现的接口检查
@@ -244,5 +254,5 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 1. 本轮只读诊断与本文档自检。
 2. 仅提交并 Push 本 Spec（如索引确有必要才连同索引）；不向 Issue Tracker 发布，不加 triage label。
-3. ChatGPT 从 GitHub 读取最新提交，独立 Review 业务规则、删除策略、迁移风险、接口兼容和边界测试。
+3. ChatGPT 从 GitHub 读取最新提交，独立 Final Spec Review 业务规则、删除策略、迁移风险、接口兼容和边界测试。
 4. Review 通过后才冻结并进入另行授权的 Implement 阶段。

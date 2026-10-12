@@ -92,4 +92,4 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 
 | Spec | 状态 | 范围 |
 | --- | --- | --- |
-| [collection-reliability-records-v1.2.md](collection-reliability-records-v1.2.md) | 待 ChatGPT 独立 Spec Review；尚未 Freeze | 真实 SQLite 诊断、持久化批次/采集记录、有限经营指标补采。Review 通过前不得 Implement。 |
+| [collection-reliability-records-v1.2.md](collection-reliability-records-v1.2.md) | 待 ChatGPT 独立 Final Spec Review；尚未 Freeze | 真实 SQLite 诊断；批次生命周期/outcome 分离、匿名删除后汇总、导航事件计数、调度 occurrence 幂等；默认关闭且有熔断的有限经营指标补采。Review 通过前不得 Implement。 |
