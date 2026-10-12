@@ -1,6 +1,6 @@
 # 采集可靠性与采集记录重构 V1.2
 
-状态：待 ChatGPT 独立 Spec Review；Review 通过前不冻结、不进入 Implement。
+状态：Frozen / 已冻结（2026-10-12；ChatGPT 独立 Final Spec Review PASS，P0/P1/P2 = 0/0/0；审核基线 `02e9c6a0f61b76091f993b6b0af25796b5024cc8`）。
 
 ## 问题与目标
 
@@ -248,7 +248,7 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 - 唯一运行路径是 `run_batch_collection`、`BatchRuntime`、`COLLECTION_LOCK`，手动批次 API 继续调用现有 start/pause/resume/end seam。
 - Collector 当前在单次导航后立即解析助手顶部区域；字段 Observation 已含 `reason`，适合插入有限同页等待并保留每次读取证据。
-- `CollectionRun` 保持“一次访问”语义；`OperatingMetricObservation` 保持“一次访问一个字段”语义；独立 CollectionRun History endpoint 与现有 `_delete_competitor_history` 是读历史及删除路径。
+- `CollectionRun` 保持“一次采集尝试”语义；`OperatingMetricObservation` 保持“一次访问一个字段”语义；独立 CollectionRun History endpoint 与现有 `_delete_competitor_history` 是读历史及删除路径。
 - 定时入口是 `prepare_auto_batch`/现有 scheduler lifecycle，应调用同一个持久化 Batch Runner，而非继续扩建第二条 runner loop。
 - 现有竞品监控 Settings PUT 要完整提交所有字段，新增 retry 设置需要同步 Settings 页面/API、BatchConfig 快照、现有设置测试和所有请求 fixture。
 - 当前采集任务页面已经消费唯一 status polling 和 `GET /api/collection-runs`；V1.2 需将实时卡片/按钮职责留在 Dashboard，将历史区域改由批次列表/详情 API 驱动，并保留 unbatched legacy 访问。
@@ -256,7 +256,7 @@ V1.2 让大屏继续承担实时批量采集进度和控制，新增可查询的
 
 ## Spec Review 后的流程
 
-1. 本轮只读诊断与本文档自检。
-2. 仅提交并 Push 本 Spec（如索引确有必要才连同索引）；不向 Issue Tracker 发布，不加 triage label。
-3. ChatGPT 从 GitHub 读取最新提交，独立 Final Spec Review 业务规则、删除策略、迁移风险、接口兼容和边界测试。
-4. Review 通过后才冻结并进入另行授权的 Implement 阶段。
+1. 本轮完成只读诊断与本文档自检。
+2. Freeze Commit 仅包含本 Spec 与必要的状态索引；不向 Issue Tracker 发布，不加 triage label。
+3. ChatGPT 从 GitHub 读取最新提交，独立 Final Spec Review 业务规则、删除策略、迁移风险、接口兼容和边界测试；本 Spec 已于 2026-10-12 通过（P0/P1/P2 = 0/0/0）。
+4. Spec 冻结后进入 Implement 阶段，严格遵循冻结合同。

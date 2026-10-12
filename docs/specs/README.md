@@ -88,8 +88,8 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 
 以上 Spec 不计入 2026-10-08 的 30 份历史核验分类统计；当前索引共收录 33 份 Spec。组分析现按已实施的 group-competitive-position-v1 及其继承合同运行；完整验证结果见最终收尾报告。
 
-## 待 ChatGPT Spec Review
+## 已 Freeze Spec（2026-10-12）
 
 | Spec | 状态 | 范围 |
 | --- | --- | --- |
-| [collection-reliability-records-v1.2.md](collection-reliability-records-v1.2.md) | 待 ChatGPT 独立 Final Spec Review；尚未 Freeze | 真实 SQLite 诊断；批次生命周期/outcome 分离、匿名删除后汇总、导航事件计数、调度 occurrence 幂等；默认关闭且有熔断的有限经营指标补采。Review 通过前不得 Implement。 |
+| [collection-reliability-records-v1.2.md](collection-reliability-records-v1.2.md) | ChatGPT 独立 Final Spec Review PASS / Frozen；P0/P1/P2 = 0/0/0；审核基线 `02e9c6a0f61b76091f993b6b0af25796b5024cc8` | 真实 SQLite 诊断；批次生命周期/outcome 分离、匿名删除后汇总、导航事件计数、调度 occurrence 幂等；默认关闭且有熔断的有限经营指标补采。按冻结合同进入 Implement。 |
