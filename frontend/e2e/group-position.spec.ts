@@ -30,15 +30,16 @@ test("compact rows have no hover or focus popup and select same-shop Offers inde
     await row.press(id === 3 ? "Space" : "Enter");
     await expect(row).toHaveAttribute("aria-selected", "true");
     await expect(page.locator('.position-table tr[aria-selected="true"]')).toHaveCount(1);
-    await expect(preview).toContainText(`隔离商品 ${id} · Offer 900${id}`);
-    await expect(preview).toContainText(`来源快照 #${id}`);
-    if (id === 8) { await expect(preview).toContainText("排名排除："); await expect(preview).toContainText("已停止"); }
+    await expect(preview).toContainText(`隔离商品 ${id}`);
+    await expect(preview).toContainText(`Offer ID：900${id}`);
+    await expect(preview).toContainText("最近有效基础快照");
+    if (id === 8) { await expect(row).toHaveAttribute("aria-label", /排名排除：/); await expect(preview).toContainText("已停止"); }
     expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(54);
   }
   await mock.expectNoUnexpectedApi();
 });
 
-test("operating metrics keep original values, attempts, and source visible in all three group views", async ({ page }) => {
+test("group table sorts displayed metric attempts and keeps the product preview compact", async ({ page }, testInfo) => {
   const source = "1688_official_procurement_assistant_top";
   const definitions = [
     ["listing_time", "上架时间", "经营表现", "observed", "2025-01-02"],
@@ -58,33 +59,101 @@ test("operating metrics keep original values, attempts, and source visible in al
     { metric_key: "favorite_count", label: "收藏数", section: "口碑履约", eligible: false, status: "not_attempted", latest_attempt: null, latest_valid: null },
     { metric_key: "platform_tag_new", label: "新品", section: "平台标签", eligible: false, status: "not_attempted", latest_attempt: null, latest_valid: null },
   ] as const);
+  const productMetrics = (id: number) => id === 3 ? operatingMetrics : [
+    ["listing_time", "上架时间", "经营表现", "observed", `2025-01-${String(id).padStart(2, "0")}`],
+    ["monthly_deal", "月成交", "经营表现", "observed", ({ 1: "100+", 2: "10+", 4: "<10", 5: "-", 6: null, 7: null, 8: null, 9: "20+" } as Record<number, string | null>)[id]],
+    ["monthly_dropship", "月代销", "经营表现", id === 9 ? "not_attempted" : id === 5 ? "placeholder" : "observed", id === 9 ? null : id === 5 ? "-" : `${id * 10}+`],
+    ["annual_units", "年成交件数", "经营表现", id === 6 ? "loading" : "observed", id === 6 ? null : `${id * 100}+`],
+    ["annual_orders", "年成交笔数", "经营表现", id === 7 ? "source_unavailable" : "observed", id === 7 ? null : `${id * 20}+`],
+    ["review_count", "评论数", "口碑履约", id === 8 ? "read_failed" : "observed", id === 8 ? null : String(id * 3)],
+    ["positive_rate", "好评率", "口碑履约", "observed", `${90 + id}%`],
+    ["pickup_rate", "揽收率", "口碑履约", "observed", `${80 + id}%`],
+  ].map(([metric_key, label, section, status, raw_value], index) => ({
+    metric_key, label, section, eligible: true, status,
+    latest_attempt: status === "not_attempted" ? null : { collection_run_id: 77, status, raw_value, source, observed_at: `2026-10-10T0${index}:00:00Z`, reason: null }, latest_valid: null,
+  })) as typeof operatingMetrics;
   const fixture: GroupDetailData = {
     ...detail,
-    own_product: { ...detail.own_product!, latest_collection_run: { id: 77, started_at: "2026-10-10T00:00:00Z", finished_at: "2026-10-10T00:08:00Z", status: "success", operating_metrics_status: "partial", error_type: null, error_message: null }, operating_metrics: operatingMetrics },
+    own_product: { ...detail.own_product!, latest_collection_run: { id: 77, started_at: "2026-10-10T00:00:00Z", finished_at: "2026-10-10T00:08:00Z", status: "success", operating_metrics_status: "partial", error_type: null, error_message: null }, operating_metrics: productMetrics(3) },
+    competitors: detail.competitors.map(product => ({ ...product, operating_metrics: productMetrics(product.id) })),
     operating_metrics_coverage: Object.fromEntries(definitions.map(([key]) => [key, { has_history_valid_values: key === "monthly_deal" ? 1 : 0, active_offers: 7 }])),
   };
   const mock = await openWorkbench(page, fixture);
   const preview = page.locator(".position-aside");
-  await expect(preview).toContainText("基础采集：成功 · 经营采集：部分成功");
-  await expect(preview).toContainText("有效值来源：1688 官方采购助手顶部区域");
-  await expect(preview).toContainText("收藏数");
-  await expect(preview).toContainText("新品");
-  await expect(preview).toContainText("收藏数待接入");
-  await expect(preview).toContainText("20+");
-  await expect(preview).toContainText("页面显示占位符（-）");
-  await expect(preview).toContainText("仍在加载");
-  await expect(preview).toContainText("来源不可用");
-  await expect(preview).toContainText("读取失败");
-  await expect(preview).toContainText("有历史有效值 1/7");
+  await expect(preview).toContainText("Offer ID：9003");
+  await expect(preview).not.toContainText("经营指标原值");
+  await expect(preview).not.toContainText("评分拆解");
+  await expect(preview).not.toContainText("排名覆盖：");
+  await expect(preview).not.toContainText("Run #");
   await expect(page.locator(".position-table")).toContainText("20+");
+  const dealSort = page.getByRole("button", { name: "月成交 ↕", exact: true });
+  await dealSort.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator('th[aria-sort="descending"]')).toContainText("月成交");
+  expect(await rowIds(page)).toEqual([1, 3, 9, 2, 4, 5, 6, 7, 8]);
+  await expect(preview.locator(".position-preview-rank")).toHaveCount(0);
   await page.getByRole("tab", { name: "经营表现" }).click();
   await expect(page.locator(".position-table")).toContainText("2025-01-02");
-  await expect(page.locator(".position-table")).toContainText("页面显示 -");
+  await expect(page.locator(".position-table")).toContainText("-");
   await expect(page.locator(".position-table")).toContainText("仍在加载");
+  await expect(page.locator(".position-table")).toContainText("来源不可用");
+  await expect(page.locator(".position-table")).toContainText("未采集");
+  expect(await rowIds(page)).toEqual([1, 3, 9, 2, 4, 5, 6, 7, 8]);
   await page.getByRole("tab", { name: "口碑履约" }).click();
   await expect(page.locator(".position-table")).toContainText("95.6%");
-  await expect(page.locator(".position-table")).toContainText("页面显示 -");
-  await expect(preview).toContainText("尝试来源：1688 官方采购助手顶部区域");
+  await expect(page.locator(".position-table")).toContainText("-");
+  await expect(page.locator(".position-table")).toContainText("读取失败");
+  await page.getByRole("button", { name: "评论数 ↕", exact: true }).click();
+  await expect(page.locator('th[aria-sort="descending"]')).toContainText("评论数");
+  expect(await rowIds(page)).toEqual([9, 7, 6, 5, 4, 2, 1, 3, 8]);
+  await page.getByRole("tab", { name: "经营表现", exact: true }).click();
+  expect(await rowIds(page)).toEqual([1, 3, 9, 2, 4, 5, 6, 7, 8]);
+  await page.getByRole("button", { name: "月成交 ↓", exact: true }).click();
+  await expect(page.locator('th[aria-sort="ascending"]')).toContainText("月成交");
+  expect(await rowIds(page)).toEqual([4, 2, 3, 9, 1, 5, 6, 7, 8]);
+  await page.locator('[data-offer-id="6"]').click();
+  await page.getByRole("tab", { name: "口碑履约", exact: true }).click();
+  await expect(page.locator('[data-offer-id="6"]')).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "评论数 ↓", exact: true })).toBeVisible();
+  await expect(page.locator('th[aria-sort="descending"]')).toContainText("评论数");
+  expect(await rowIds(page)).toEqual([9, 7, 6, 5, 4, 2, 1, 3, 8]);
+  await preview.locator(".product-preview").screenshot({ path: testInfo.outputPath("group-detail-v1.1-product-preview.png") });
+  await page.screenshot({ path: testInfo.outputPath("group-detail-v1.1-preview.png"), fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});
+
+test("shop links open safe Offer URLs in a new tab without selecting rows in all three views", async ({ page }) => {
+  const offerUrl = (id: number) => `https://store-links.invalid/offer/${id}`;
+  const fixture: GroupDetailData = {
+    ...detail,
+    own_product: { ...detail.own_product!, url: offerUrl(3) },
+    competitors: detail.competitors.map(product => ({ ...product, url: offerUrl(product.id) })),
+  };
+  await page.context().route("https://store-links.invalid/**", route => route.fulfill({ status: 200, contentType: "text/html", body: "isolated Offer page" }));
+  const mock = await openWorkbench(page, fixture);
+  const selectedOwn = page.locator('[data-offer-id="3"]');
+  await expect(selectedOwn).toHaveAttribute("aria-selected", "true");
+
+  for (const [view, offerId, keyboard] of [["竞争总览", 1, false], ["经营表现", 2, false], ["口碑履约", 4, true]] as const) {
+    await page.getByRole("tab", { name: view, exact: true }).click();
+    const row = page.locator(`[data-offer-id="${offerId}"]`);
+    const link = row.locator("a.position-shop-link");
+    await expect(link).toHaveAttribute("href", offerUrl(offerId));
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    const popupPromise = page.waitForEvent("popup");
+    if (keyboard) { await link.focus(); await page.keyboard.press("Enter"); }
+    else await link.click();
+    const popup = await popupPromise;
+    await expect(popup).toHaveURL(offerUrl(offerId));
+    await popup.close();
+    await expect(selectedOwn).toHaveAttribute("aria-selected", "true");
+    await expect(row).toHaveAttribute("aria-selected", "false");
+  }
+
+  await page.locator('[data-offer-id="2"] td:nth-child(2)').click();
+  await expect(page.locator('[data-offer-id="2"]')).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".product-preview")).toContainText("隔离商品 2");
   await mock.expectNoUnexpectedApi();
 });
 
@@ -110,7 +179,7 @@ test("hidden-own notice follows actual filters and clears with keyboard location
   await expect(notice).toHaveCount(0);
   await expect(page.locator('[data-offer-id="3"]')).toHaveAttribute("aria-selected", "true");
   await expect(page.locator('[data-offer-id="3"]')).toHaveClass(/position-located/);
-  await expect(page.locator(".position-aside")).toContainText("Offer 9003");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9003");
   await mock.expectNoUnexpectedApi();
 });
 
@@ -295,15 +364,15 @@ test("wheel over comparison table, preview and events scrolls the main page", as
 test("clicking different Offer rows updates the right-hand preview", async ({ page }) => {
   const mock = await openWorkbench(page);
   const preview = page.locator(".position-aside .position-side-card:last-child");
-  await page.locator('[data-offer-id="1"] td:first-child').click();
+  await page.locator('[data-offer-id="1"] td:nth-child(2)').click();
   await expect(preview).toContainText("很长的真实来源店铺名称用于检查表格换行和操作按钮完整可见");
   await expect(preview).toContainText("隔离商品 1");
-  await expect(preview).toContainText("Offer 9001");
+  await expect(preview).toContainText("Offer ID：9001");
   await expect(preview.locator(".position-facts")).toContainText("MOQ1");
-  await page.locator('[data-offer-id="6"] td:first-child').click();
+  await page.locator('[data-offer-id="6"] td:nth-child(2)').click();
   await expect(preview).toContainText("测试店铺 6");
   await expect(preview).toContainText("隔离商品 6");
-  await expect(preview).toContainText("Offer 9006");
+  await expect(preview).toContainText("Offer ID：9006");
   await expect(preview.locator(".position-facts")).toContainText("MOQ2");
   await mock.expectNoUnexpectedApi();
 });
@@ -311,7 +380,7 @@ test("clicking different Offer rows updates the right-hand preview", async ({ pa
 test("details action opens its Offer detail directly", async ({ page }) => {
   const mock = await openWorkbench(page);
   await mockOfferDetail(page, 6);
-  await page.locator('[data-offer-id="2"] td:first-child').click();
+  await page.locator('[data-offer-id="2"] td:nth-child(2)').click();
   await page.locator('[data-offer-id="6"]').getByRole("button", { name: "查看详情", exact: true }).click();
   await expect(page.locator(".detail-page-header")).toContainText("竞品详情");
   await expect(page.locator(".detail-overview-main h2")).toHaveText("隔离商品 6");
@@ -337,7 +406,7 @@ test("details activation leaves the mounted Offer selection unchanged", async ({
     }));
   }, detail);
   const harness = page.locator("[data-selection-harness]");
-  await harness.locator('[data-offer-id="2"] td:first-child').click();
+  await harness.locator('[data-offer-id="2"] td:nth-child(2)').click();
   const button = harness.locator('[data-offer-id="6"]').getByRole("button", { name: "查看详情", exact: true });
   for (const key of ["click", "Enter", "Space"]) {
     await harness.evaluate(element => { delete (element as HTMLElement).dataset.openedOffer; });
@@ -346,7 +415,7 @@ test("details activation leaves the mounted Offer selection unchanged", async ({
     await expect(harness).toHaveAttribute("data-opened-offer", "6");
     await expect(harness.locator('[data-offer-id="2"]')).toHaveAttribute("aria-selected", "true");
     await expect(harness.locator('[data-offer-id="6"]')).toHaveAttribute("aria-selected", "false");
-    await expect(harness.locator(".position-aside")).toContainText("Offer 9002");
+    await expect(harness.locator(".position-aside")).toContainText("Offer ID：9002");
   }
   await mock.expectNoUnexpectedApi();
 });
@@ -354,7 +423,7 @@ test("details activation leaves the mounted Offer selection unchanged", async ({
 for (const key of ["Enter", "Space"]) test(`keyboard details opens directly with ${key}`, async ({ page }) => {
   const mock = await openWorkbench(page);
   await mockOfferDetail(page, 6);
-  await page.locator('[data-offer-id="2"] td:first-child').click();
+  await page.locator('[data-offer-id="2"] td:nth-child(2)').click();
   await page.locator('[data-offer-id="6"]').getByRole("button", { name: "查看详情", exact: true }).focus();
   await page.keyboard.press(key);
   await expect(page.locator(".detail-overview-main h2")).toHaveText("隔离商品 6");
@@ -363,7 +432,7 @@ for (const key of ["Enter", "Space"]) test(`keyboard details opens directly with
 
 test("header sorting, tied positions, filtering, own location and pending views", async ({ page }) => {
   const mock = await openWorkbench(page);
-  await expect(page.locator(".position-aside")).toContainText("Offer 9003");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9003");
   await expect(page.locator(".position-table thead")).toContainText("店铺");
   await expect(page.locator(".position-table thead")).not.toContainText("店铺 / Offer");
   await expect(page.locator(".position-table tbody tr").first()).not.toContainText("隔离商品");
@@ -390,7 +459,7 @@ test("header sorting, tied positions, filtering, own location and pending views"
   await expect(page.locator(".position-summaries")).toContainText("并列第 1 / 6");
   await page.getByRole("button", { name: "定位我方", exact: true }).click();
   await expect(page.getByText("当前筛选未显示我方商品", { exact: false })).toBeVisible();
-  await expect(page.locator(".position-aside")).toContainText("Offer 9003");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9003");
   await page.getByRole("button", { name: "清除筛选并定位" }).click();
   await expect(page.locator(".position-filter-notice")).toHaveCount(0);
   await expect(page.locator('[data-offer-id="3"]')).toHaveClass(/position-located/);
@@ -404,42 +473,41 @@ test("header sorting, tied positions, filtering, own location and pending views"
   await page.getByRole("button", { name: "展示报价 ↕", exact: true }).click();
   expect(await rowIds(page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   await page.locator('[data-offer-id="1"]').click();
-  await expect(page.locator(".position-aside")).toContainText("Offer 9001");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9001");
   await expect(page.locator('[data-offer-id="1"]')).toHaveClass(/position-selected/);
   await page.getByRole("button", { name: "MOQ ↕", exact: true }).click();
   await page.locator('[data-offer-id="2"]').click();
-  await expect(page.locator(".position-aside")).toContainText("Offer 9002");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9002");
   await expect(page.locator('[data-offer-id="2"]')).toHaveClass(/position-selected/);
   await page.getByLabel("仅看重要变化").check();
   expect(await rowIds(page)).toEqual([1, 3, 6]);
-  await expect(page.locator(".position-aside")).toContainText("当前选中商品不在筛选结果中");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9002");
   await page.locator('[data-offer-id="1"]').click();
-  await expect(page.locator(".position-aside")).toContainText("Offer 9001");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9001");
   await expect(page.locator('[data-offer-id="1"]')).toHaveClass(/position-selected/);
-  await expect(page.locator(".position-aside")).not.toContainText("当前选中商品不在筛选结果中");
   await page.getByLabel("仅看重要变化").uncheck();
   await page.locator('[data-offer-id="2"]').focus();
   await page.keyboard.press("Enter");
-  await expect(page.locator(".position-aside")).toContainText("Offer 9002");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9002");
   await expect(page.locator('[data-offer-id="2"]')).toHaveClass(/position-selected/);
   await page.locator('[data-offer-id="6"]').focus();
   await page.keyboard.press("Space");
-  await expect(page.locator(".position-aside")).toContainText("Offer 9006");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9006");
   await expect(page.locator('[data-offer-id="6"]')).toHaveClass(/position-selected/);
-  await expect(page.locator(".position-aside")).toContainText("来源快照 #6");
+  await expect(page.locator(".position-aside .product-preview-freshness")).toContainText("最近有效基础快照");
   await mock.expectNoUnexpectedApi();
 });
 
 test("unbound groups select the first Offer and refresh falls back when the selected Offer leaves", async ({ page }) => {
   await openWorkbench(page, { ...detail, own_product: null });
   await expect(page.locator(".position-filter-notice")).toHaveCount(0);
-  await expect(page.locator(".position-aside")).toContainText("Offer 9001");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9001");
   await expect(page.locator('[data-offer-id="1"]')).toHaveClass(/position-selected/);
   await page.locator('[data-offer-id="6"]').click();
-  await expect(page.locator(".position-aside")).toContainText("Offer 9006");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9006");
   await page.route("**/api/competitor-groups/91/detail?*", route => route.fulfill({ json: { ...detail, competitors: detail.competitors.filter(product => product.id !== 6) } }));
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await expect(page.locator(".position-aside")).toContainText("Offer 9003");
+  await expect(page.locator(".position-aside")).toContainText("Offer ID：9003");
 });
 
 test("bounded history append, failed retry, evidence and stale response isolation", async ({ page }) => {
@@ -503,14 +571,14 @@ for (const width of [1753, 1440, 1280, 800]) test(`visual layout at ${width}px`,
   const normal = await colors(1);
   await expect(page.locator(".page-header .page-description")).toHaveText("1 条我方商品 · 8 条竞品 · 仅监控样本，非实时报价");
   await expect(page.locator(".position-workbench > .position-context")).toHaveCount(0);
-  await expect(page.locator(".position-aside")).toContainText("排名覆盖：");
+  await expect(page.locator(".position-aside")).not.toContainText("排名覆盖：");
   expect(new Set(normal.cells).size).toBe(1);
   await row.locator("td:first-child").hover();
   const hover = await colors(1);
   expect(new Set(hover.cells).size).toBe(1);
   expect(hover.cells[0]).not.toBe(normal.cells[0]);
   await page.screenshot({ path: testInfo.outputPath(`group-position-${width}-hover.png`) });
-  await row.locator("td:first-child").click();
+  await row.locator("td:nth-child(2)").click();
   await page.mouse.move(0, 0);
   const selected = await colors(1);
   const own = await colors(3);

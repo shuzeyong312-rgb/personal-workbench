@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { expect, test, vi } from "vitest";
 
-import { competitorPageSize, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, updatePageSelection } from "./App";
+import { competitorPageSize, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
 import { CurrentBatchCard } from "./App";
 
 import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
@@ -1290,7 +1290,7 @@ test("uses neutral group change placeholder and offline snapshot freshness for o
   expect(formatGroupProductFreshness(groupProduct())).toBe("18:00 更新");
 
   const html = renderToStaticMarkup(<GroupDetailPage data={{ ...groupDetailData, own_product: offlineOwn, competitors: [offlineCompetitor] }} status="ready" error={null} days={7} rangeLoading={false} rangeError={null} onRetry={noop} onRangeChange={noop} onBack={noop} onViewCompetitors={noop} onOpenDetail={noop} onNavigate={noop} />);
-  expect(html).toContain(`来源快照 #${offlineOwn.latest_snapshot!.id} · ${formatDate("2026-09-22T10:00:00Z")}`);
+  expect(html).toContain(`最近有效基础快照 · ${formatDate("2026-09-22T10:00:00Z")}`);
   expect(html).toContain(`快照时间：${formatDate("2026-09-21T10:00:00Z")}`);
   expect(html).not.toContain("最后快照");
   expect(html).toContain("已下架");
@@ -1304,12 +1304,13 @@ test("summarizes meaningful group differences without turning unknown fields int
   expect(getGroupDifferenceLabels({ price: "unknown", min_order_quantity: "unknown", sku_count: "unknown", total_stock: "unknown" }, false)).toEqual({ primary: ["未建立基准"], stock: [], hasUnknown: false });
 });
 
-test("renders competitive workbench states and truthful pending analysis", () => {
+test("renders competitive workbench states and compact product preview", () => {
   const props = { data: groupDetailData, status: "ready" as const, error: null, days: 7 as const, rangeLoading: false, rangeError: null, onRetry: noop, onRangeChange: noop, onBack: noop, onViewCompetitors: noop, onOpenDetail: noop, onNavigate: noop };
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={null} status="loading" />)).toContain("正在加载组分析");
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={null} status="error" error="竞品组不存在" />)).toContain("竞品组不存在");
   const html = renderToStaticMarkup(<GroupDetailPage {...props} />);
-  for (const text of ["组内经营景气信号", "评分规则未冻结", "经营字段历史有效值", "当前经营决策提示", "仅监控样本，非实时报价", "排名覆盖：", "经营表现", "口碑履约", "平台标签", "待接入", "证据不足", "MOQ ↑", "aria-sort=\"ascending\"", "筛选不改变全组排名", "可查看全部变化", "自有商品", "商品速览", "查看详情"]) expect(html).toContain(text);
+  for (const text of ["组内经营景气信号", "评分规则未冻结", "经营字段历史有效值", "当前经营决策提示", "仅监控样本，非实时报价", "经营表现", "口碑履约", "平台标签", "待接入", "证据不足", "MOQ ↑", "aria-sort=\"ascending\"", "筛选不改变全组排名", "可查看全部变化", "自有商品", "商品速览", "Offer ID：700", "展示报价", "完整库存", "最近有效基础快照", "查看详情", "成交类指标按页面显示档位排序"]) expect(html).toContain(text);
+  for (const text of ["待接入：评分规则未冻结", "评分拆解", "来源快照 #", "经营指标原值", "排名覆盖：", "字段依据：", "报价仅按完整区间下限排名"]) expect(html).not.toContain(text);
   expect(html.match(/class=\"position-row-actions\"><button class=\"detail-button\">查看详情<\/button><\/div>/g)).toHaveLength(groupDetailData.competitors.length + 1);
   expect(html).toContain("平台标签 <small class=\"position-tag-pending\">待接入</small>");
   expect(html.match(/role=\"tab\"/g)).toHaveLength(3);
@@ -1336,11 +1337,30 @@ test("renders competitive workbench states and truthful pending analysis", () =>
   expect(body).not.toContain("group-own-label");
   expect(body).not.toContain("<time");
   expect(body).not.toContain("title=");
-  expect(body).toContain('class="position-shop"');
+  expect(body).toContain('class="position-shop position-shop-link"');
   expect(html.indexOf('data-offer-id="10"')).toBeLessThan(html.indexOf('data-offer-id="7"'));
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, own_product: null }} />)).toContain("尚未绑定我方商品");
   expect(renderToStaticMarkup(<GroupDetailPage {...props} rangeError="请求失败" />)).toContain("保留上一份事实");
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, competitors: [] }} />)).toContain("仅我方 1 条");
+});
+
+test("links only valid HTTP product URLs from Group Detail shop names", () => {
+  const props = { data: groupDetailData, status: "ready" as const, error: null, days: 7 as const, rangeLoading: false, rangeError: null, onRetry: noop, onRangeChange: noop, onBack: noop, onViewCompetitors: noop, onOpenDetail: noop, onNavigate: noop };
+  const data = {
+    ...groupDetailData,
+    own_product: groupProduct({ id: 7, role: "own", title: "自有商品", url: "javascript:alert(1)" }),
+    competitors: [
+      { ...groupProduct({ id: 10, url: "https://safe.example.test/offer/10" }), comparison: { price: "lower", min_order_quantity: "lower", sku_count: "more", total_stock: "unknown" } as const },
+      { ...groupProduct({ id: 11, url: "ftp://safe.example.test/offer/11" }), comparison: { price: "lower", min_order_quantity: "lower", sku_count: "more", total_stock: "unknown" } as const },
+      { ...groupProduct({ id: 12, url: "not a URL" }), comparison: { price: "lower", min_order_quantity: "lower", sku_count: "more", total_stock: "unknown" } as const },
+      { ...groupProduct({ id: 13, url: "" }), comparison: { price: "lower", min_order_quantity: "lower", sku_count: "more", total_stock: "unknown" } as const },
+    ],
+  };
+  const html = renderToStaticMarkup(<GroupDetailPage {...props} data={data} />);
+  expect(html).toContain('<a class="position-shop position-shop-link" href="https://safe.example.test/offer/10" target="_blank" rel="noopener noreferrer">测试店铺</a>');
+  expect(html.match(/<a class="position-shop position-shop-link"/g)).toHaveLength(1);
+  expect(html).toContain('<span class="position-shop">测试店铺</span>');
+  expect(html.match(/<span class="position-shop"/g)).toHaveLength(4);
 });
 
 test("sorts using authoritative directional competition ranks, ties by id and unknowns last", () => {
@@ -1354,6 +1374,51 @@ test("sorts using authoritative directional competition ranks, ties by id and un
   expect(sortGroupOffers(offers, position, "asc").map(item => item.id)).toEqual([1, 2, 3, 4]);
   expect(sortGroupOffers(offers, position, "desc").map(item => item.id)).toEqual([3, 1, 2, 4]);
   expect(sortGroupOffers(offers, undefined, "desc").map(item => item.id)).toEqual([1, 2, 3, 4]);
+});
+
+test("orders fuzzy deal bins by displayed boundary and category in both directions", () => {
+  const makeMetric = (metric_key: string, raw_value: string | null, status: "observed" | "placeholder" | "loading" | "source_unavailable" | "read_failed" = "observed", latest_valid: string | null = null) => ({
+    metric_key, label: metric_key, section: "经营表现" as const, eligible: true, status,
+    latest_attempt: { collection_run_id: 2, status, raw_value, source: "test", observed_at: "2026-10-10T00:00:00Z", reason: null },
+    latest_valid: latest_valid ? { collection_run_id: 1, raw_value: latest_valid, source: "test", observed_at: "2026-10-09T00:00:00Z" } : null,
+  });
+  const bins: [number, string | null][] = [[14, "<10+"], [1, "100+"], [8, "10+"], [3, "20+"], [4, "<10"], [5, "-"], [6, null], [7, "n/a"], [2, "10+"], [9, "10"]];
+  const thresholdKeys = ["monthly_deal", "monthly_dropship", "annual_units", "annual_orders"] as const;
+  for (const metricKey of thresholdKeys) {
+    const deals = bins.map(([id, value]) => groupProduct({
+      id,
+      operating_metrics: [makeMetric(metricKey, value, id === 5 ? "placeholder" : id === 6 ? "source_unavailable" : "observed", "1000+")],
+    }));
+    expect(sortGroupOffersByOperatingMetric(deals, metricKey, "asc").map(item => item.id)).toEqual([4, 9, 2, 8, 3, 1, 5, 6, 7, 14]);
+    expect(sortGroupOffersByOperatingMetric(deals, metricKey, "desc").map(item => item.id)).toEqual([1, 3, 2, 8, 9, 4, 5, 6, 7, 14]);
+  }
+});
+
+test("parses dates, percentages, integer counts, and grouped thousands while leaving invalid values last", () => {
+  const makeMetric = (metric_key: string, raw_value: string | null, status: "observed" | "placeholder" | "loading" | "source_unavailable" | "read_failed" = "observed", latest_valid: string | null = null) => ({
+    metric_key, label: metric_key, section: "经营表现" as const, eligible: true, status,
+    latest_attempt: { collection_run_id: 1, status, raw_value, source: "test", observed_at: "2026-10-10T00:00:00Z", reason: null },
+    latest_valid: latest_valid ? { collection_run_id: 2, raw_value: latest_valid, source: "test", observed_at: "2026-10-09T00:00:00Z" } : null,
+  });
+  const dates = [groupProduct({ id: 2, operating_metrics: [makeMetric("listing_time", "2025-02-01")] }), groupProduct({ id: 1, operating_metrics: [makeMetric("listing_time", "2024-12-31")] }), groupProduct({ id: 3, operating_metrics: [makeMetric("listing_time", "2025-13-40")] })];
+  expect(sortGroupOffersByOperatingMetric(dates, "listing_time", "asc").map(item => item.id)).toEqual([1, 2, 3]);
+  const rates = [groupProduct({ id: 2, operating_metrics: [makeMetric("positive_rate", "95.6%")] }), groupProduct({ id: 1, operating_metrics: [makeMetric("positive_rate", "100%")] })];
+  expect(sortGroupOffersByOperatingMetric(rates, "positive_rate", "desc").map(item => item.id)).toEqual([1, 2]);
+
+  const counts = [
+    groupProduct({ id: 1, operating_metrics: [makeMetric("review_count", "1,234")] }),
+    groupProduct({ id: 2, operating_metrics: [makeMetric("review_count", "12")] }),
+    groupProduct({ id: 3, operating_metrics: [makeMetric("review_count", "1,2")] }),
+    groupProduct({ id: 4, operating_metrics: [makeMetric("review_count", "-", "placeholder")] }),
+    groupProduct({ id: 5, operating_metrics: [makeMetric("review_count", null, "source_unavailable")] }),
+  ];
+  expect(sortGroupOffersByOperatingMetric(counts, "review_count", "asc").map(item => item.id)).toEqual([2, 1, 3, 4, 5]);
+  expect(sortGroupOffersByOperatingMetric(counts, "review_count", "desc").map(item => item.id)).toEqual([1, 2, 3, 4, 5]);
+
+  const stale = groupProduct({ id: 7, role: "own", operating_metrics: [makeMetric("monthly_deal", null, "read_failed", "1000+")] });
+  const html = renderToStaticMarkup(<GroupDetailPage data={{ ...groupDetailData, own_product: stale, competitors: [] }} status="ready" error={null} days={7} rangeLoading={false} rangeError={null} onRetry={noop} onRangeChange={noop} onBack={noop} onViewCompetitors={noop} onOpenDetail={noop} onNavigate={noop} />);
+  expect(html).toContain("读取失败");
+  expect(html).not.toContain("1000+");
 });
 
 test("shows own role in list and detail and limits bind candidates to group members", () => {

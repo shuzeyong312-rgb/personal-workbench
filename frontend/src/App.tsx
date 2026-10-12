@@ -1211,15 +1211,22 @@ const pendingViews = {
   ],
 };
 
+type OperatingMetricSortKey = "listing_time" | "monthly_deal" | "monthly_dropship" | "annual_units" | "annual_orders" | "review_count" | "positive_rate" | "pickup_rate";
+type OperatingMetricView = "经营表现" | "口碑履约";
+const operatingSortDefaults: Record<OperatingMetricSortKey, "asc" | "desc"> = {
+  listing_time: "desc", monthly_deal: "desc", monthly_dropship: "desc", annual_units: "desc", annual_orders: "desc",
+  review_count: "desc", positive_rate: "desc", pickup_rate: "desc",
+};
+
 const operatingStatusLabels: Record<OperatingMetricsStatus, string> = {
   not_attempted: "未尝试", success: "成功", partial: "部分成功", no_values: "页面暂无值", failed: "失败", blocked: "已阻止",
 };
+const metricAttemptLabels = { observed: "已读取", placeholder: "页面显示占位符", loading: "仍在加载", source_unavailable: "来源不可用", read_failed: "读取失败" } as const;
+const operatingMetricSource = (source: string) => source === "1688_official_procurement_assistant_top" ? "1688 官方采购助手顶部区域" : source;
 export function formatCollectionRunStatus(status: "running" | "success" | "failed", operatingStatus?: OperatingMetricsStatus): string {
   const baseStatus = status === "success" ? "成功" : status === "failed" ? "失败" : "采集中";
   return `${baseStatus} · 经营${operatingStatus === undefined ? "未采集" : operatingStatusLabels[operatingStatus]}`;
 }
-const metricAttemptLabels = { observed: "已读取", placeholder: "页面显示占位符", loading: "仍在加载", source_unavailable: "来源不可用", read_failed: "读取失败", not_attempted: "未采集" } as const;
-const operatingMetricSource = (source: string) => source === "1688_official_procurement_assistant_top" ? "1688 官方采购助手顶部区域" : source;
 
 function OperatingMetricsPanel({ metrics = [], latestRun, coverage }: { metrics?: OperatingMetric[]; latestRun?: LatestCollectionRun | null; coverage?: GroupDetailData["operating_metrics_coverage"] }) {
   const groups = ["经营表现", "口碑履约", "平台标签"] as const;
@@ -1230,24 +1237,60 @@ function OperatingMetricsPanel({ metrics = [], latestRun, coverage }: { metrics?
       const attempt = metric.latest_attempt;
       const valid = metric.latest_valid;
       if (!metric.eligible) return <div key={metric.metric_key}><dt>{metric.label}</dt><dd><strong>待接入</strong></dd></div>;
-      return <div key={metric.metric_key}>
-        <dt>{metric.label}</dt>
-        <dd><strong>{valid?.raw_value ?? "暂无有效值"}</strong>{valid && <><small>有效值来源：{operatingMetricSource(valid.source)}</small><small>有效值时间：{formatDate(valid.observed_at)} · Run #{valid.collection_run_id}</small></>}
-          <small>最近尝试：{attempt ? metricAttemptLabels[attempt.status] : "未采集"}{attempt?.status === "placeholder" && `（${attempt.raw_value ?? "-"}）`}{attempt?.reason ? ` · ${attempt.reason}` : ""}{attempt && ` · ${formatDate(attempt.observed_at)} · Run #${attempt.collection_run_id}`}</small>
-          {attempt && <small>尝试来源：{operatingMetricSource(attempt.source)}</small>}
-          {coverage?.[metric.metric_key] && <small>有历史有效值 {coverage[metric.metric_key].has_history_valid_values}/{coverage[metric.metric_key].active_offers}</small>}
-        </dd>
-      </div>;
+      return <div key={metric.metric_key}><dt>{metric.label}</dt><dd><strong>{valid?.raw_value ?? "暂无有效值"}</strong>{valid && <><small>有效值来源：{operatingMetricSource(valid.source)}</small><small>有效值时间：{formatDate(valid.observed_at)} · Run #{valid.collection_run_id}</small></>}
+        <small>最近尝试：{attempt ? metricAttemptLabels[attempt.status] : "未采集"}{attempt?.status === "placeholder" && `（${attempt.raw_value ?? "-"}）`}{attempt?.reason ? ` · ${attempt.reason}` : ""}{attempt && ` · ${formatDate(attempt.observed_at)} · Run #${attempt.collection_run_id}`}</small>
+        {attempt && <small>尝试来源：{operatingMetricSource(attempt.source)}</small>}
+        {coverage?.[metric.metric_key] && <small>有历史有效值 {coverage[metric.metric_key].has_history_valid_values}/{coverage[metric.metric_key].active_offers}</small>}
+      </dd></div>;
     })}</dl></div>)}
   </section>;
 }
-
 function operatingMetricValue(product: GroupProductFacts, metricKey: string): string {
   const metric = product.operating_metrics?.find(item => item.metric_key === metricKey);
   if (!metric) return "未采集";
-  if (metric.latest_valid) return metric.latest_valid.raw_value;
-  if (metric.latest_attempt?.status === "placeholder") return `页面显示 ${metric.latest_attempt.raw_value ?? "-"}`;
-  return metric.latest_attempt ? metricAttemptLabels[metric.latest_attempt.status] : "未采集";
+  if (!metric.eligible) return "待接入";
+  const attempt = metric.latest_attempt;
+  if (!attempt) return "未采集";
+  if (attempt.status === "observed") return attempt.raw_value?.trim() || "—";
+  if (attempt.status === "placeholder") return attempt.raw_value?.trim() || "-";
+  return attempt.status === "loading" ? "仍在加载" : attempt.status === "source_unavailable" ? "来源不可用" : "读取失败";
+}
+
+function operatingMetricSortValue(product: GroupProductFacts, metricKey: OperatingMetricSortKey): { value: number; boundary: number } | null {
+  const metric = product.operating_metrics?.find(item => item.metric_key === metricKey);
+  const raw = metric?.eligible && metric.latest_attempt?.status === "observed" ? metric.latest_attempt.raw_value?.trim() : null;
+  if (!raw || raw === "-") return null;
+  if (metricKey === "listing_time") {
+    const time = Date.parse(raw);
+    return Number.isFinite(time) ? { value: time, boundary: 0 } : null;
+  }
+  const threshold = metricKey === "monthly_deal" || metricKey === "monthly_dropship" || metricKey === "annual_units" || metricKey === "annual_orders";
+  const number = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
+  const value = raw.match(threshold ? new RegExp(`^([<>]?)(${number})(\\+)?$`) : new RegExp(`^(${number})\\s*%?$`));
+  if (!value || (threshold && value[1] && value[3])) return null;
+  const parsed = Number(value[threshold ? 2 : 1].replaceAll(",", ""));
+  const boundary = !threshold ? 0 : value[1] === "<" ? 0 : value[1] === ">" ? 2 : value[3] ? 3 : 1;
+  return Number.isFinite(parsed) ? { value: parsed, boundary } : null;
+}
+
+export function sortGroupOffersByOperatingMetric(offers: GroupProductFacts[], metricKey: OperatingMetricSortKey, direction: "asc" | "desc"): GroupProductFacts[] {
+  return [...offers].sort((a, b) => {
+    const left = operatingMetricSortValue(a, metricKey), right = operatingMetricSortValue(b, metricKey);
+    if ((left === null) !== (right === null)) return left === null ? 1 : -1;
+    if (left === null || right === null) return a.id - b.id;
+    return (direction === "asc" ? left.value - right.value || left.boundary - right.boundary : right.value - left.value || right.boundary - left.boundary) || a.id - b.id;
+  });
+}
+
+function groupShopLink(product: GroupProductFacts) {
+  const shopName = product.shop_name?.trim() || "店铺未采集";
+  try {
+    const { protocol } = new URL(product.url);
+    if (protocol === "http:" || protocol === "https:") return <a className="position-shop position-shop-link" href={product.url} target="_blank" rel="noopener noreferrer" onClick={event => event.stopPropagation()}>{shopName}</a>;
+  } catch {
+    // Invalid or relative product URLs remain plain shop names.
+  }
+  return <span className="position-shop">{shopName}</span>;
 }
 
 export function sortGroupOffers(offers: GroupProductFacts[], position: MetricPosition | undefined, direction: "asc" | "desc"): GroupProductFacts[] {
@@ -1267,12 +1310,13 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const [view, setView] = useState<string>("竞争总览");
   const [metric, setMetric] = useState<PositionMetric>("min_order_quantity");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
+  const [operatingSort, setOperatingSort] = useState<Partial<Record<OperatingMetricView, { key: OperatingMetricSortKey; direction: "asc" | "desc" }>>>({});
+  const [overviewOperatingKey, setOverviewOperatingKey] = useState<OperatingMetricSortKey | null>(null);
   const [search, setSearch] = useState("");
   const [monitor, setMonitor] = useState("all");
   const [productStatus, setProductStatus] = useState("all");
   const [importantOnly, setImportantOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [selectedField, setSelectedField] = useState<PositionMetric>("min_order_quantity");
   const [page, setEventPage] = useState<GroupEventPage | null>(data?.event_page ?? null);
   const [eventLoading, setEventLoading] = useState(false);
   const [eventError, setEventError] = useState<string | null>(null);
@@ -1284,7 +1328,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const eventBusy = useRef(false);
   const ownRow = useRef<HTMLTableRowElement>(null);
   const locateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { setSelectedId(data?.own_product?.id ?? data?.competitors[0]?.id ?? null); setView("竞争总览"); setMetric("min_order_quantity"); setDirection("asc"); setSearch(""); setMonitor("all"); setProductStatus("all"); setImportantOnly(false); setEvidence(null); setLocateNotice(false); }, [data?.group.id]);
+  useEffect(() => { setSelectedId(data?.own_product?.id ?? data?.competitors[0]?.id ?? null); setView("竞争总览"); setMetric("min_order_quantity"); setDirection("asc"); setOverviewOperatingKey(null); setOperatingSort({}); setSearch(""); setMonitor("all"); setProductStatus("all"); setImportantOnly(false); setEvidence(null); setLocateNotice(false); }, [data?.group.id]);
   useEffect(() => { const offers = [...(data?.own_product ? [data.own_product] : []), ...(data?.competitors ?? [])]; setSelectedId(current => offers.some(product => product.id === current) ? current : data?.own_product?.id ?? offers[0]?.id ?? null); }, [data]);
   useEffect(() => { requestId.current++; eventBusy.current = false; setEventPage(data?.event_page ?? null); setEventLoading(false); setEventError(null); setFailedEventRequest(null); setEvidence(null); }, [data]);
   useEffect(() => { if (rangeLoading) { requestId.current++; eventBusy.current = false; setEventLoading(false); } }, [rangeLoading]);
@@ -1321,9 +1365,14 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   if (!data) return <AppShell page="group-detail" onNavigate={onNavigate} breadcrumb="竞品分组 / 组分析"><header className="page-header"><h1>组竞争分析</h1></header><div className="state-panel state-error"><strong>{error || "加载失败"}</strong><button className="secondary-button" onClick={onRetry}>重试</button><button className="secondary-button" onClick={onBack}>返回竞品分组</button></div></AppShell>;
   const own = data.own_product;
   const allOffers = [...(own ? [own] : []), ...data.competitors];
-  const activePosition = view === "竞争总览" ? data.position[metric] : undefined;
   const needle = search.trim().toLocaleLowerCase();
-  const visible = sortGroupOffers(allOffers, activePosition, direction).filter(product => (!needle || [product.shop_name, product.title, product.offer_id].some(value => value?.toLocaleLowerCase().includes(needle))) && (monitor === "all" || product.is_active === (monitor === "active")) && (productStatus === "all" || product.status === productStatus) && (!importantOnly || page?.important_offer_ids.includes(product.id)));
+  const operatingView = view === "经营表现" || view === "口碑履约" ? view : null;
+  const currentOperatingSort = operatingView ? operatingSort[operatingView] : overviewOperatingKey ? operatingSort["经营表现"] : undefined;
+  const activePosition = view === "竞争总览" && !overviewOperatingKey ? data.position[metric] : undefined;
+  const sortedOffers = operatingView
+    ? currentOperatingSort ? sortGroupOffersByOperatingMetric(allOffers, currentOperatingSort.key, currentOperatingSort.direction) : [...allOffers].sort((a, b) => a.id - b.id)
+    : overviewOperatingKey && currentOperatingSort ? sortGroupOffersByOperatingMetric(allOffers, overviewOperatingKey, currentOperatingSort.direction) : sortGroupOffers(allOffers, activePosition, direction);
+  const visible = sortedOffers.filter(product => (!needle || [product.shop_name, product.title, product.offer_id].some(value => value?.toLocaleLowerCase().includes(needle))) && (monitor === "all" || product.is_active === (monitor === "active")) && (productStatus === "all" || product.status === productStatus) && (!importantOnly || page?.important_offer_ids.includes(product.id)));
   const selected = allOffers.find(product => product.id === selectedId) ?? own ?? allOffers[0];
   const operatingCoverageText = (selected?.operating_metrics ?? []).map(metric => {
     const coverage = data.operating_metrics_coverage?.[metric.metric_key];
@@ -1347,8 +1396,12 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     return value?.eligible ? [] : [`${positionLabels[key]}：${positionReasons[value?.reason ?? "unknown_value"]}`];
   }).join("；");
   const rowDescription = (product: GroupProductFacts) => `${product.shop_name?.trim() || "店铺未采集"}\n${product.title || "商品名未采集"}\nOffer ID：${product.offer_id}\n快照时间：${formatDate(product.latest_snapshot?.captured_at ?? null)}\n状态：${product.status === "active" ? "在售" : product.status === "offline" ? "已下架" : "未知"} · ${product.is_active ? "监控中" : "已停止"}${exclusions(product) ? `\n排名排除：${exclusions(product)}` : ""}`;
-  const columns: { title: string; metric?: PositionMetric; field?: "price" | "moq" | "sku" | "stock"; metric_key?: string }[] = view === "竞争总览" ? [{ title: "竞争力" }, { title: "展示报价", metric: "display_price_min", field: "price" }, { title: "MOQ", metric: "min_order_quantity", field: "moq" }, { title: "SKU", metric: "sku_count", field: "sku" }, { title: "库存", metric: "total_stock", field: "stock" }, { title: "月成交", metric_key: "monthly_deal" }, { title: "增长" }] : (pendingViews[view as keyof typeof pendingViews] ?? []).map(column => column);
-  const facts = (product: GroupProductFacts) => <><dl className="position-facts">{(["price", "moq", "sku", "stock"] as const).map((field, index) => <div key={field}><dt>{["链接展示报价", "MOQ", "SKU 数", "完整库存"][index]}</dt><dd>{groupSnapshotValue(product, field)}</dd></div>)}</dl><p>字段依据：{positionLabels[selectedField]} · {data.position[selectedField].offers[product.id]?.eligible ? "有效事实" : positionReasons[data.position[selectedField].offers[product.id]?.reason ?? "unknown_value"]}</p><p>来源快照 #{product.latest_snapshot?.id ?? "未采集"} · {formatDate(product.latest_snapshot?.captured_at ?? null)}</p><p><StatusBadge status={product.status} /> {product.is_active ? "监控中" : "已停止"}</p><p>{positionText(product)}</p><p>排名覆盖：{(Object.keys(positionLabels) as PositionMetric[]).map(key => `${positionLabels[key]} ${data.position[key].eligible_count}/${allOffers.length} 可排名`).join(" · ")}</p>{exclusions(product) && <p>排名排除：{exclusions(product)}</p>}<p>报价仅按完整区间下限排名；区间重叠不代表同规格价格优势。SKU 数量不代表质量优势，库存不代表销量。</p>{"comparison" in product && <p>{(!product.is_active || product.status !== "active" || !own?.is_active || own.status !== "active") && "历史快照比较："}{getGroupDifferenceLabels(product.comparison as GroupComparison, own !== null).primary.concat(getGroupDifferenceLabels(product.comparison as GroupComparison, own !== null).stock).join(" · ") || "基本持平 / 部分数据未知"}</p>}<button className="detail-button" onClick={() => onOpenDetail(product.id)}>查看详情</button></>;
+  const previewPosition = (product: GroupProductFacts) => {
+    if (view !== "竞争总览" || !activePosition) return null;
+    const position = activePosition.offers[product.id];
+    return position?.eligible ? <p className="position-preview-rank">{positionLabels[metric]}：{positionText(product, true)}</p> : null;
+  };
+  const columns: { title: string; metric?: PositionMetric; field?: "price" | "moq" | "sku" | "stock"; metric_key?: OperatingMetricSortKey }[] = view === "竞争总览" ? [{ title: "竞争力" }, { title: "展示报价", metric: "display_price_min", field: "price" }, { title: "MOQ", metric: "min_order_quantity", field: "moq" }, { title: "SKU", metric: "sku_count", field: "sku" }, { title: "库存", metric: "total_stock", field: "stock" }, { title: "月成交", metric_key: "monthly_deal" }, { title: "增长" }] : (pendingViews[view as keyof typeof pendingViews] ?? []).map(column => ({ ...column, metric_key: column.metric_key as OperatingMetricSortKey }));
   return <AppShell page="group-detail" onNavigate={onNavigate} breadcrumb={`竞品分组 / ${data.group.name}`}>
     <div className="position-workbench">
     <header className="page-header group-detail-page-header"><div><h1>{data.group.name} 竞争分析</h1><p className="page-description">{own ? 1 : 0} 条我方商品 · {data.competitors.length} 条竞品 · 仅监控样本，非实时报价</p></div><div className="detail-page-actions"><button className="secondary-button" onClick={onRetry}>刷新</button><button className="secondary-button" onClick={() => onViewCompetitors(data.group.id)}>查看竞品</button><button className="secondary-button" onClick={onBack}>返回竞品分组</button></div></header>
@@ -1360,9 +1413,20 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     {data.competitors.length === 0 && <p className="group-compact-empty">当前组还没有直接竞品{own ? "，仅我方 1 条，无直接竞品可对比" : "，空组"}</p>}
     <div className="position-tabs" role="tablist" aria-label="对比视图">{["竞争总览", ...Object.keys(pendingViews)].map(tab => <button role="tab" aria-selected={view === tab} className={view === tab ? "active" : ""} key={tab} onClick={() => setView(tab)}>{tab}</button>)}</div>
     <div className="position-filters"><input aria-label="搜索店铺、商品或 Offer" placeholder="搜索店铺 / 商品 / Offer" value={search} onChange={event => setSearch(event.target.value)} /><select aria-label="监控状态" value={monitor} onChange={event => setMonitor(event.target.value)}><option value="all">全部监控状态</option><option value="active">监控中</option><option value="stopped">已停止</option></select><select aria-label="商品状态" value={productStatus} onChange={event => setProductStatus(event.target.value)}><option value="all">全部商品状态</option><option value="active">在线</option><option value="offline">下架</option><option value="unknown">未知</option></select><label><input type="checkbox" checked={importantOnly} onChange={event => setImportantOnly(event.target.checked)} />仅看重要变化</label></div>
+    <p className="position-context">成交类指标按页面显示档位排序，保留原文，不代表精确销量或竞争排名。</p>
     {own && !visible.some(product => product.id === own.id) && <div className="position-filter-notice" role="status"><span><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" /><path d="M10 9v5M10 6v1" /></svg>当前筛选未显示我方商品</span><button onClick={() => { setLocateNotice(true); clearFilters(); }}>清除筛选并定位</button></div>}
-    {view !== "竞争总览" && <p className="position-context">本视图展示页面原值，不提供排序或评分。</p>}
-    <div className="table-scroll"><table className={view === "竞争总览" ? "position-table position-overview-table" : "position-table"}><thead><tr><th>店铺</th>{view === "竞争总览" && <th aria-sort="none"><span title="数据待接入，不能排序">平台标签 <small className="position-tag-pending">待接入</small></span></th>}{columns.map(column => <th key={column.title} className={activePosition && metric === column.metric ? "position-sorted" : ""} aria-sort={activePosition && metric === column.metric ? direction === "asc" ? "ascending" : "descending" : column.metric ? "none" : undefined}>{column.metric ? <button onClick={() => { if (metric === column.metric) setDirection(direction === "asc" ? "desc" : "asc"); else { setMetric(column.metric!); setDirection(data.position[column.metric!].default_direction); } }}>{column.title}{metric === column.metric ? direction === "asc" ? " ↑" : " ↓" : " ↕"}</button> : <span title={column.metric_key ? "页面原值，不参与排序" : "数据待接入，不能排序"}>{column.title}</span>}</th>)}<th>操作</th></tr></thead><tbody>{visible.map(product => <tr key={product.id} data-offer-id={product.id} ref={product.id === own?.id ? ownRow : undefined} tabIndex={0} aria-label={rowDescription(product)} aria-selected={product.id === selected?.id} onClick={() => setSelectedId(product.id)} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setSelectedId(product.id); } }} className={(product.id === own?.id ? "position-own-row " : "") + (product.id === selected?.id ? "position-selected " : "") + (product.id === own?.id && highlightOwn ? "position-located" : "")}><td><span className="position-shop">{product.shop_name?.trim() || "店铺未采集"}</span></td>{view === "竞争总览" && <td className="position-tag-cell" aria-label={`平台标签待接入，Offer ${product.offer_id}`}>—</td>}{columns.map(column => <td key={column.title}>{column.metric_key ? <span className="position-metric-raw">{operatingMetricValue(product, column.metric_key)}</span> : column.field ? <button className="position-value" onClick={() => { setSelectedId(product.id); setSelectedField(column.metric!); }} aria-label={`${column.title}字段依据 ${product.offer_id}`}>{groupSnapshotValue(product, column.field)}</button> : <span className="position-pending">待接入</span>}</td>)}<td><div className="position-row-actions"><button className="detail-button" onClick={event => { event.stopPropagation(); onOpenDetail(product.id); }}>查看详情</button></div></td></tr>)}</tbody></table></div>
+    <div className="table-scroll"><table className={view === "竞争总览" ? "position-table position-overview-table" : "position-table"}><thead><tr><th>店铺</th>{view === "竞争总览" && <th aria-sort="none"><span title="数据待接入，不能排序">平台标签 <small className="position-tag-pending">待接入</small></span></th>}{columns.map(column => {
+      const positionSorted = Boolean(column.metric && activePosition && metric === column.metric);
+      const metricSorted = Boolean(column.metric_key && currentOperatingSort?.key === column.metric_key);
+      const sortDirection = positionSorted ? direction : metricSorted ? currentOperatingSort!.direction : undefined;
+      return <th key={column.title} className={positionSorted || metricSorted ? "position-sorted" : ""} aria-sort={sortDirection ? sortDirection === "asc" ? "ascending" : "descending" : column.metric || column.metric_key ? "none" : undefined}>
+        {column.metric ? <button onClick={() => { setOverviewOperatingKey(null); if (metric === column.metric) setDirection(direction === "asc" ? "desc" : "asc"); else { setMetric(column.metric!); setDirection(data.position[column.metric!].default_direction); } }}>{column.title}{positionSorted ? direction === "asc" ? " ↑" : " ↓" : " ↕"}</button> : column.metric_key ? <button onClick={() => { if (view === "竞争总览") setOverviewOperatingKey(column.metric_key!); setOperatingSort(current => {
+          const sortView = operatingView ?? "经营表现";
+          const active = current[sortView];
+          return { ...current, [sortView]: { key: column.metric_key!, direction: active?.key === column.metric_key && active ? active.direction === "asc" ? "desc" : "asc" : operatingSortDefaults[column.metric_key!] } };
+        }); }}>{column.title}{metricSorted ? currentOperatingSort!.direction === "asc" ? " ↑" : " ↓" : " ↕"}</button> : <span title="数据待接入，不能排序">{column.title}</span>}
+      </th>;
+    })}<th>操作</th></tr></thead><tbody>{visible.map(product => <tr key={product.id} data-offer-id={product.id} ref={product.id === own?.id ? ownRow : undefined} tabIndex={0} aria-label={rowDescription(product)} aria-selected={product.id === selected?.id} onClick={() => setSelectedId(product.id)} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setSelectedId(product.id); } }} className={(product.id === own?.id ? "position-own-row " : "") + (product.id === selected?.id ? "position-selected " : "") + (product.id === own?.id && highlightOwn ? "position-located" : "")}><td>{groupShopLink(product)}</td>{view === "竞争总览" && <td className="position-tag-cell" aria-label={`平台标签待接入，Offer ${product.offer_id}`}>—</td>}{columns.map(column => <td key={column.title}>{column.metric_key ? <span className="position-metric-raw">{operatingMetricValue(product, column.metric_key)}</span> : column.field ? <button className="position-value" onClick={() => setSelectedId(product.id)} aria-label={`${column.title}字段依据 ${product.offer_id}`}>{groupSnapshotValue(product, column.field)}</button> : <span className="position-pending">待接入</span>}</td>)}<td><div className="position-row-actions"><button className="detail-button" onClick={event => { event.stopPropagation(); onOpenDetail(product.id); }}>查看详情</button></div></td></tr>)}</tbody></table></div>
     {!visible.length && <p className="group-compact-empty">没有符合条件的 Offer。<button className="text-button" onClick={clearFilters}>清除条件</button></p>}<p className="position-context">可见 {visible.length} / 全组 {allOffers.length} · 筛选不改变全组排名与分母</p></section>
     <section className="table-card group-detail-section position-events"><div className="table-heading"><div><h2>竞争动态与可追溯变化</h2><span>全组 · 价格、MOQ、SKU 为重点，普通库存变化弱化</span></div></div><div className="position-event-controls">{(["today", "7", "30"] as const).map(range => <button className={page?.range === range ? "active" : ""} disabled={rangeLoading} aria-pressed={page?.range === range} key={range} onClick={() => { if (range !== "today") { requestId.current++; onRangeChange(Number(range) as 7 | 30); } else void loadEvents(range, "important"); }}>{range === "today" ? "今日" : `近 ${range} 天`}</button>)}{(["important", "all"] as const).map(mode => <button className={page?.mode === mode ? "active" : ""} disabled={rangeLoading} aria-pressed={page?.mode === mode} key={mode} onClick={() => void loadEvents(page?.range ?? String(days) as "7" | "30", mode)}>{mode === "important" ? "重点" : "全部"}</button>)}</div>
     {(eventLoading || rangeLoading) && <p role="status">正在更新历史范围，保留上一份事实…</p>}
@@ -1372,7 +1436,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     {page && <p className="position-context">已加载 {page.items.length} 条{page.has_more ? "，仍有更多" : "，已加载当前窗口全部符合条件的事件"}{page.has_more && <button className="secondary-button" disabled={eventLoading || rangeLoading} onClick={() => void loadEvents(page.range, page.mode, true)}>继续加载</button>}</p>}
     {evidence && <div className="position-evidence" role="region" aria-label="所选变化证据"><strong>{formatChange(evidence)}</strong><p>前值 {evidence.old_value ?? "未知"} → 后值 {evidence.new_value ?? "未知"}</p><p>检测时间 {formatDate(evidence.detected_at)}</p><p>Event #{evidence.id} · Snapshot #{evidence.snapshot_id ?? "未知"} · Collection Run #{evidence.collection_run_id ?? "未知"} · {evidence.entity_key ?? "Offer 级"} {evidence.sku_name}</p><p>单品详情没有事件锚点；以上保留所选事件证据。</p><button className="detail-button" onClick={() => onOpenDetail(evidence.competitor_id)}>查看详情</button></div>}
     </section></div>
-    <aside className="position-aside"><section className="table-card position-side-card"><h2>组内经营判断</h2><strong>证据不足</strong><p>不计算销量排名、增长或综合评分。</p><h3>关键证据与缺口</h3><p>经营表现和口碑履约展示官方采购助手原值；平台标签与收藏数待接入。</p><h3>当前建议</h3><p>证据不足。可从单品速览核查事实，不生成调价、加码或放弃建议。</p></section><section className="table-card position-side-card"><h2>商品速览</h2><strong>待接入：评分规则未冻结</strong><h3>评分拆解</h3><p>证据不足，维度与权重须经后续规则确认。</p>{selected ? <><h3>{selected.shop_name || "店铺未采集"}{selected.id === own?.id && <span className="group-own-label">我方</span>}</h3>{!visible.some(product => product.id === selected.id) && <p role="status">当前选中商品不在筛选结果中</p>}<p>{selected.title || "商品名未采集"} · Offer {selected.offer_id}</p>{facts(selected)}<OperatingMetricsPanel metrics={selected.operating_metrics} latestRun={selected.latest_collection_run} coverage={data.operating_metrics_coverage} /></> : <p>当前组暂无商品</p>}</section></aside>
+    <aside className="position-aside"><section className="table-card position-side-card"><h2>组内经营判断</h2><strong>证据不足</strong><p>不计算销量排名、增长或综合评分。</p><h3>关键证据与缺口</h3><p>经营表现和口碑履约展示官方采购助手原值；平台标签与收藏数待接入。</p><h3>当前建议</h3><p>证据不足。可从单品速览核查事实，不生成调价、加码或放弃建议。</p></section><section className="table-card position-side-card product-preview"><h2>商品速览</h2>{selected ? <><div className="product-preview-shop">{selected.shop_name?.trim() || "店铺未采集"}{selected.id === own?.id && <span className="group-own-label">我方</span>}</div><p className="product-preview-title">{selected.title || "商品名未采集"}</p><p className="product-preview-offer">Offer ID：{selected.offer_id}</p><dl className="position-facts">{(["price", "moq", "sku", "stock"] as const).map((field, index) => <div key={field}><dt>{["展示报价", "MOQ", "SKU 数", "完整库存"][index]}</dt><dd>{groupSnapshotValue(selected, field)}</dd></div>)}</dl><div className="product-preview-status"><span>商品：{selected.status === "active" ? "在售" : selected.status === "offline" ? "下架" : "未知"}</span><span>{selected.is_active ? "监控中" : "已停止"}</span></div><p className="product-preview-freshness">最近有效基础快照 · {formatDate(selected.latest_snapshot?.captured_at ?? null)}</p>{previewPosition(selected)}<button className="detail-button" onClick={() => onOpenDetail(selected.id)}>查看详情</button></> : <p>当前组暂无商品</p>}</section></aside>
     </div></div>
   </AppShell>;
 }
