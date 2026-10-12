@@ -86,4 +86,10 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | --- | --- | --- |
 | [组内竞争情报与竞争位置 V1](group-competitive-position-v1.md) | 已通过 ChatGPT Final Spec Review / 已 Freeze；本轮已实施，最新 UI 已由用户验收，完整验证结果见最终收尾报告；冻结基准 `7bd49355df7ca19a1de2835c0280d140a76b624f` | 升级现有组详情的目标 UI、真实 Offer 排序/位置和变化证据；R1～R3 已正式确认。原始原型截图已入库，历史明细有界首批/游标加载，排名基于各 Offer 最近有效快照且非实时同步。新经营字段与评分保持未就绪。Freeze 后局部覆盖 Group Detail V1 的我方首行、首屏结构和主要动态呈现，其余事实合同继承。 |
 
-以上 Spec 不计入 2026-10-08 的 30 份历史核验分类统计；当前索引共收录 32 份 Spec。组分析现按已实施的 group-competitive-position-v1 及其继承合同运行；完整验证结果见最终收尾报告。
+以上 Spec 不计入 2026-10-08 的 30 份历史核验分类统计；当前索引共收录 33 份 Spec。组分析现按已实施的 group-competitive-position-v1 及其继承合同运行；完整验证结果见最终收尾报告。
+
+## 待 ChatGPT Spec Review
+
+| Spec | 状态 | 范围 |
+| --- | --- | --- |
+| [collection-reliability-records-v1.2.md](collection-reliability-records-v1.2.md) | 待 ChatGPT 独立 Spec Review；尚未 Freeze | 真实 SQLite 诊断、持久化批次/采集记录、有限经营指标补采。Review 通过前不得 Implement。 |
