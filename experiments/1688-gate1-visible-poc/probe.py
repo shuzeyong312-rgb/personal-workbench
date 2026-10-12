@@ -10,6 +10,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -21,6 +22,8 @@ PROFILE_DIR = ROOT / ".browser-profile"
 DB_PATH = ROOT / "backend" / "data" / "personal_workbench.db"
 SCREENSHOT_PATH = Path(__file__).resolve().parent / "a19-top-panel.png"
 A19_GROUP = "A19磁吸暖手宝"
+OWN_A19_OFFER = "1079985611201"
+DATA_API = "mtop.1688.pc.plugin.od.data.query"
 ORIGINAL_FIVE = ("1079906223307", "1080864798243", "1083985416394", "1082904060172", "1081895898799")
 ASSISTANT_HEADING = "1688官方采购助手"
 TOP_FIELDS = {
@@ -49,7 +52,7 @@ def emit(data: dict[str, object]) -> None:
 
 
 def read_offer(offer_id: str) -> dict[str, object]:
-    with sqlite3.connect(DB_PATH) as connection:
+    with sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True) as connection:
         connection.row_factory = sqlite3.Row
         row = connection.execute(
             "SELECT id, offer_id, url, title, shop_name, group_role, ownership, group_id "
@@ -65,7 +68,7 @@ def read_offer(offer_id: str) -> dict[str, object]:
 
 
 def select_offers(scope: str) -> list[dict[str, object]]:
-    with sqlite3.connect(DB_PATH) as connection:
+    with sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True) as connection:
         connection.row_factory = sqlite3.Row
         if scope == "a19":
             rows = connection.execute(
@@ -78,11 +81,27 @@ def select_offers(scope: str) -> list[dict[str, object]]:
                 raise RuntimeError(f"A19 own Offer lookup must be unique; found {len(rows)}")
             offer = dict(rows[0])
             offer_id = str(offer["offer_id"])
+            if offer_id != OWN_A19_OFFER:
+                raise RuntimeError("own A19 identity changed; confirm target before visiting")
             if not re.search(rf"/offer/{re.escape(offer_id)}(?:\.html)?(?:$|[?#])", str(offer["url"])):
                 raise RuntimeError("A19 database URL does not identify its Offer ID")
             return [offer]
 
     return [read_offer(offer_id) for offer_id in ORIGINAL_FIVE]
+
+
+def supplied_offer(url: str) -> dict[str, object]:
+    parsed = urlparse(url)
+    match = re.fullmatch(r"/offer/(\d+)\.html", parsed.path)
+    if parsed.scheme != "https" or parsed.netloc != "detail.1688.com" or not match or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError("offer URL must be an exact https://detail.1688.com/offer/<digits>.html URL")
+    return {
+        "offer_id": match.group(1),
+        "url": url,
+        "title": None,
+        "shop_name": None,
+        "group_role": "user_supplied",
+    }
 
 
 def page_gate(page: object) -> str | None:
@@ -96,13 +115,46 @@ def page_gate(page: object) -> str | None:
         "登录", "账号登录", "用户登录", "1688登录", "login", "signin", "sign in", "1688 login"
     }:
         return "login required"
+    for frame in page.locator("iframe").all():
+        if frame.is_visible() and any(marker in (frame.get_attribute("src") or "").casefold() for marker in VERIFY_MARKERS):
+            return "verification required"
+    for text in ("请完成验证", "请拖动滑块", "滑动验证", "安全验证", "访问受限"):
+        if any(item.is_visible() for item in page.get_by_text(text, exact=False).all()):
+            return "verification required"
     return None
+
+
+def data_state(gate: str | None, events: list[dict[str, object]]) -> str:
+    if gate:
+        return gate
+    if any(event.get("transport_failed") or int(event.get("http_status", 0)) >= 400 for event in events):
+        return "data_request_failed"
+    # HTTP 200 cannot prove business success; no response bodies are read.
+    return "unknown"
+
+
+def wait_for_user_verification(page: object, offer_id: str) -> None:
+    gate = page_gate(page)
+    if gate != "verification required":
+        return
+    emit({"stage": "waiting_for_user_verification", "offer_id": offer_id, "timeout_seconds": 600})
+    deadline = time.monotonic() + 600
+    while gate == "verification required" and time.monotonic() < deadline:
+        page.wait_for_timeout(2_000)
+        gate = page_gate(page)
+    if gate == "verification required":
+        raise RuntimeError("access_restricted: user verification timed out")
+    if gate == "login required":
+        raise RuntimeError("login required after verification; stopped")
+    emit({"stage": "user_verification_cleared", "offer_id": offer_id})
 
 
 def wait_for_manual_login(page: object) -> None:
     deadline = time.monotonic() + 600
     while page_gate(page) == "login required" and time.monotonic() < deadline:
         time.sleep(3)
+    if page_gate(page) == "verification required":
+        raise RuntimeError("access_restricted: verification during manual login")
     if page_gate(page) == "login required":
         raise RuntimeError("login required; 10 minute manual-login window expired")
 
@@ -161,6 +213,9 @@ def assistant_region(page: object) -> tuple[object | None, dict[str, object]]:
 
 
 def extract_top_fields(region_text: str) -> tuple[dict[str, dict[str, object]], bool]:
+    region_text = region_text.split("分销代发", 1)[0]
+    label_pattern = "|".join(re.escape(label) for labels in TOP_FIELDS.values() for label in labels)
+    region_text = re.sub(rf"(?<!\S)({label_pattern})(?=\s|[:：]|$)", r"\n\1", region_text)
     lines = [re.sub(r"\s+", " ", line).strip() for line in region_text.splitlines()]
     lines = [line for line in lines if line]
     loading = any(marker.casefold() in region_text.casefold() for marker in LOADING_MARKERS)
@@ -176,8 +231,8 @@ def extract_top_fields(region_text: str) -> tuple[dict[str, dict[str, object]], 
                         raw = None
                     found = (raw, line + (" / " + raw if raw is not None else ""))
                     break
-                if line.startswith(label + ":") or line.startswith(label + "："):
-                    raw = re.sub(rf"^{re.escape(label)}\s*[:：]\s*", "", line).strip()
+                if re.match(rf"^{re.escape(label)}(?:\s|[:：])", line):
+                    raw = re.sub(rf"^{re.escape(label)}\s*[:：]?\s*", "", line).strip()
                     found = (raw or None, line)
                     break
             if found:
@@ -186,6 +241,8 @@ def extract_top_fields(region_text: str) -> tuple[dict[str, dict[str, object]], 
             status, raw, source_line = ("loading" if loading else "not_displayed"), None, None
         elif found[0] is None:
             status, raw, source_line = "read_failed", None, found[1]
+        elif any(marker.casefold() in found[0].casefold() for marker in LOADING_MARKERS):
+            status, raw, source_line = "loading", found[0], found[1]
         elif found[0].strip() in PLACEHOLDERS:
             status, raw, source_line = "placeholder", found[0], found[1]
         else:
@@ -260,7 +317,8 @@ def capture(page: object, offer: dict[str, object], scope: str, screenshot: bool
             for worker in page.context.service_workers
         )
         if screenshot:
-            region.screenshot(path=str(SCREENSHOT_PATH), timeout=15_000)
+            path = SCREENSHOT_PATH if expected == OWN_A19_OFFER else SCREENSHOT_PATH.with_name(f"{expected}-top-panel.png")
+            region.screenshot(path=str(path), timeout=15_000)
     labels_visible = [name for name, data in fields.items() if data["status"] in {"placeholder", "observed", "read_failed"}]
     non_placeholder = [name for name, data in fields.items() if data["status"] == "observed"]
     return {
@@ -285,21 +343,26 @@ def capture(page: object, offer: dict[str, object], scope: str, screenshot: bool
         },
         "assistant_fields": fields,
         "other_allowed_sources": read_other_sources(page),
-        "screenshot_path": str(SCREENSHOT_PATH) if screenshot else None,
+        "screenshot_path": str(SCREENSHOT_PATH if expected == OWN_A19_OFFER else SCREENSHOT_PATH.with_name(f"{expected}-top-panel.png")) if screenshot else None,
     }
 
 
-def observe(page: object, offer: dict[str, object], scope: str, screenshot: bool = False) -> dict[str, object]:
-    page.goto(str(offer["url"]), wait_until="domcontentloaded", timeout=45_000)
+def observe(page: object, offer: dict[str, object], scope: str, screenshot: bool = False, navigate: bool = True) -> dict[str, object]:
+    if navigate:
+        page.goto(str(offer["url"]), wait_until="domcontentloaded", timeout=45_000)
     gate = page_gate(page)
     if gate == "verification required":
-        raise RuntimeError("access_restricted: verification required; stopped without interaction")
+        wait_for_user_verification(page, str(offer["offer_id"]))
+        gate = page_gate(page)
     if gate == "login required":
         emit({"stage": "manual_login_required", "offer_id": offer["offer_id"], "reason": gate})
         wait_for_manual_login(page)
     page.locator("body").wait_for(state="visible", timeout=20_000)
     page.wait_for_timeout(5_000)
     result = capture(page, offer, scope)
+    if page_gate(page) == "verification required":
+        wait_for_user_verification(page, str(offer["offer_id"]))
+        result = capture(page, offer, scope)
     if not result["assistant_region"].get("header_visible"):
         return result
 
@@ -307,13 +370,16 @@ def observe(page: object, offer: dict[str, object], scope: str, screenshot: bool
     deadline = time.monotonic() + 30
     while not result["assistant_region"]["non_placeholder_fields"] and time.monotonic() < deadline:
         page.wait_for_timeout(5_000)
+        if page_gate(page) == "verification required":
+            wait_for_user_verification(page, str(offer["offer_id"]))
         result = capture(page, offer, scope)
     result["assistant_region"]["load_wait_seconds"] = round(30 - max(0, deadline - time.monotonic()))
     if screenshot:
         region, _ = assistant_region(page)
         if region is not None:
-            region.screenshot(path=str(SCREENSHOT_PATH), timeout=15_000)
-        result["screenshot_path"] = str(SCREENSHOT_PATH)
+            path = SCREENSHOT_PATH if str(offer["offer_id"]) == OWN_A19_OFFER else SCREENSHOT_PATH.with_name(f"{offer['offer_id']}-top-panel.png")
+            region.screenshot(path=str(path), timeout=15_000)
+        result["screenshot_path"] = str(SCREENSHOT_PATH if str(offer["offer_id"]) == OWN_A19_OFFER else SCREENSHOT_PATH.with_name(f"{offer['offer_id']}-top-panel.png"))
     return result
 
 
@@ -336,13 +402,25 @@ def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--scope", choices=("a19", "five"), default="a19")
+    parser.add_argument("--offer-url", help="collect once from this exact 1688 detail URL")
     parser.add_argument("--self-check", action="store_true")
+    parser.add_argument("--allow-platform-visit", action="store_true")
     args = parser.parse_args()
     if args.self_check:
         self_check()
         return 0
-    targets = select_offers(args.scope)
-    emit({"stage": "targets", "scope": args.scope, "offers": [
+    if not args.allow_platform_visit:
+        parser.error("platform visits disabled; explicit user approval required before --allow-platform-visit")
+    if args.offer_url:
+        try:
+            targets = [supplied_offer(args.offer_url)]
+        except ValueError as error:
+            parser.error(str(error))
+        scope = "single"
+    else:
+        targets = select_offers(args.scope)
+        scope = args.scope
+    emit({"stage": "targets", "scope": scope, "offers": [
         {"offer_id": offer["offer_id"], "url": offer["url"], "shop": offer["shop_name"], "role": offer["group_role"]}
         for offer in targets
     ]})
@@ -355,10 +433,22 @@ def main() -> int:
         try:
             page = context.pages[0] if context.pages else context.new_page()
             results = []
+            panel_failures: list[str] = []
             for index, offer in enumerate(targets):
+                events: list[dict[str, object]] = []
+                def response_status(response: object) -> None:
+                    if DATA_API in response.url:
+                        events.append({"http_status": response.status})
+                def request_failed(request: object) -> None:
+                    if DATA_API in request.url:
+                        events.append({"transport_failed": True})
+                page.on("response", response_status)
+                page.on("requestfailed", request_failed)
                 if index:
                     page.wait_for_timeout(5_000)
-                result = observe(page, offer, args.scope)
+                result = observe(page, offer, scope, screenshot=scope == "single")
+                result["data_request_evidence"] = list(events)
+                result["data_load_state"] = data_state(page_gate(page), events)
                 results.append(result)
                 emit(result)
                 if not result["offer_identity_verified"]:
@@ -367,14 +457,19 @@ def main() -> int:
                     return 2
                 if result["assistant_region"].get("region_verified") is not True:
                     emit({"stage": "stop", "reason": "official_assistant_region_not_isolated"})
+                    if scope != "five":
+                        return 2
+                    panel_failures.append(str(offer["offer_id"]))
+                if result["data_load_state"] != "unknown":
+                    emit({"stage": "stop", "reason": result["data_load_state"]})
                     return 2
-                if not result["extension_service_worker_loaded"]:
-                    emit({"stage": "stop", "reason": "procurement_assistant_extension_not_running"})
-                    return 2
-                if args.scope == "a19":
+                if scope == "a19":
                     page.wait_for_timeout(5_000)
+                    events.clear()
                     page.reload(wait_until="domcontentloaded", timeout=45_000)
-                    repeated = observe(page, offer, args.scope, screenshot=True)
+                    repeated = observe(page, offer, args.scope, screenshot=True, navigate=False)
+                    repeated["data_request_evidence"] = list(events)
+                    repeated["data_load_state"] = data_state(page_gate(page), events)
                     repeated["repeat_validation"] = {
                         "repeats_observation_at": result["observed_at"],
                         "fields": {
@@ -395,15 +490,23 @@ def main() -> int:
                         "scope": "same-session page reload; not cross-time validation",
                     }
                     emit(repeated)
+                    if repeated["data_load_state"] != "unknown":
+                        return 2
                     if not repeated["offer_identity_verified"] or repeated["assistant_region"].get("region_verified") is not True:
                         emit({"stage": "stop", "reason": "A19_repeat_identity_or_source_mismatch"})
                         return 2
                     if not repeated["assistant_region"]["non_placeholder_fields"]:
                         emit({"stage": "stop", "reason": "A19_repeat_has_no_non_placeholder_value; five-Offer stage not run"})
                         return 2
+                page.remove_listener("response", response_status)
+                page.remove_listener("requestfailed", request_failed)
+            if panel_failures:
+                emit({"stage": "stop", "reason": "official_assistant_region_not_isolated",
+                      "offer_ids": panel_failures})
+                return 2
             return 0
         except (PlaywrightTimeoutError, PlaywrightError) as error:
-            emit({"stage": "failure", "failure_reason": error.__class__.__name__, "message": str(error)[:240]})
+            emit({"stage": "failure", "failure_reason": error.__class__.__name__})
             return 3
         except RuntimeError as error:
             reason = str(error)

@@ -1,5 +1,6 @@
-param([ValidateSet('a19', 'five')][string]$Scope = 'a19')
+param([ValidateSet('a19', 'five')][string]$Scope = 'a19', [string]$OfferUrl, [switch]$AllowPlatformVisit)
 $ErrorActionPreference = 'Stop'
+if (-not $AllowPlatformVisit) { throw 'Platform visits disabled; obtain explicit user approval first.' }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $projectProfilePath = (Resolve-Path (Join-Path $root '.browser-profile')).Path
 $chrome = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object {
@@ -12,5 +13,9 @@ $locks = @(
 if ($chrome.Count -gt 0 -or $locks.Count -gt 0) {
     throw "Profile is occupied or locked (chrome=$($chrome.Count), locks=$($locks.Count)); no browser started."
 }
-& (Join-Path $root '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'probe.py') --scope $Scope
+if ($OfferUrl) {
+    & (Join-Path $root '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'probe.py') --offer-url $OfferUrl --allow-platform-visit
+} else {
+    & (Join-Path $root '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'probe.py') --scope $Scope --allow-platform-visit
+}
 exit $LASTEXITCODE
