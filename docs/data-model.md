@@ -5,9 +5,9 @@
 本文描述 1688 监控商品（我方商品与直接竞品）共用的数据模型，并明确区分：
 
 - **当前已实现**：当前 ORM、数据库表、迁移和采集流程已经支持的事实；
-- **后续规划**：仅在 roadmap / research 中讨论，当前没有对应正式模型的部分。核对基线为 `backend/app/models.py`、Alembic 至 `20261004_12` 和现有 API；数据库迁移版本表 `alembic_version` 不计入业务 ORM 实体。
+- **后续规划**：仅在 roadmap / research 中讨论，当前没有对应正式模型的部分。核对基线为 `backend/app/models.py`、Alembic 至 `20261012_14` 和现有 API；数据库迁移版本表 `alembic_version` 不计入业务 ORM 实体。
 
-当前 ORM 已实现 7 个实体（7 张业务表）：
+当前 ORM 已实现 10 个实体（10 张业务表）；核对基线包含迁移 `20261012_14`：
 
 ~~~text
 CompetitorGroup
@@ -15,7 +15,10 @@ CompetitorGroup
       ├── ProductSnapshot
       │      └── SkuSnapshot
       ├── CollectionRun
+      │      ├── OperatingMetricObservation
+      │      └── CollectionBatchItem ── CollectionBatch
       └── ChangeEvent
+OperatingMetricObservation（关联 CollectionRun）
 SystemSetting（独立 key/value，无外键）
 ~~~
 
@@ -224,6 +227,36 @@ failed
 
 ---
 
+## 6.1 当前已实现：CollectionBatch 与 CollectionBatchItem
+
+`CollectionBatch` 是一次手动或定时批次的持久记录；`CollectionBatchItem` 是批次创建时固定的一件计划商品。它们保留批次身份、配置快照、商品级最终结果及访问统计，不从时间接近的旧 `CollectionRun` 推断归属。
+
+CollectionBatch 的稳定字段包括：
+
+~~~text
+id, task_id, trigger_kind, created_at, started_at, finished_at
+lifecycle_status, outcome_code, settings_snapshot, planned_products
+scheduler_occurrence_key, protection_reason, protection_details
+circuit_breaker_streak, circuit_breaker_cancelled, security_error_summary
+~~~
+
+CollectionBatchItem 通过 `batch_id` 关联批次，通过 nullable `competitor_id` 关联当前商品；商品删除时 FK 置空并保留去身份化的计划位置、attempt 数、已确认/未知访问数、经营补采与验证恢复计数、异常计数和最终结果。唯一约束保证批次内商品与位置不重复。
+
+每个 CollectionRun 通过 nullable `collection_batch_item_id` 关联本次批次商品，并保存单调 attempt number、attempt kind 与导航 claim/confirm/terminal 事实。旧单次 Run 保持 NULL 关联。每次真实访问尝试写独立 Run；字段 Observation 继续只关联实际 Run，不合成或回填历史事实。
+
+## 6.2 当前已实现：OperatingMetricObservation
+
+保存一次 CollectionRun 对八项经营字段的真实观察：
+
+~~~text
+id, competitor_id, collection_run_id, platform, offer_id
+metric_key, status, raw_value, source, observed_at, reason
+~~~
+
+每条 Observation 必须属于实际 Run；placeholder、loading、source unavailable 和 read failed 分别保留事实状态，缺失字段不生成 Observation。商品删除时按既有删除事务移除字段级观察，但批次 item 的去身份化异常计数保留。
+
+批次终态由持久 item/run 事实收口；重启只把旧活动批次幂等标记为 interrupted，不自动续跑。调度批次用策略窗口、due 商品与最新 Run 锚点签名及 generation 构造唯一 occurrence key。
+
 ## 7. 当前已实现：ChangeEvent
 
 表示监控商品的客观变化：普通 diff 比较相邻有效快照，生命周期事件来自可靠状态转换；覆盖我方与竞品，聚合读取再按当前身份区分。
@@ -332,19 +365,23 @@ id DESC
 CompetitorGroup 1 → N Competitor（group_id 可空）
 Competitor 1 → N ProductSnapshot 1 → N SkuSnapshot
 Competitor 1 → N CollectionRun
+CollectionRun 1 → N OperatingMetricObservation
+CollectionBatch 1 → N CollectionBatchItem
+CollectionBatchItem 1 → N CollectionRun（可空，兼容旧单次记录）
+CollectionRun 1 → N ChangeEvent
 Competitor 1 → N ChangeEvent
 ChangeEvent.snapshot_id → ProductSnapshot（可空，类型 CHECK）
 ChangeEvent.collection_run_id → CollectionRun（可空，历史兼容）
 SystemSetting（独立，无外键）
 ~~~
 
-这是数据库外键关系；ORM 仅显式声明 ProductSnapshot ↔ SkuSnapshot relationship，不代表其他边不存在。每组最多一个 self/own；不存在 OwnProduct、GroupMember、企业主体或经营观察表。
+这是数据库外键关系；ORM 仅显式声明 ProductSnapshot ↔ SkuSnapshot relationship，不代表其他边不存在。每组最多一个 self/own；不存在 OwnProduct、GroupMember 或企业主体表。
 
 SystemSetting 使用 `key: String(64)` 主键与 `value: nullable String(255)`，当前保存：
 
 - `own_shop_name`：我方店铺配置；迁移仅在缺失时初始化当前业务值，不覆盖已有配置。GET / PUT `/api/settings/own-shop-name`；保存配置与当前商品身份重识别同事务。
-- `competitor_monitoring_*`：五项 Batch 节奏/风控（商品间隔、连续采集数量、主动休息、验证冷却、自动续采上限）及四项自动策略（enabled、strategy、time、missed_policy）。GET / PUT `/api/settings/competitor-monitoring` 一次返回/保存九项；值以 canonical 字符串落库，类型/范围由 API 校验，无对应数据库枚举 CHECK。
-- 缺失或非法采集设置读取时按字段默认值 fallback，不写回；PUT 完整九项验证、原子提交。BatchConfig 只投影五项节奏/风控，不包含 scheduler 四项。
+- `competitor_monitoring_*`：六项 Batch 节奏/风控（商品间隔、连续采集数量、主动休息、验证冷却、自动续采上限、经营指标补采上限）及四项自动策略（enabled、strategy、time、missed_policy）。GET / PUT `/api/settings/competitor-monitoring` 一次返回/保存十项；值以 canonical 字符串落库，类型/范围由 API 校验，无对应数据库枚举 CHECK。
+- 缺失或非法采集设置读取时按字段默认值 fallback，不写回；PUT 完整十项验证、原子提交。BatchConfig 投影六项节奏/风控，不包含 scheduler 四项。
 
 Group Summary、Group Detail、Group Attention 都是派生读取，没有额外表或持久化分数；按当前 ownership / group / role 聚合，不能宣称历史事件发生时的归属。竞品数量过滤 ownership=competitor，通用采集统计可覆盖所有监控商品。
 

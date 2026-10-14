@@ -141,10 +141,21 @@ class CollectionRun(Base):
             "operating_metrics_status IN ('not_attempted', 'success', 'partial', 'no_values', 'failed', 'blocked')",
             name="ck_collection_runs_operating_metrics_status",
         ),
+        CheckConstraint(
+            "attempt_kind IS NULL OR attempt_kind IN ('first_pass', 'verification_resume', 'operating_metrics_retry')",
+            name="ck_collection_runs_attempt_kind",
+        ),
+        UniqueConstraint("collection_batch_item_id", "attempt_number", name="uq_collection_runs_item_attempt"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     competitor_id: Mapped[int] = mapped_column(ForeignKey("competitors.id"), nullable=False)
+    collection_batch_item_id: Mapped[int | None] = mapped_column(ForeignKey("collection_batch_items.id", name="fk_collection_runs_batch_item"), nullable=True)
+    attempt_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempt_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    navigation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    navigation_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    navigation_terminal_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -153,6 +164,71 @@ class CollectionRun(Base):
     )
     error_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+
+class CollectionBatch(Base):
+    __tablename__ = "collection_batches"
+    __table_args__ = (
+        CheckConstraint("trigger_kind IN ('manual_selected', 'manual_all_active', 'scheduled')", name="ck_collection_batches_trigger_kind"),
+        CheckConstraint("lifecycle_status IN ('created', 'running', 'terminal')", name="ck_collection_batches_lifecycle"),
+        CheckConstraint("outcome_code IS NULL OR outcome_code IN ('success', 'partial_success', 'partial_failure', 'user_ended', 'verification_required', 'collect_failed', 'infrastructure_error', 'interrupted')", name="ck_collection_batches_outcome"),
+        CheckConstraint("planned_products >= 0", name="ck_collection_batches_planned_products"),
+        UniqueConstraint("task_id", name="uq_collection_batches_task_id"),
+        UniqueConstraint("scheduler_occurrence_key", name="uq_collection_batches_scheduler_occurrence"),
+        Index("ix_collection_batches_started_at_id", "started_at", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lifecycle_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    outcome_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    settings_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    planned_products: Mapped[int] = mapped_column(Integer, nullable=False)
+    scheduler_occurrence_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    protection_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    protection_details: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    circuit_breaker_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    circuit_breaker_cancelled: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    security_error_summary: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class CollectionBatchItem(Base):
+    __tablename__ = "collection_batch_items"
+    __table_args__ = (
+        CheckConstraint("execution_status IN ('queued', 'running', 'completed', 'failed', 'not_executed')", name="ck_collection_batch_items_execution_status"),
+        CheckConstraint("final_result IS NULL OR final_result IN ('first_pass_success', 'verification_resume_success', 'retry_success', 'final_failed', 'verification_required', 'not_executed')", name="ck_collection_batch_items_final_result"),
+        CheckConstraint("base_result IS NULL OR base_result IN ('success', 'failed', 'not_attempted')", name="ck_collection_batch_items_base_result"),
+        CheckConstraint("attempts_started >= 0 AND page_visits >= 0 AND page_visits_unknown >= 0 AND verification_resume_visits >= 0 AND retry_visits >= 0 AND placeholder_count >= 0 AND source_unavailable_count >= 0 AND loading_count >= 0 AND read_failed_count >= 0", name="ck_collection_batch_items_counts"),
+        UniqueConstraint("batch_id", "position", name="uq_collection_batch_items_position"),
+        UniqueConstraint("batch_id", "competitor_id", name="uq_collection_batch_items_competitor"),
+        Index("ix_collection_batch_items_batch_status", "batch_id", "execution_status", "final_result"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("collection_batches.id"), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    competitor_id: Mapped[int | None] = mapped_column(ForeignKey("competitors.id"), nullable=True)
+    execution_status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", server_default="queued")
+    final_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    base_result: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    operating_metrics_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    protection_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attempts_started: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    page_visits: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    page_visits_unknown: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    verification_resume_visits: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    retry_visits: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    technical_exception_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    placeholder_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    source_unavailable_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    loading_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    read_failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    cancelled_retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    stop_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class OperatingMetricObservation(Base):

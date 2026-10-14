@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from datetime import datetime, timezone
 from decimal import Decimal
+import asyncio
 from types import SimpleNamespace
 from threading import Event, Thread
 from unittest.mock import Mock, patch
@@ -18,6 +19,9 @@ from app.collection.service import (
     BatchItemResult,
     BatchRuntime,
     CollectionError,
+    _finalize_persisted_batch,
+    create_collection_batch,
+    recover_interrupted_batches,
     run_batch_collection,
 )
 import app.collection.service as collection_service
@@ -25,7 +29,8 @@ import app.competitors as competitors_module
 from app.database import get_db
 from app.main import app
 from app.collection.types import ProductData
-from app.models import Base, Competitor, ProductSnapshot
+from app.collection.types import CollectionPageResult, OperatingMetricData
+from app.models import Base, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, OperatingMetricObservation, ProductSnapshot
 from app.settings import batch_config_values, update_competitor_monitoring_setting
 
 
@@ -44,6 +49,7 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.collection_session_factory = session_factory
     BATCH_RUNTIME.finish("success")
     test_client = TestClient(app)
     try:
@@ -53,6 +59,7 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
         BATCH_RUNTIME.request_stop()
         BATCH_RUNTIME.mark_runner_stopped()
         app.dependency_overrides.clear()
+        app.state.collection_session_factory = None
         engine.dispose()
 
 
@@ -737,6 +744,7 @@ def _test_config(**overrides: int) -> BatchConfig:
         "batch_rest_seconds": 120,
         "verification_cooldown_seconds": 600,
         "auto_resume_max": 2,
+        "operating_metrics_retry_max": 0,
     }
     values.update(overrides)
     return BatchConfig(**values)
@@ -747,8 +755,8 @@ def test_batch_start_freezes_one_settings_snapshot_and_the_next_start_uses_the_n
 ) -> None:
     add_competitor(client[1], 1)
     auto = {"auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h", "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up"}
-    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0, **auto}
-    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5, **auto}
+    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0, "operating_metrics_retry_max": 0, **auto}
+    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5, "operating_metrics_retry_max": 0, **auto}
     assert client[0].put("/api/settings/competitor-monitoring", json=old).status_code == 200
     with patch("app.competitors.start_batch_task") as start:
         assert client[0].post("/api/competitors/collect-batch", json={"mode": "selected", "competitor_ids": [1]}).status_code == 202
@@ -767,8 +775,8 @@ def test_batch_start_and_settings_put_interleaving_freeze_only_complete_old_or_n
 ) -> None:
     add_competitor(client[1], 1)
     auto = {"auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h", "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up"}
-    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0, **auto}
-    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5, **auto}
+    old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0, "operating_metrics_retry_max": 0, **auto}
+    new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5, "operating_metrics_retry_max": 0, **auto}
     assert client[0].put("/api/settings/competitor-monitoring", json=old).status_code == 200
     snapshot_read = Event()
     resume_start = Event()
@@ -1132,3 +1140,433 @@ def test_pause_requested_during_last_item_does_not_hold_completed_batch(
     assert not worker.is_alive()
     assert runtime.snapshot()["status"] == "completed"
     assert runtime.snapshot()["remaining"] == 0
+
+
+def test_persisted_batch_deduplicates_products_and_exposes_history_api(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    add_competitor(client[1], 1)
+    config = BatchConfig(item_interval_seconds=1, continuous_collection_count=2, batch_rest_seconds=0)
+    with client[1]() as db:
+        batch = create_collection_batch(db, [1, 1], config, trigger_kind="manual_selected")
+        batch_id = batch.id
+        task_id = batch.task_id
+        items = db.query(CollectionBatchItem).filter_by(batch_id=batch_id).all()
+        assert batch.planned_products == 1
+        assert [(item.position, item.competitor_id) for item in items] == [(0, 1)]
+
+    page = client[0].get("/api/collection-batches")
+    assert page.status_code == 200
+    assert page.json()["total"] == 1
+    assert page.json()["items"][0]["batch_id"] == batch_id
+    assert page.json()["items"][0]["task_id"] == task_id
+    assert page.json()["items"][0]["batch_outcome_code"] is None
+    assert page.json()["items"][0]["exception_types"] == []
+    detail = client[0].get(f"/api/collection-batches/{task_id}")
+    assert detail.status_code == 200
+    assert detail.json()["batch_id"] == batch_id
+    assert detail.json()["planned_products"] == 1
+    assert len(detail.json()["items"]) == 1
+    assert detail.json()["items"][0]["base_status"] is None
+    assert detail.json()["items"][0]["deletion_notice"] is None
+    assert detail.json()["items"][0]["attempts"] == []
+
+
+def test_live_batch_status_keeps_runtime_outcome_and_adds_persistence_state(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    body = client[0].get("/api/competitors/collect-batch/status").json()
+    assert body["outcome_code"] == "success"
+    assert body["lifecycle_status"] in {None, "created", "running", "terminal"}
+    assert body["batch_outcome_code"] is None
+
+
+def test_live_batch_status_includes_current_product_title(
+    client: tuple[TestClient, sessionmaker[Session]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    with client[1]() as db:
+        product = db.get(Competitor, competitor_id)
+        assert product is not None
+        product.title = "当前采集商品"
+        db.commit()
+    runtime = BatchRuntime()
+    assert runtime.reserve([competitor_id])
+    runtime.set_current(competitor_id)
+    monkeypatch.setattr(competitors_module, "BATCH_RUNTIME", runtime)
+
+    response = client[0].get("/api/competitors/collect-batch/status")
+
+    assert response.status_code == 200
+    assert response.json()["current_competitor_title"] == "当前采集商品"
+    runtime.finish("success")
+
+
+def test_persisted_attempt_records_navigation_and_observations_once(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    runtime.reserve([competitor_id])
+    with client[1]() as db:
+        batch = create_collection_batch(db, [competitor_id], BatchConfig(), trigger_kind="manual_selected")
+        batch_id = batch.id
+    with client[1]() as db:
+        item = db.query(CollectionBatchItem).filter_by(batch_id=batch_id).one()
+        item_id = item.id
+    metrics = [OperatingMetricData(
+        metric_key=key, status="source_unavailable" if index == 0 else "placeholder",
+        raw_value=None if index == 0 else "-", source="assistant", offer_id="1000000000001",
+        observed_at=datetime.now(timezone.utc), reason="助手标题不存在或不唯一" if index == 0 else None,
+    ) for index, key in enumerate(("listing_time", "monthly_deal", "monthly_dropship", "annual_units", "annual_orders", "review_count", "positive_rate", "pickup_rate"))]
+
+    def page_result(_url: str, offer_id: str, **callbacks: object) -> CollectionPageResult:
+        callbacks["on_navigation_claim"]()
+        callbacks["on_navigation_confirmed"]()
+        return CollectionPageResult(offer_id, _collected_product(offer_id), None, metrics)
+
+    with patch.object(collection_service, "collect_1688_product", side_effect=page_result):
+        with client[1]() as db:
+            result = collection_service.collect_competitor(
+                db, competitor_id, batch_item_id=item_id, attempt_number=1,
+                attempt_kind="first_pass", batch_runtime=runtime,
+                batch_reservation=runtime.reservation_token(),
+                on_attempt_started=runtime.record_attempt_started,
+                on_external_access=runtime.record_external_access,
+            )
+
+    with client[1]() as db:
+        run = db.query(CollectionRun).one()
+        item = db.get(CollectionBatchItem, item_id)
+        assert result.collection_run.id == run.id
+        assert (run.attempt_number, run.attempt_kind) == (1, "first_pass")
+        assert run.navigation_claimed_at is not None and run.navigation_confirmed_at is not None
+        assert db.query(OperatingMetricObservation).filter_by(collection_run_id=run.id).count() == 8
+        assert (item.attempts_started, item.page_visits, item.retry_visits) == (1, 1, 0)
+        item.final_result = "final_failed"
+        item.execution_status = "completed"
+        item.base_result = "success"
+        batch = db.get(CollectionBatch, batch_id)
+        assert batch is not None
+        batch.lifecycle_status = "terminal"
+        batch.outcome_code = "partial_success"
+        db.commit()
+    assert (runtime.snapshot()["attempts_started"], runtime.snapshot()["page_visits"]) == (1, 1)
+    assert client[0].delete(f"/api/competitors/{competitor_id}").status_code == 204
+    page = client[0].get("/api/collection-batches?anomaly=source_unavailable")
+    assert page.status_code == 200 and page.json()["total"] == 1
+    detail = client[0].get(f"/api/collection-batches/{batch.task_id}").json()
+    item = detail["items"][0]
+    assert item["identity_removed"] is True
+    assert item["source_unavailable_count"] == 1
+    assert item["attempts"] == []
+
+
+@pytest.mark.parametrize("mode", ["retry_recovers", "circuit_breaker", "verification_during_retry", "verification_retry_slot", "verification_limit", "save_failure", "retry_offline", "circuit_loading_gap", "retry_base_failure"])
+def test_persisted_retry_recovery_and_three_item_circuit_breaker(
+    client: tuple[TestClient, sessionmaker[Session]], mode: str,
+) -> None:
+    competitor_ids = [add_competitor(client[1], index) for index in range(1, 5 if mode == "circuit_loading_gap" else 4 if mode == "circuit_breaker" else 3 if mode.startswith("verification") else 2)]
+    runtime = BatchRuntime()
+    config = _test_config(
+        item_interval_seconds=0, batch_rest_seconds=0, verification_cooldown_seconds=0,
+        auto_resume_max=1 if mode in {"verification_during_retry", "verification_retry_slot"} else 0,
+        operating_metrics_retry_max=2 if mode == "verification_retry_slot" else 1,
+    )
+    runtime.reserve(competitor_ids, config)
+    with client[1]() as db:
+        batch = create_collection_batch(db, competitor_ids, config, trigger_kind="manual_selected")
+        batch_id = batch.id
+        runtime.bind_batch(batch)
+    calls: list[tuple[int, str]] = []
+    keys = ("listing_time", "monthly_deal", "monthly_dropship", "annual_units", "annual_orders", "review_count", "positive_rate", "pickup_rate")
+
+    def collect(db: Session, competitor_id: int, *, batch_item_id: int, attempt_number: int, attempt_kind: str, on_attempt_started: object, on_external_access: object, **_kwargs: object) -> SimpleNamespace:
+        calls.append((competitor_id, attempt_kind))
+        if mode == "save_failure":
+            raise CollectionError("collection_save_failed", "采集结果保存失败")
+        now = datetime.now(timezone.utc)
+        first_pass = attempt_kind == "first_pass"
+        all_unavailable = first_pass and (mode == "circuit_breaker" or (mode == "circuit_loading_gap" and competitor_id != competitor_ids[2]))
+        metrics = [OperatingMetricData(
+            metric_key=key,
+            status="source_unavailable" if all_unavailable or (first_pass and index == 0) or (mode == "verification_retry_slot" and attempt_kind == "verification_resume" and index == 0) else "observed",
+            raw_value=None if all_unavailable or (first_pass and index == 0) or (mode == "verification_retry_slot" and attempt_kind == "verification_resume" and index == 0) else "1",
+            source="assistant", offer_id=f"{1000000000000 + competitor_id}", observed_at=now,
+            reason="助手标题不存在或不唯一" if all_unavailable or (first_pass and index == 0) or (mode == "verification_retry_slot" and attempt_kind == "verification_resume" and index == 0) else None,
+        ) for index, key in enumerate(keys)]
+        if mode == "circuit_loading_gap" and competitor_id == competitor_ids[2]:
+            metrics = [OperatingMetricData(key, "loading", None, "assistant", f"{1000000000000 + competitor_id}", now, "字段仍在加载") for key in keys]
+        if mode in {"retry_offline", "retry_base_failure"} and not first_pass:
+            metrics = []
+        run = CollectionRun(
+            competitor_id=competitor_id, collection_batch_item_id=batch_item_id,
+            attempt_number=attempt_number, attempt_kind=attempt_kind, started_at=now,
+            finished_at=now, status="success", operating_metrics_status="failed" if all_unavailable or first_pass else "success",
+            navigation_claimed_at=now, navigation_confirmed_at=now,
+        )
+        db.add(run)
+        if mode == "retry_base_failure" and not first_pass:
+            run.status = "failed"
+            run.operating_metrics_status = "not_attempted"
+            run.error_type = "collection_timeout"
+        if mode.startswith("verification") and competitor_id == competitor_ids[0] and attempt_kind == "operating_metrics_retry" and not (mode == "verification_retry_slot" and calls.count((competitor_id, attempt_kind)) > 1):
+            run.status = "failed"
+            run.operating_metrics_status = "blocked"
+            run.error_type = "1688_verification_required"
+        db.flush()
+        item = db.get(CollectionBatchItem, batch_item_id)
+        assert item is not None
+        item.attempts_started += 1
+        item.page_visits += 1
+        if attempt_kind == "operating_metrics_retry":
+            item.retry_visits += 1
+        elif attempt_kind == "verification_resume":
+            item.verification_resume_visits += 1
+        db.add_all([OperatingMetricObservation(
+            competitor_id=competitor_id, collection_run_id=run.id, platform="1688",
+            offer_id=f"{1000000000000 + competitor_id}", metric_key=metric.metric_key,
+            status=metric.status, raw_value=metric.raw_value, source=metric.source,
+            observed_at=metric.observed_at, reason=metric.reason,
+        ) for metric in metrics])
+        db.commit()
+        on_attempt_started()
+        on_external_access()
+        if mode == "retry_base_failure" and not first_pass:
+            raise CollectionError("collection_timeout", "页面加载超时", operating_metrics_status="not_attempted")
+        if mode.startswith("verification") and competitor_id == competitor_ids[0] and attempt_kind == "operating_metrics_retry" and not (mode == "verification_retry_slot" and calls.count((competitor_id, attempt_kind)) > 1):
+            raise CollectionError("1688_verification_required", "需要人工验证", operating_metrics_status="blocked")
+        return SimpleNamespace(
+            outcome="offline" if mode == "retry_offline" and not first_pass else "active", operating_metrics_status="failed" if all_unavailable or first_pass else "success",
+            operating_metric_data=metrics,
+        )
+
+    context = FakeContext()
+    def restore_retry_verification(_context: FakeContext, _page: object) -> None:
+        context.pages.clear()
+        if mode == "verification_limit":
+            runtime.request_end()
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(context)), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "restore_context_window", side_effect=restore_retry_verification), \
+        patch.object(collection_service, "collect_competitor", side_effect=collect):
+        run_batch_collection(client[1], competitor_ids, runtime, config=config, persisted_batch_id=batch_id)
+
+    with client[1]() as db:
+        batch = db.get(CollectionBatch, batch_id)
+        items = db.query(CollectionBatchItem).filter_by(batch_id=batch_id).order_by(CollectionBatchItem.position).all()
+        assert batch is not None and batch.lifecycle_status == "terminal"
+        if mode == "retry_recovers":
+            assert calls == [(competitor_ids[0], "first_pass"), (competitor_ids[0], "operating_metrics_retry")]
+            assert items[0].final_result == "retry_success"
+            assert (items[0].attempts_started, items[0].page_visits, items[0].retry_visits) == (2, 2, 1)
+            assert items[0].technical_exception_count == 1
+            assert batch.outcome_code == "success"
+        elif mode == "retry_base_failure":
+            assert calls == [(competitor_ids[0], "first_pass"), (competitor_ids[0], "operating_metrics_retry")]
+            assert items[0].base_result == "failed"
+            assert items[0].final_result == "final_failed"
+            assert batch.outcome_code == "collect_failed"
+            assert runtime.snapshot()["failed"] == 1
+            summary = client[0].get("/api/collection-batches").json()["items"][0]
+            assert summary["base_failed_products"] == 1
+            assert client[0].get("/api/collection-batches?anomaly=base_failed").json()["total"] == 1
+        elif mode == "retry_offline":
+            assert calls == [(competitor_ids[0], "first_pass"), (competitor_ids[0], "operating_metrics_retry")]
+            assert items[0].final_result == "final_failed"
+            assert items[0].technical_exception_count == 1
+            assert batch.outcome_code == "partial_success"
+        elif mode == "circuit_loading_gap":
+            assert all(kind == "first_pass" for _, kind in calls)
+            assert len(calls) == 4
+            assert batch.circuit_breaker_streak == 3
+            assert batch.circuit_breaker_cancelled == 4
+        elif mode == "circuit_breaker":
+            assert all(kind == "first_pass" for _, kind in calls)
+            assert batch.circuit_breaker_cancelled == 3
+            assert all(item.cancelled_retry_count == 1 and item.stop_reason == "source_unavailable_circuit_breaker" for item in items)
+        elif mode == "verification_during_retry":
+            assert calls == [(competitor_ids[0], "first_pass"), (competitor_ids[1], "first_pass"), (competitor_ids[0], "operating_metrics_retry"), (competitor_ids[0], "verification_resume"), (competitor_ids[1], "operating_metrics_retry")]
+            assert items[0].final_result == "verification_resume_success"
+            assert (items[0].attempts_started, items[0].page_visits, items[0].retry_visits, items[0].verification_resume_visits) == (3, 3, 1, 1)
+            assert batch.outcome_code == "success"
+            assert runtime.snapshot()["auto_resume_attempt"] == 1
+        elif mode == "verification_retry_slot":
+            assert calls == [(competitor_ids[0], "first_pass"), (competitor_ids[1], "first_pass"), (competitor_ids[0], "operating_metrics_retry"), (competitor_ids[0], "verification_resume"), (competitor_ids[0], "operating_metrics_retry"), (competitor_ids[1], "operating_metrics_retry")]
+            assert items[0].final_result == "retry_success"
+            assert (items[0].attempts_started, items[0].page_visits, items[0].retry_visits, items[0].verification_resume_visits) == (4, 4, 2, 1)
+            assert batch.outcome_code == "success"
+        elif mode == "verification_limit":
+            assert calls == [(competitor_ids[0], "first_pass"), (competitor_ids[1], "first_pass"), (competitor_ids[0], "operating_metrics_retry")]
+            assert items[0].final_result == "final_failed" and items[0].protection_reason == "1688_verification_required"
+            assert items[1].final_result == "final_failed"
+            assert items[1].retry_visits == 0
+            assert batch.outcome_code == "verification_required"
+            assert runtime.snapshot()["status"] == "stopped"
+        else:
+            assert calls == [(competitor_ids[0], "first_pass")]
+            assert batch.outcome_code == "infrastructure_error"
+
+
+def test_restart_before_navigation_is_not_executed(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    with client[1]() as db:
+        batch = create_collection_batch(db, [competitor_id], _test_config(), trigger_kind="manual_selected")
+        item = db.query(CollectionBatchItem).filter_by(batch_id=batch.id).one()
+        item.attempts_started = 1
+        db.add(CollectionRun(
+            competitor_id=competitor_id, collection_batch_item_id=item.id, attempt_number=1,
+            attempt_kind="first_pass", started_at=datetime.now(timezone.utc), status="running",
+        ))
+        db.commit()
+        batch_id = batch.id
+    assert recover_interrupted_batches(client[1]) == 1
+    with client[1]() as db:
+        batch = db.get(CollectionBatch, batch_id)
+        item = db.query(CollectionBatchItem).filter_by(batch_id=batch_id).one()
+        run = db.query(CollectionRun).filter_by(collection_batch_item_id=item.id).one()
+        assert run.navigation_terminal_reason == "interrupted_before_navigation"
+        assert item.final_result == "not_executed" and item.execution_status == "not_executed" and item.base_result is None
+        assert batch is not None and batch.outcome_code == "interrupted"
+
+
+def test_collect_competitor_forwards_metrics_stop_callback(client):
+    competitor_id = add_competitor(client[1], 1)
+    stop = lambda: True
+    received = []
+
+    def collector(_url, offer_id, *, stop_waiting_for_metrics=None):
+        received.append(stop_waiting_for_metrics)
+        return CollectionPageResult(offer_id, _collected_product(offer_id), None, [
+            OperatingMetricData(key, "placeholder", "-", "assistant", offer_id, datetime.now(timezone.utc), None)
+            for key in ("listing_time", "monthly_deal", "monthly_dropship", "annual_units", "annual_orders", "review_count", "positive_rate", "pickup_rate")
+        ])
+
+    with patch.object(collection_service, "collect_1688_product", collector):
+        with client[1]() as db:
+            collection_service.collect_competitor(db, competitor_id, stop_waiting_for_metrics=stop)
+    assert received == [stop]
+
+
+def test_finalizer_failure_still_releases_batch_lock(client):
+    competitor_id = add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    config = _test_config(item_interval_seconds=0)
+    runtime.reserve([competitor_id], config)
+    with client[1]() as db:
+        batch = create_collection_batch(db, [competitor_id], config, trigger_kind="manual_selected")
+        batch_id = batch.id
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(FakeContext())), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_competitor", side_effect=CollectionError("collection_save_failed", "save failed")), \
+        patch.object(collection_service, "_finalize_persisted_batch", side_effect=RuntimeError("persist error")):
+        with pytest.raises(RuntimeError, match="persist error"):
+            run_batch_collection(client[1], [competitor_id], runtime, config=config, persisted_batch_id=batch_id)
+    acquired = COLLECTION_LOCK.acquire(blocking=False)
+    COLLECTION_LOCK.release()
+    assert acquired
+    assert runtime.snapshot()["phase"] is None
+
+
+def test_first_pass_verification_resume_preserves_attempt_and_visit_kind(client):
+    competitor_id = add_competitor(client[1], 1)
+    runtime = BatchRuntime()
+    config = _test_config(item_interval_seconds=0, verification_cooldown_seconds=0, auto_resume_max=1)
+    runtime.reserve([competitor_id], config)
+    with client[1]() as db:
+        batch = create_collection_batch(db, [competitor_id], config, trigger_kind="manual_selected")
+        batch_id = batch.id
+    calls = []
+
+    def collector(_url, offer_id, **kwargs):
+        kwargs["on_navigation_claim"]()
+        kwargs["on_navigation_confirmed"]()
+        calls.append(offer_id)
+        if len(calls) == 1:
+            raise collection_service.VerificationRequiredError()
+        return CollectionPageResult(offer_id, _collected_product(offer_id), None, [
+            OperatingMetricData(key, "placeholder", "-", "assistant", offer_id, datetime.now(timezone.utc), None)
+            for key in ("listing_time", "monthly_deal", "monthly_dropship", "annual_units", "annual_orders", "review_count", "positive_rate", "pickup_rate")
+        ])
+
+    with patch.object(collection_service, "sync_playwright", return_value=FakePlaywright(FakeContext())), \
+        patch.object(collection_service, "move_context_offscreen"), \
+        patch.object(collection_service, "collect_1688_product", collector):
+        run_batch_collection(client[1], [competitor_id], runtime, config=config, persisted_batch_id=batch_id)
+    with client[1]() as db:
+        runs = db.query(CollectionRun).order_by(CollectionRun.id).all()
+        item = db.query(CollectionBatchItem).filter_by(batch_id=batch_id).one()
+        assert [run.attempt_kind for run in runs] == ["first_pass", "verification_resume"]
+        assert (item.page_visits, item.verification_resume_visits, item.retry_visits) == (2, 1, 0)
+        assert item.final_result == "verification_resume_success"
+
+
+def test_verification_outcome_precedes_user_end(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    with client[1]() as db:
+        batch = create_collection_batch(db, [competitor_id], _test_config(), trigger_kind="manual_selected")
+        item = db.query(CollectionBatchItem).filter_by(batch_id=batch.id).one()
+        item.final_result = "verification_required"
+        item.execution_status = "completed"
+        db.commit()
+        batch_id = batch.id
+    runtime = BatchRuntime()
+    runtime.reserve([competitor_id], _test_config())
+    runtime.runner_active = True
+    runtime.mark_verification()
+    assert runtime.request_end()
+    _finalize_persisted_batch(client[1], batch_id, runtime)
+    with client[1]() as db:
+        batch = db.get(CollectionBatch, batch_id)
+        assert batch is not None and batch.outcome_code == "verification_required"
+
+
+def test_runner_dispatch_failure_closes_created_batch(client: tuple[TestClient, sessionmaker[Session]]) -> None:
+    competitor_id = add_competitor(client[1], 1)
+    with client[1]() as db, patch.object(competitors_module, "start_batch_task", side_effect=RuntimeError("runner dispatch failed")):
+        with pytest.raises(RuntimeError, match="runner dispatch failed"):
+            asyncio.run(competitors_module.collect_batch(
+                competitors_module.CollectBatchRequest(mode="selected", competitor_ids=[competitor_id]), db,
+            ))
+    with client[1]() as db:
+        batch = db.query(CollectionBatch).one()
+        item = db.query(CollectionBatchItem).filter_by(batch_id=batch.id).one()
+        assert (batch.lifecycle_status, batch.outcome_code, batch.protection_reason) == (
+            "terminal", "infrastructure_error", "runner_start_failed",
+        )
+        assert (item.final_result, item.execution_status) == ("not_executed", "not_executed")
+
+
+def test_restart_terminal_run_rebuilds_exception_counts(client):
+    competitor_id = add_competitor(client[1], 1)
+    now = datetime.now(timezone.utc)
+    with client[1]() as db:
+        batch = create_collection_batch(db, [competitor_id], _test_config(), trigger_kind="manual_selected")
+        batch.lifecycle_status = "running"
+        item = db.query(CollectionBatchItem).filter_by(batch_id=batch.id).one()
+        item.attempts_started = item.page_visits = 1
+        run = CollectionRun(competitor_id=competitor_id, collection_batch_item_id=item.id,
+                            attempt_number=1, attempt_kind="first_pass", started_at=now,
+                            finished_at=now, status="success", operating_metrics_status="failed")
+        db.add(run)
+        db.flush()
+        db.add_all([OperatingMetricObservation(competitor_id=competitor_id, collection_run_id=run.id,
+            platform="1688", offer_id=str(1000000000000 + competitor_id), metric_key=key,
+            status="source_unavailable", source="assistant", observed_at=now,
+            reason="助手标题不存在或不唯一") for key in
+            ("listing_time", "monthly_deal", "monthly_dropship", "annual_units", "annual_orders", "review_count", "positive_rate", "pickup_rate")])
+        db.commit()
+        batch_id = batch.id
+    assert recover_interrupted_batches(client[1]) == 1
+    assert recover_interrupted_batches(client[1]) == 0
+    with client[1]() as db:
+        item = db.query(CollectionBatchItem).filter_by(batch_id=batch_id).one()
+        assert item.final_result == "final_failed"
+        assert item.technical_exception_count == item.source_unavailable_count == 8
+        response = client[0].get("/api/collection-batches").json()["items"][0]
+        assert response["technical_exception_products"] == 1
+        assert response["exception_types"] == ["source_unavailable"]

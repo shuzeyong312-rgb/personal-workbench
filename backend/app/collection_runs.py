@@ -1,13 +1,12 @@
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CollectionRun, Competitor
+from app.collection.batch_records import get_collection_run, list_collection_runs as query_collection_runs
 
 
 PAGE_SIZE = 20
@@ -29,6 +28,11 @@ class CollectionRunItemResponse(BaseModel):
     error_type: str | None
     error_message: str | None
     duration_seconds: float | None
+    has_anomaly: bool | None = None
+    collection_batch_item_id: int | None
+    attempt_number: int | None
+    attempt_kind: str | None
+    batch_id: str | None
 
 
 class CollectionRunListResponse(BaseModel):
@@ -38,63 +42,31 @@ class CollectionRunListResponse(BaseModel):
     page_size: int
 
 
-def _duration_seconds(run: CollectionRun) -> float | None:
-    if run.finished_at is None:
-        return None
-    return max(0.0, (run.finished_at - run.started_at).total_seconds())
-
-
 @router.get("", response_model=CollectionRunListResponse)
 def list_collection_runs(
     search: str | None = None,
     status: Literal["all", "success", "failed"] = "all",
     ownership: Literal["all", "self", "competitor"] = "all",
+    batch_id: str | None = None,
+    anomaly: Literal["current", "none", "recovered", "all", "placeholder", "source_unavailable", "loading", "read_failed", "base_failed"] = "all",
+    started_after: datetime | None = None,
+    started_before: datetime | None = None,
+    trigger_kind: str = "all",
+    unbatched: bool = False,
+    legacy_only: bool = False,
     page: int = Query(default=1, ge=1),
     db: Session = Depends(get_db),
 ) -> CollectionRunListResponse:
-    query = search.strip() if search else ""
-    filters = []
-    if status != "all":
-        filters.append(CollectionRun.status == status)
-    if ownership != "all":
-        filters.append(Competitor.ownership == ownership)
-    if query:
-        pattern = f"%{query.lower()}%"
-        filters.append(or_(
-            func.lower(Competitor.title).like(pattern),
-            func.lower(Competitor.offer_id).like(pattern),
-            func.lower(Competitor.shop_name).like(pattern),
-        ))
+    return CollectionRunListResponse(**query_collection_runs(
+        db, search=search, status=status, ownership=ownership, batch_id=batch_id,
+        anomaly=anomaly, legacy_only=unbatched or legacy_only, page=page, page_size=PAGE_SIZE,
+        started_after=started_after, started_before=started_before, trigger_kind=trigger_kind,
+    ))
 
-    base = select(CollectionRun, Competitor).join(Competitor)
-    if filters:
-        base = base.where(*filters)
-    total = db.scalar(select(func.count()).select_from(CollectionRun).join(Competitor).where(*filters)) or 0
-    rows = db.execute(
-        base.order_by(CollectionRun.started_at.desc(), CollectionRun.id.desc())
-        .offset((page - 1) * PAGE_SIZE)
-        .limit(PAGE_SIZE)
-    ).all()
-    return CollectionRunListResponse(
-        items=[
-            CollectionRunItemResponse(
-                id=run.id,
-                competitor_id=run.competitor_id,
-                ownership=competitor.ownership,
-                title=competitor.title,
-                offer_id=competitor.offer_id,
-                shop_name=competitor.shop_name,
-                started_at=run.started_at,
-                finished_at=run.finished_at,
-                status=run.status,
-                operating_metrics_status=run.operating_metrics_status,
-                error_type=run.error_type,
-                error_message=run.error_message,
-                duration_seconds=_duration_seconds(run),
-            )
-            for run, competitor in rows
-        ],
-        total=total,
-        page=page,
-        page_size=PAGE_SIZE,
-    )
+
+@router.get("/{run_id}")
+def collection_run_detail(run_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    run = get_collection_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail={"code": "collection_run_not_found", "message": "采集记录不存在"})
+    return run

@@ -280,6 +280,9 @@ def collect_1688_product_in_context(
     *,
     close_page: bool = False,
     keep_page_on_verification: bool = True,
+    on_navigation_claim: object | None = None,
+    on_navigation_confirmed: object | None = None,
+    stop_waiting_for_metrics: object | None = None,
 ) -> CollectionPageResult:
     """Collect base facts and visible assistant metrics from one product page visit."""
     pages = getattr(context, "pages", [])
@@ -287,11 +290,17 @@ def collect_1688_product_in_context(
     keep_page = False
     try:
         try:
-            response = page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=_NAVIGATION_TIMEOUT_MS,
-            )
+            if callable(on_navigation_claim):
+                on_navigation_claim()
+            try:
+                response = page.goto(url, wait_until="domcontentloaded", timeout=_NAVIGATION_TIMEOUT_MS)
+            except Exception:
+                if callable(on_navigation_confirmed):
+                    on_navigation_confirmed()
+                raise
+            else:
+                if callable(on_navigation_confirmed):
+                    on_navigation_confirmed()
         except (PlaywrightTimeoutError, TimeoutError) as error:
             raise CollectionTimeoutError("1688 page navigation timed out") from error
         except PlaywrightError as error:
@@ -318,6 +327,17 @@ def collect_1688_product_in_context(
         if not url_match or url_match.group(1) != expected_offer_id or page_offer_id != expected_offer_id:
             raise OfferIdMismatchError("offer_id mismatch: page identity does not match the monitored Offer")
         metrics = _assistant_metrics(page, expected_offer_id)
+        if any(item.status in {"loading", "source_unavailable"} for item in metrics):
+            elapsed_ms = 0
+            while elapsed_ms < 5000:
+                _check_page_access(page, status)
+                if callable(stop_waiting_for_metrics) and stop_waiting_for_metrics():
+                    break
+                page.wait_for_timeout(250)
+                elapsed_ms += 250
+                metrics = _assistant_metrics(page, expected_offer_id)
+                if not any(item.status in {"loading", "source_unavailable"} for item in metrics):
+                    break
         try:
             product = parse_1688_html(html, expected_offer_id)
             product_error = None
@@ -335,6 +355,9 @@ def collect_1688_product(
     expected_offer_id: str,
     *,
     context: object | None = None,
+    on_navigation_claim: object | None = None,
+    on_navigation_confirmed: object | None = None,
+    stop_waiting_for_metrics: object | None = None,
 ) -> CollectionPageResult:
     """Collect one product, optionally reusing a caller-owned Context."""
     if context is not None:
@@ -344,6 +367,9 @@ def collect_1688_product(
             expected_offer_id,
             close_page=False,
             keep_page_on_verification=True,
+            on_navigation_claim=on_navigation_claim,
+            on_navigation_confirmed=on_navigation_confirmed,
+            stop_waiting_for_metrics=stop_waiting_for_metrics,
         )
 
     with sync_playwright() as playwright:
@@ -355,6 +381,9 @@ def collect_1688_product(
                 expected_offer_id,
                 close_page=True,
                 keep_page_on_verification=False,
+            on_navigation_claim=on_navigation_claim,
+            on_navigation_confirmed=on_navigation_confirmed,
+            stop_waiting_for_metrics=stop_waiting_for_metrics,
             )
         finally:
             _close_quietly(owned_context)

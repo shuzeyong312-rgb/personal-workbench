@@ -19,12 +19,14 @@ from app.collection.service import (
     BATCH_RUNTIME,
     COLLECTION_LOCK,
     acquire_collection_slot,
+    create_collection_batch,
+    fail_created_batch,
     collect_competitor,
     collect_product,
     start_batch_task,
 )
 from app.database import get_db
-from app.models import ChangeEvent, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
 from app.ownership import get_own_shop_name, identify_ownership
 from app.settings import batch_config_values, get_competitor_monitoring_settings
 
@@ -181,6 +183,19 @@ class BatchItemResponse(BaseModel):
 class BatchStatusResponse(BaseModel):
     status: Literal["idle", "running", "pausing", "paused", "stopping", "stopped", "resting", "cooling_down", "completed", "verification_required"]
     outcome_code: str | None
+    batch_id: int | None
+    task_id: str | None
+    lifecycle_status: Literal["created", "running", "terminal"] | None
+    batch_outcome_code: str | None
+    phase: Literal["first_pass", "verification_resume", "operating_metrics_retry"] | None
+    attempts_started: int
+    page_visits: int
+    page_visits_unknown: int
+    verification_resume_visits: int
+    retry_visits: int
+    retry_max: int
+    retry_total: int
+    retry_completed: int
     total: int
     completed: int
     succeeded: int
@@ -189,6 +204,7 @@ class BatchStatusResponse(BaseModel):
     verification_required: int
     operating_metrics_counts: dict[str, int]
     current_competitor_id: int | None
+    current_competitor_title: str | None = None
     browser_open: bool
     runner_active: bool
     auto_resume_attempt: int
@@ -550,6 +566,7 @@ async def collect_batch(
                 .order_by(Competitor.id.asc())
             ).all()
         )
+    competitor_ids = list(dict.fromkeys(competitor_ids))
 
     if not acquire_collection_slot():
         raise error(
@@ -558,6 +575,7 @@ async def collect_batch(
             status.HTTP_409_CONFLICT,
         )
     reservation_token: int | None = None
+    persisted_batch_id: int | None = None
     try:
         config = BatchConfig(**batch_config_values(get_competitor_monitoring_settings(db)))
         if not BATCH_RUNTIME.reserve(competitor_ids, config):
@@ -571,25 +589,42 @@ async def collect_batch(
             BATCH_RUNTIME.finish("success")
             return BATCH_RUNTIME.snapshot()
 
+        persisted_batch = create_collection_batch(
+            db, competitor_ids, config,
+            trigger_kind="manual_selected" if payload.mode == "selected" else "manual_all_active",
+        )
+        persisted_batch_id = persisted_batch.id
+        BATCH_RUNTIME.bind_batch(persisted_batch)
+
         bind = db.get_bind()
 
         def session_factory() -> Session:
             return Session(bind=bind)
 
+    except Exception:
+        if reservation_token is not None:
+            BATCH_RUNTIME.finish("collect_failed")
+        raise
     finally:
         COLLECTION_LOCK.release()
 
     try:
-        start_batch_task(session_factory, competitor_ids, batch_reservation=reservation_token, config=config)
+        start_batch_task(session_factory, competitor_ids, batch_reservation=reservation_token, config=config, persisted_batch_id=persisted_batch_id)
     except Exception:
         BATCH_RUNTIME.finish("collect_failed")
+        if persisted_batch_id is not None:
+            fail_created_batch(session_factory, persisted_batch_id)
+            BATCH_RUNTIME.set_persisted_batch_state("terminal", "infrastructure_error")
         raise
     return BATCH_RUNTIME.snapshot()
 
 
 @router.get("/collect-batch/status", response_model=BatchStatusResponse)
-def collect_batch_status() -> dict[str, object]:
-    return BATCH_RUNTIME.snapshot()
+def collect_batch_status(db: Session = Depends(get_db)) -> dict[str, object]:
+    snapshot = BATCH_RUNTIME.snapshot()
+    competitor_id = snapshot["current_competitor_id"]
+    snapshot["current_competitor_title"] = db.scalar(select(Competitor.title).where(Competitor.id == competitor_id)) if competitor_id is not None else None
+    return snapshot
 
 
 @router.post("/collect-batch/pause", response_model=BatchStatusResponse)
@@ -869,6 +904,38 @@ def update_competitor_group_batch(
 
 def _delete_competitor_history(db: Session, competitors: list[Competitor]) -> None:
     competitor_ids = [competitor.id for competitor in competitors]
+    active_plan = db.scalar(
+        select(CollectionBatchItem.id)
+        .join(CollectionBatch, CollectionBatch.id == CollectionBatchItem.batch_id)
+        .where(
+            CollectionBatchItem.competitor_id.in_(competitor_ids),
+            CollectionBatch.lifecycle_status.in_(("created", "running")),
+        ).limit(1)
+    )
+    if active_plan is not None:
+        raise error("collection_in_progress", "商品仍在未结束的采集批次中，暂时无法删除", status.HTTP_409_CONFLICT)
+    item_ids = db.scalars(select(CollectionBatchItem.id).where(CollectionBatchItem.competitor_id.in_(competitor_ids))).all()
+    observation_counts: dict[int, dict[str, int]] = {item_id: {} for item_id in item_ids}
+    if item_ids:
+        for item_id, metric_status, count in db.execute(
+            select(CollectionRun.collection_batch_item_id, OperatingMetricObservation.status, func.count())
+            .join(OperatingMetricObservation, OperatingMetricObservation.collection_run_id == CollectionRun.id)
+            .where(CollectionRun.collection_batch_item_id.in_(item_ids))
+            .group_by(CollectionRun.collection_batch_item_id, OperatingMetricObservation.status)
+        ):
+            observation_counts[item_id][metric_status] = count
+        for item in db.scalars(select(CollectionBatchItem).where(CollectionBatchItem.id.in_(item_ids))).all():
+            counts = observation_counts[item.id]
+            item.placeholder_count = counts.get("placeholder", 0)
+            item.source_unavailable_count = counts.get("source_unavailable", 0)
+            item.loading_count = counts.get("loading", 0)
+            item.read_failed_count = counts.get("read_failed", 0)
+            item.technical_exception_count = sum(counts.get(status, 0) for status in ("source_unavailable", "loading", "read_failed"))
+    db.execute(
+        CollectionBatchItem.__table__.update()
+        .where(CollectionBatchItem.competitor_id.in_(competitor_ids))
+        .values(competitor_id=None)
+    )
     snapshot_ids = select(ProductSnapshot.id).where(ProductSnapshot.competitor_id.in_(competitor_ids))
     db.execute(delete(ChangeEvent).where(ChangeEvent.competitor_id.in_(competitor_ids)))
     db.execute(delete(OperatingMetricObservation).where(OperatingMetricObservation.competitor_id.in_(competitor_ids)))

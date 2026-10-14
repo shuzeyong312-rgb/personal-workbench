@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from threading import Event
@@ -10,8 +11,9 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from app.collection.daily import FixedDailyState, prepare_auto_batch
-from app.collection.service import shutdown_batch_runner, start_batch_task
+from app.collection.service import fail_created_batch, recover_interrupted_batches, shutdown_batch_runner, start_batch_task
 from app.collection_runs import router as collection_runs_router
+from app.collection_batches import router as collection_batches_router
 from app.competitors import router as competitors_router
 from app.competitor_detail import router as competitor_detail_router
 from app.competitor_groups import router as competitor_groups_router
@@ -49,10 +51,12 @@ async def _daily_collection_loop(
         )
         if start is not None and not thread_stop_event.is_set():
             try:
-                start_batch_task(_session_factory, start.competitor_ids, batch_reservation=start.reservation_token, config=start.config)
+                start_batch_task(_session_factory, start.competitor_ids, batch_reservation=start.reservation_token, config=start.config, persisted_batch_id=start.batch_id)
             except Exception:
                 from app.collection.service import BATCH_RUNTIME
                 BATCH_RUNTIME.finish("collect_failed")
+                fail_created_batch(_session_factory, start.batch_id)
+                BATCH_RUNTIME.set_persisted_batch_state("terminal", "infrastructure_error")
         if thread_stop_event.is_set():
             return
         if await _wait_for_stop(stop_event, DAILY_COLLECTION_INTERVAL_SECONDS):
@@ -61,6 +65,11 @@ async def _daily_collection_loop(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    session_factory = getattr(_app.state, "collection_session_factory", None) or _session_factory
+    recover_interrupted_batches(session_factory)
+    if os.getenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER") == "1":
+        yield
+        return
     stop_event = asyncio.Event()
     thread_stop_event = Event()
     scheduler_task = asyncio.create_task(_daily_collection_loop(stop_event, thread_stop_event))
@@ -76,6 +85,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(lifespan=lifespan)
 app.include_router(competitors_router)
 app.include_router(collection_runs_router)
+app.include_router(collection_batches_router)
 app.include_router(competitor_detail_router)
 app.include_router(competitor_groups_router)
 app.include_router(group_detail_router)

@@ -39,12 +39,13 @@ def database() -> Generator[tuple[TestClient, sessionmaker[Session], int], None,
         with factory() as db:
             yield db
     app.dependency_overrides[get_db] = override_get_db
+    app.state.collection_session_factory = factory
     client = TestClient(app)
     try:
         yield client, factory, competitor_id
     finally:
         client.close()
-        app.dependency_overrides.clear(); engine.dispose()
+        app.dependency_overrides.clear(); app.state.collection_session_factory = None; engine.dispose()
 
 
 def metrics(statuses: list[str], values: list[str | None] | None = None) -> list[OperatingMetricData]:

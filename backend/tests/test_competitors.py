@@ -51,6 +51,7 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.collection_session_factory = session_factory
     test_client = TestClient(app)
     try:
         with patch("app.competitors.collect_product", side_effect=fake_collect_product):
@@ -58,6 +59,7 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
     finally:
         test_client.close()
         app.dependency_overrides.clear()
+        app.state.collection_session_factory = None
         engine.dispose()
 
 

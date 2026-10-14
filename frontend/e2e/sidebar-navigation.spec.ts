@@ -31,9 +31,8 @@ test("uses consistent module navigation, collapses monitoring, and opens placeho
 
   await monitoringToggle.click();
   await expect(monitoringToggle).toHaveAttribute("aria-expanded", "true");
-  await page.getByRole("button", { name: "采集任务" }).click();
-  await expect(page.getByRole("heading", { name: "采集任务", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "当前批量采集" })).toBeVisible();
+  await page.getByRole("button", { name: "采集记录" }).click();
+  await expect(page.getByRole("heading", { name: "采集记录", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "采集记录" })).toBeVisible();
   await expect(monitoringToggle).toHaveAttribute("aria-expanded", "true");
 

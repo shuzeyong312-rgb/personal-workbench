@@ -11,7 +11,7 @@ from app.collection import daily
 from app.collection.daily import FixedDailyState, prepare_auto_batch
 from app.collection.service import BATCH_RUNTIME, collect_competitor
 from app.collection.types import ProductData
-from app.models import Base, CollectionRun, Competitor, SystemSetting
+from app.models import Base, CollectionBatch, CollectionRun, Competitor, SystemSetting
 
 LOCAL = timezone(timedelta(hours=8))
 PRE = datetime(2026, 10, 6, 1, 29, tzinfo=timezone.utc)   # 09:29 local
@@ -96,6 +96,29 @@ def test_rolling_24h_no_history_and_window_edges(factory: sessionmaker[Session],
     if age is not None:
         run(factory, item, POST - age, "failed")
     assert (attempt(factory, FixedDailyState(), POST, started=POST) is not None) is expected
+
+
+def test_scheduler_occurrence_signature_uses_due_run_facts_and_terminal_generation(factory: sessionmaker[Session]) -> None:
+    item = competitor(factory)
+    settings(factory, auto_collection_strategy="rolling_24h")
+    state = FixedDailyState()
+    first = attempt(factory, state, POST, started=POST)
+    assert first is not None
+    with factory() as db:
+        batch = db.get(CollectionBatch, first.batch_id)
+        assert batch is not None and batch.scheduler_occurrence_key is not None
+        first_key = batch.scheduler_occurrence_key
+        assert first_key.startswith("rolling_24h:rolling_24h:") and first_key.endswith(":1")
+        batch.lifecycle_status = "terminal"
+        batch.outcome_code = "interrupted"
+        db.commit()
+    second = attempt(factory, state, POST + timedelta(minutes=1), started=POST)
+    assert second is not None
+    with factory() as db:
+        batch = db.get(CollectionBatch, second.batch_id)
+        assert batch is not None and batch.scheduler_occurrence_key is not None
+        assert batch.scheduler_occurrence_key.rsplit(":", 1)[0] == first_key.rsplit(":", 1)[0]
+        assert batch.scheduler_occurrence_key.endswith(":2")
 
 
 def test_disabled_does_not_reserve_or_stop_existing_batch(factory: sessionmaker[Session]) -> None:

@@ -14,3 +14,9 @@ logs/
 test-results/
 playwright-report/
 /_tmp/tessdata/*.traineddata
+
+# Local validation artifacts and SQLite sidecars are not release files.
+/.artifacts/
+/backend/data/*.db-wal
+/backend/data/*.db-shm
+/backend/data/*.db-journal

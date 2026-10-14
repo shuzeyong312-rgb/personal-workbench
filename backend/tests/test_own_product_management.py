@@ -67,12 +67,14 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.collection_session_factory = session_factory
     test_client = TestClient(app)
     try:
         yield test_client, session_factory
     finally:
         test_client.close()
         app.dependency_overrides.clear()
+        app.state.collection_session_factory = None
         engine.dispose()
 
 
@@ -105,6 +107,7 @@ def test_competitor_monitoring_settings_default_invalid_read_and_atomic_save(cli
         "batch_rest_seconds": 120,
         "verification_cooldown_seconds": 600,
         "auto_resume_max": 2,
+        "operating_metrics_retry_max": 0,
         "auto_collection_enabled": True,
         "auto_collection_strategy": "rolling_24h",
         "auto_collection_time": "09:30",
@@ -117,7 +120,7 @@ def test_competitor_monitoring_settings_default_invalid_read_and_atomic_save(cli
         session.commit()
     assert client[0].get("/api/settings/competitor-monitoring").json() == defaults
 
-    saved = {"item_interval_seconds": 1, "continuous_collection_count": 50, "batch_rest_seconds": 0, "verification_cooldown_seconds": 3600, "auto_resume_max": 0, "auto_collection_enabled": False, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30", "auto_collection_missed_policy": "skip"}
+    saved = {"item_interval_seconds": 1, "continuous_collection_count": 50, "batch_rest_seconds": 0, "verification_cooldown_seconds": 3600, "auto_resume_max": 0, "operating_metrics_retry_max": 0, "auto_collection_enabled": False, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30", "auto_collection_missed_policy": "skip"}
     assert client[0].put("/api/settings/competitor-monitoring", json=saved).json() == saved
     rejected = client[0].put("/api/settings/competitor-monitoring", json={**saved, "item_interval_seconds": True})
     assert rejected.status_code == 422
@@ -151,6 +154,7 @@ def test_competitor_monitoring_enum_malformed_json_is_422(client, field, malform
     payload = {
         "item_interval_seconds": 5, "continuous_collection_count": 10,
         "batch_rest_seconds": 120, "verification_cooldown_seconds": 600, "auto_resume_max": 2,
+        "operating_metrics_retry_max": 0,
         "auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h",
         "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up",
     }
@@ -167,6 +171,7 @@ def test_competitor_monitoring_settings_reads_the_complete_snapshot_in_one_query
         "batch_rest_seconds": 180,
         "verification_cooldown_seconds": 720,
         "auto_resume_max": 1,
+        "operating_metrics_retry_max": 0,
         "auto_collection_enabled": True,
         "auto_collection_strategy": "rolling_24h",
         "auto_collection_time": "09:30",

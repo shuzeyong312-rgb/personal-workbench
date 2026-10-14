@@ -1,19 +1,20 @@
 import { expect, type Page } from "@playwright/test";
 import type { Competitor } from "../../src/App";
 
-export async function installApiMock(page: Page, options: { competitors: Competitor[]; groups?: { id: number; name: string; created_at: string }[]; addProducts?: Record<string, "self" | "competitor">; activeMonitoredProducts?: number; collectionRuns?: unknown; batchStatus?: Record<string, unknown> }) {
+export async function installApiMock(page: Page, options: { competitors: Competitor[]; groups?: { id: number; name: string; created_at: string }[]; addProducts?: Record<string, "self" | "competitor">; activeMonitoredProducts?: number; collectionRuns?: unknown | ((url: URL) => unknown); collectionBatches?: unknown; batchDetails?: Record<string, unknown>; batchStatus?: Record<string, unknown> }) {
   const unexpected: string[] = [];
   let competitors = options.competitors;
   const groups = options.groups ?? [];
   let nextId = Math.max(0, ...competitors.map((competitor) => competitor.id)) + 1;
-  let batchStatus = options.batchStatus ?? { status: "idle", outcome_code: null, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, operating_metrics_counts: { not_attempted: 0, success: 0, partial: 0, no_values: 0, failed: 0, blocked: 0 }, items: [] };
+  let batchStatus = options.batchStatus ?? { status: "idle", outcome_code: null, batch_id: null, task_id: null, phase: null, attempts_started: 0, page_visits: 0, page_visits_unknown: 0, verification_resume_visits: 0, retry_visits: 0, retry_max: 0, retry_total: 0, retry_completed: 0, total: 0, completed: 0, succeeded: 0, failed: 0, remaining: 0, verification_required: 0, current_competitor_id: null, browser_open: false, runner_active: false, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, operating_metrics_counts: { not_attempted: 0, success: 0, partial: 0, no_values: 0, failed: 0, blocked: 0 }, items: [] };
   const responses: Record<string, unknown> = {
     "GET /api/dashboard/today": { date: "2026-09-28", stats: { monitored_competitors: 0, active_monitored_products: options.activeMonitoredProducts ?? 0, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] },
     "GET /api/dashboard/group-attention": { date: "2026-09-28", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] },
     "GET /api/settings/own-shop-name": { configured: true, own_shop_name: "测试店铺" },
-    "GET /api/settings/competitor-monitoring": { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "09:30", auto_collection_missed_policy: "catch_up" },
+    "GET /api/settings/competitor-monitoring": { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2, operating_metrics_retry_max: 0, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "09:30", auto_collection_missed_policy: "catch_up" },
     "GET /api/competitors": competitors,
     "GET /api/collection-runs": options.collectionRuns ?? { items: [], total: 0, page: 1, page_size: 20 },
+    "GET /api/collection-batches": options.collectionBatches ?? { items: [], total: 0, page: 1, page_size: 20 },
     "GET /api/competitor-groups": groups,
     "GET /api/competitor-groups/summary": { groups: [], unassigned: { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } },
   };
@@ -24,6 +25,17 @@ export async function installApiMock(page: Page, options: { competitors: Competi
     if (key === "GET /api/competitors/collect-batch/status") {
       if (batchStatus.status === "stopping") batchStatus = { ...batchStatus, status: "stopped", runner_active: false, browser_open: false };
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(batchStatus) });
+      return;
+    }
+    if (request.method() === "GET" && /^\/api\/collection-batches\/[^/]+$/.test(requestUrl.pathname)) {
+      const taskId = decodeURIComponent(requestUrl.pathname.split("/").at(-1)!);
+      const detail = options.batchDetails?.[taskId];
+      if (!detail) unexpected.push(key);
+      await route.fulfill({ status: detail ? 200 : 404, contentType: "application/json", body: JSON.stringify(detail ?? { detail: "not mocked" }) });
+      return;
+    }
+    if (key === "GET /api/collection-runs" && typeof options.collectionRuns === "function") {
+      await route.fulfill({ json: options.collectionRuns(requestUrl) });
       return;
     }
     if (["POST /api/competitors/collect-batch/pause", "POST /api/competitors/collect-batch/resume", "POST /api/competitors/collect-batch/end"].includes(key)) {

@@ -27,12 +27,14 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.collection_session_factory = session_factory
     test_client = TestClient(app)
     try:
         yield test_client, session_factory
     finally:
         test_client.close()
         app.dependency_overrides.clear()
+        app.state.collection_session_factory = None
         engine.dispose()
 
 

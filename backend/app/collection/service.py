@@ -1,13 +1,16 @@
 import asyncio
+import inspect
 from dataclasses import dataclass, field
+from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from math import ceil
 from threading import Event, Lock, RLock
 from time import monotonic
 from typing import Any, Callable
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.collection.collector_1688 import (
@@ -30,7 +33,7 @@ from app.collection.parser_1688 import (
 )
 from app.collection.types import CollectionPageResult, OperatingMetricData, ProductData, SkuData
 from app.changes import detect_changes
-from app.models import ChangeEvent, CollectionRun, Competitor, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
 from app.ownership import apply_collected_ownership
 from app.settings import competitor_monitoring_defaults
 
@@ -50,6 +53,7 @@ class BatchConfig:
     batch_rest_seconds: int = field(default_factory=lambda: _monitoring_default("batch_rest_seconds"))
     verification_cooldown_seconds: int = field(default_factory=lambda: _monitoring_default("verification_cooldown_seconds"))
     auto_resume_max: int = field(default_factory=lambda: _monitoring_default("auto_resume_max"))
+    operating_metrics_retry_max: int = field(default_factory=lambda: _monitoring_default("operating_metrics_retry_max"))
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,19 @@ class BatchRuntime:
         self.resting_remaining_seconds = 0
         self.external_access_count = 0
         self.items: list[BatchItemResult] = []
+        self.batch_id: int | None = None
+        self.task_id: str | None = None
+        self.lifecycle_status: str | None = None
+        self.batch_outcome_code: str | None = None
+        self.phase: str | None = None
+        self.attempts_started = 0
+        self.page_visits = 0
+        self.page_visits_unknown = 0
+        self.verification_resume_visits = 0
+        self.retry_visits = 0
+        self.retry_total = 0
+        self.retry_completed = 0
+        self.operating_metrics_retry_max = 0
         self.stop_event = Event()
         self.resume_event = Event()
         self.resume_event.set()
@@ -120,6 +137,19 @@ class BatchRuntime:
             self.resting_remaining_seconds = 0
             self.external_access_count = 0
             self.items = []
+            self.batch_id = None
+            self.task_id = None
+            self.lifecycle_status = None
+            self.batch_outcome_code = None
+            self.phase = "first_pass"
+            self.attempts_started = 0
+            self.page_visits = 0
+            self.page_visits_unknown = 0
+            self.verification_resume_visits = 0
+            self.retry_visits = 0
+            self.retry_total = 0
+            self.retry_completed = 0
+            self.operating_metrics_retry_max = (config or BatchConfig()).operating_metrics_retry_max
             self.stop_event = Event()
             self.resume_event = Event()
             self.resume_event.set()
@@ -228,6 +258,42 @@ class BatchRuntime:
     def record_external_access(self) -> None:
         with self._lock:
             self.external_access_count += 1
+
+    def bind_batch(self, batch: CollectionBatch) -> None:
+        with self._lock:
+            self.batch_id = batch.id
+            self.task_id = batch.task_id
+            self.lifecycle_status = batch.lifecycle_status
+            self.batch_outcome_code = batch.outcome_code
+
+    def set_persisted_batch_state(self, lifecycle_status: str, outcome_code: str | None = None) -> None:
+        with self._lock:
+            self.lifecycle_status = lifecycle_status
+            self.batch_outcome_code = outcome_code
+
+    def record_attempt_started(self) -> None:
+        with self._lock:
+            self.attempts_started += 1
+
+    def record_page_visit(self, attempt_kind: str | None) -> None:
+        with self._lock:
+            self.page_visits += 1
+            if attempt_kind == "verification_resume":
+                self.verification_resume_visits += 1
+            elif attempt_kind == "operating_metrics_retry":
+                self.retry_visits += 1
+
+    def set_phase(self, phase: str | None) -> None:
+        with self._lock:
+            self.phase = phase
+
+    def set_retry_total(self, total: int) -> None:
+        with self._lock:
+            self.retry_total = total
+
+    def record_retry_completed(self) -> None:
+        with self._lock:
+            self.retry_completed += 1
 
     def external_accesses(self) -> int:
         with self._lock:
@@ -363,6 +429,19 @@ class BatchRuntime:
             return {
                 "status": self.status,
                 "outcome_code": self.outcome_code,
+                "batch_id": self.batch_id,
+                "task_id": self.task_id,
+                "lifecycle_status": self.lifecycle_status,
+                "batch_outcome_code": self.batch_outcome_code,
+                "phase": self.phase,
+                "attempts_started": self.attempts_started,
+                "page_visits": self.page_visits,
+                "page_visits_unknown": self.page_visits_unknown,
+                "verification_resume_visits": self.verification_resume_visits,
+                "retry_visits": self.retry_visits,
+                "retry_max": self.operating_metrics_retry_max,
+                "retry_total": self.retry_total,
+                "retry_completed": self.retry_completed,
                 "total": self.total,
                 "completed": self.completed,
                 "succeeded": self.succeeded,
@@ -443,6 +522,97 @@ class CollectionResult:
     outcome: str
     operating_metrics_status: str = "not_attempted"
     operating_metrics: list[OperatingMetricObservation] = field(default_factory=list)
+    operating_metric_data: list[OperatingMetricData] = field(default_factory=list)
+
+
+def create_collection_batch(
+    db: Session,
+    competitor_ids: list[int],
+    config: BatchConfig,
+    *,
+    trigger_kind: str,
+    scheduler_occurrence_key: str | None = None,
+) -> CollectionBatch:
+    now = datetime.now(timezone.utc)
+    batch = CollectionBatch(
+        task_id=str(uuid4()), trigger_kind=trigger_kind, created_at=now,
+        lifecycle_status="created", settings_snapshot=asdict(config),
+        planned_products=len(dict.fromkeys(competitor_ids)), scheduler_occurrence_key=scheduler_occurrence_key,
+    )
+    db.add(batch)
+    db.flush()
+    db.add_all([
+        CollectionBatchItem(batch_id=batch.id, position=position, competitor_id=competitor_id)
+        for position, competitor_id in enumerate(dict.fromkeys(competitor_ids))
+    ])
+    db.commit()
+    return batch
+
+
+def fail_created_batch(session_factory: Callable[[], Session], batch_id: int) -> bool:
+    """Close a persisted plan when Runner dispatch fails before it starts."""
+    with session_factory() as db:
+        batch = db.get(CollectionBatch, batch_id)
+        if batch is None or batch.lifecycle_status != "created":
+            return False
+        for item in db.scalars(select(CollectionBatchItem).where(CollectionBatchItem.batch_id == batch_id)):
+            if item.final_result is None:
+                item.final_result = "not_executed"
+                item.execution_status = "not_executed"
+                item.stop_reason = "runner_start_failed"
+        batch.lifecycle_status = "terminal"
+        batch.finished_at = datetime.now(timezone.utc)
+        batch.outcome_code = "infrastructure_error"
+        batch.protection_reason = "runner_start_failed"
+        batch.protection_details = "采集 Runner 启动失败，计划未执行"
+        db.commit()
+        return True
+
+
+def _batch_item_context(session_factory: Callable[[], Session], batch_id: int | None, competitor_id: int) -> tuple[int | None, int | None]:
+    if batch_id is None:
+        return None, None
+    with session_factory() as db:
+        item = db.scalar(select(CollectionBatchItem).where(
+            CollectionBatchItem.batch_id == batch_id,
+            CollectionBatchItem.competitor_id == competitor_id,
+        ))
+        if item is None:
+            return None, None
+        latest_attempt = db.scalar(select(CollectionRun.attempt_number).where(
+            CollectionRun.collection_batch_item_id == item.id,
+        ).order_by(CollectionRun.attempt_number.desc()).limit(1)) or 0
+        return item.id, latest_attempt + 1
+
+
+def _refresh_item_exception_counts(db: Session, item: CollectionBatchItem) -> None:
+    counts = dict(db.execute(select(OperatingMetricObservation.status, func.count())
+        .join(CollectionRun, CollectionRun.id == OperatingMetricObservation.collection_run_id)
+        .where(CollectionRun.collection_batch_item_id == item.id)
+        .group_by(OperatingMetricObservation.status)).all())
+    for status in ("placeholder", "source_unavailable", "loading", "read_failed"):
+        setattr(item, f"{status}_count", counts.get(status, 0))
+    item.technical_exception_count = sum(counts.get(status, 0) for status in ("source_unavailable", "loading", "read_failed"))
+
+
+def _save_item_result(
+    session_factory: Callable[[], Session], item_id: int | None, *,
+    base_result: str, operating_status: str, final_result: str | None,
+    protection_reason: str | None = None,
+) -> None:
+    if item_id is None:
+        return
+    with session_factory() as db:
+        item = db.get(CollectionBatchItem, item_id)
+        if item is None:
+            return
+        item.base_result = base_result
+        item.operating_metrics_status = operating_status
+        item.execution_status = "failed" if base_result == "failed" else "completed" if final_result else "running"
+        item.final_result = final_result
+        item.protection_reason = protection_reason
+        _refresh_item_exception_counts(db, item)
+        db.commit()
 
 
 def operating_metrics_status(observations: list[OperatingMetricData]) -> str:
@@ -637,6 +807,11 @@ def collect_competitor(
     batch_reservation: int | None = None,
     batch_runtime: BatchRuntime = BATCH_RUNTIME,
     on_external_access: Callable[[], None] | None = None,
+    batch_item_id: int | None = None,
+    attempt_kind: str | None = None,
+    attempt_number: int | None = None,
+    stop_waiting_for_metrics: Callable[[], bool] | None = None,
+    on_attempt_started: Callable[[], None] | None = None,
 ) -> CollectionResult:
     competitor = db.get(Competitor, competitor_id)
     if competitor is None:
@@ -655,6 +830,9 @@ def collect_competitor(
         started_at = datetime.now(timezone.utc)
         run = CollectionRun(
             competitor_id=competitor.id,
+            collection_batch_item_id=batch_item_id,
+            attempt_number=attempt_number,
+            attempt_kind=attempt_kind,
             started_at=started_at,
             status="running",
             operating_metrics_status="not_attempted",
@@ -663,18 +841,67 @@ def collect_competitor(
         try:
             db.flush()
             run_id = run.id
+            if batch_item_id is not None:
+                item = db.get(CollectionBatchItem, batch_item_id)
+                if item is None:
+                    raise ValueError("collection batch item disappeared")
+                item.execution_status = "running"
+                item.attempts_started += 1
             db.commit()
+            if batch_item_id is not None and on_attempt_started is not None:
+                on_attempt_started()
         except Exception as exc:
             db.rollback()
             raise CollectionError("collection_save_failed", "采集结果保存失败") from exc
 
         try:
-            if on_external_access is not None:
+            if batch_item_id is None and on_external_access is not None:
                 on_external_access()
+            def claim_navigation() -> None:
+                current_run = db.get(CollectionRun, run_id)
+                if current_run is None or current_run.navigation_claimed_at is not None:
+                    raise CollectionError("collection_save_failed", "采集导航状态保存失败")
+                current_run.navigation_claimed_at = datetime.now(timezone.utc)
+                db.commit()
+
+            def confirm_navigation() -> None:
+                current_run = db.get(CollectionRun, run_id)
+                if current_run is None or current_run.navigation_claimed_at is None:
+                    raise CollectionError("collection_save_failed", "采集导航状态缺失")
+                if current_run.navigation_confirmed_at is None:
+                    now = datetime.now(timezone.utc)
+                    current_run.navigation_confirmed_at = now
+                    if batch_item_id is not None:
+                        item = db.get(CollectionBatchItem, batch_item_id)
+                        if item is None:
+                            raise CollectionError("collection_save_failed", "采集批次记录缺失")
+                        item.page_visits += 1
+                        if attempt_kind == "verification_resume":
+                            item.verification_resume_visits += 1
+                        elif attempt_kind == "operating_metrics_retry":
+                            item.retry_visits += 1
+                    db.commit()
+                    if on_external_access is not None:
+                        on_external_access()
+                    if batch_item_id is not None:
+                        batch_runtime.record_page_visit(attempt_kind)
+
+            navigation_kwargs = {
+                "on_navigation_claim": claim_navigation,
+                "on_navigation_confirmed": confirm_navigation,
+            } if batch_item_id is not None else {}
+            if stop_waiting_for_metrics is not None and "stop_waiting_for_metrics" in inspect.signature(collect_1688_product).parameters:
+                navigation_kwargs["stop_waiting_for_metrics"] = stop_waiting_for_metrics
             page_result = (
-                collect_1688_product(competitor_url, competitor_offer_id)
+                collect_1688_product(
+                    competitor_url, competitor_offer_id,
+                    **navigation_kwargs,
+                )
                 if browser_context is None
-                else collect_1688_product(competitor_url, competitor_offer_id, context=browser_context)
+                else collect_1688_product(
+                    competitor_url, competitor_offer_id, context=browser_context,
+                    **navigation_kwargs,
+                )
             )
             if isinstance(page_result, ProductData):
                 page_result = CollectionPageResult(
@@ -863,6 +1090,7 @@ def collect_competitor(
             outcome="active",
             operating_metrics_status=metrics_status,
             operating_metrics=metric_rows,
+            operating_metric_data=page_result.operating_metrics,
         )
     finally:
         COLLECTION_LOCK.release()
@@ -907,6 +1135,123 @@ def _batch_validation_items(
     return runnable, rejected
 
 
+def _finalize_persisted_batch(session_factory: Callable[[], Session], batch_id: int, runtime: BatchRuntime) -> None:
+    with session_factory() as db:
+        batch = db.get(CollectionBatch, batch_id)
+        if batch is None or batch.lifecycle_status == "terminal":
+            return
+        items = db.scalars(select(CollectionBatchItem).where(CollectionBatchItem.batch_id == batch_id)).all()
+        for item in items:
+            if item.final_result is None:
+                item.final_result = "not_executed" if item.attempts_started == 0 else "final_failed"
+                item.execution_status = "not_executed" if item.attempts_started == 0 else "completed"
+        successes = sum(item.final_result in {"first_pass_success", "verification_resume_success", "retry_success"} for item in items)
+        base_failures = sum(item.base_result == "failed" for item in items)
+        technical_failures = sum(item.final_result == "final_failed" and (item.technical_exception_count or item.operating_metrics_status == "failed") for item in items)
+        unexecuted = sum(item.final_result == "not_executed" for item in items)
+        runtime_state = runtime.snapshot()
+        if runtime.outcome_code == "collect_failed":
+            outcome = "infrastructure_error"
+        elif runtime.outcome_code == "verification_required" or runtime_state["status"] == "verification_required" or any(
+            item.status == "verification_required" for item in runtime.items
+        ) or any(item.protection_reason == "1688_verification_required" for item in items):
+            outcome = "verification_required"
+        elif runtime.end_requested():
+            outcome = "user_ended"
+        elif unexecuted:
+            outcome = "infrastructure_error"
+            batch.protection_reason = batch.protection_reason or "unattributed_unexecuted_items"
+        elif base_failures == 0 and technical_failures == 0:
+            outcome = "success"
+        elif base_failures == 0:
+            outcome = "partial_success"
+        elif successes:
+            outcome = "partial_failure"
+        else:
+            outcome = "collect_failed"
+        batch.lifecycle_status = "terminal"
+        batch.finished_at = datetime.now(timezone.utc)
+        batch.outcome_code = outcome
+        db.commit()
+        runtime.set_persisted_batch_state("terminal", outcome)
+
+
+def recover_interrupted_batches(session_factory: Callable[[], Session]) -> int:
+    """Close stale persisted batches once at startup; never relaunch their plan."""
+    recovered = 0
+    with session_factory() as db:
+        batches = db.scalars(select(CollectionBatch).where(CollectionBatch.lifecycle_status.in_(("created", "running")))).all()
+        for batch in batches:
+            items = db.scalars(select(CollectionBatchItem).where(CollectionBatchItem.batch_id == batch.id)).all()
+            items_by_id = {item.id: item for item in items}
+            runs = db.scalars(select(CollectionRun).where(
+                CollectionRun.collection_batch_item_id.in_(items_by_id),
+            ).order_by(CollectionRun.attempt_number, CollectionRun.id)).all() if items_by_id else []
+            runs_by_item: dict[int, list[CollectionRun]] = {}
+            for run in runs:
+                item = items_by_id[run.collection_batch_item_id]
+                runs_by_item.setdefault(item.id, []).append(run)
+                if run.status == "running":
+                    if run.navigation_claimed_at is not None and run.navigation_confirmed_at is None:
+                        item.page_visits_unknown += 1
+                        if run.attempt_kind == "verification_resume":
+                            item.verification_resume_visits += 1
+                        elif run.attempt_kind == "operating_metrics_retry":
+                            item.retry_visits += 1
+                        run.navigation_terminal_reason = "interrupted_navigation_unknown"
+                    elif run.navigation_confirmed_at is not None:
+                        run.navigation_terminal_reason = "interrupted_after_navigation"
+                    else:
+                        run.navigation_terminal_reason = "interrupted_before_navigation"
+                    run.status = "failed"
+                    run.finished_at = datetime.now(timezone.utc)
+                    run.error_type = "batch_interrupted"
+                    run.error_message = "Backend 重启时批次尚未完成"
+            for item in items:
+                _refresh_item_exception_counts(db, item)
+                history = runs_by_item.get(item.id, [])
+                latest = next((run for run in reversed(history) if run.navigation_terminal_reason != "interrupted_before_navigation"), None)
+                if latest is None and history:
+                    latest = history[-1]
+                if item.final_result is None and latest is not None:
+                    if latest.navigation_terminal_reason == "interrupted_before_navigation":
+                        item.final_result = "not_executed"
+                        item.execution_status = "not_executed"
+                        item.stop_reason = "batch_interrupted"
+                    elif latest.status == "success":
+                        tech = db.scalar(select(func.count()).select_from(OperatingMetricObservation).where(
+                            OperatingMetricObservation.collection_run_id == latest.id,
+                            OperatingMetricObservation.status.in_(("loading", "source_unavailable", "read_failed")),
+                        )) or 0
+                        item.base_result = "success"
+                        item.operating_metrics_status = latest.operating_metrics_status
+                        item.final_result = "final_failed" if tech else "retry_success" if latest.attempt_kind == "operating_metrics_retry" else "verification_resume_success" if latest.attempt_kind == "verification_resume" else "first_pass_success"
+                    elif latest.error_type == "1688_verification_required":
+                        item.final_result = "verification_required"
+                        item.operating_metrics_status = "blocked"
+                    else:
+                        item.base_result = "failed"
+                        item.final_result = "final_failed"
+                        item.stop_reason = latest.error_type or "batch_interrupted"
+                    item.execution_status = (
+                        "not_executed" if item.final_result == "not_executed"
+                        else "completed" if item.final_result != "final_failed" else "failed"
+                    )
+                if item.final_result is None:
+                    item.final_result = "not_executed" if item.attempts_started == 0 else "final_failed"
+                    item.execution_status = "not_executed" if item.attempts_started == 0 else "completed"
+                    item.stop_reason = "batch_interrupted"
+            batch.lifecycle_status = "terminal"
+            batch.outcome_code = "interrupted"
+            batch.finished_at = datetime.now(timezone.utc)
+            batch.protection_reason = "backend_restart"
+            batch.protection_details = "重启后已收口，旧批次不会自动续跑"
+            recovered += 1
+        if recovered:
+            db.commit()
+    return recovered
+
+
 def run_batch_collection(
     session_factory: Callable[[], Session],
     competitor_ids: list[int],
@@ -915,6 +1260,7 @@ def run_batch_collection(
     config: BatchConfig | None = None,
     cooldown_seconds: float | None = None,
     batch_reservation: int | None = None,
+    persisted_batch_id: int | None = None,
 ) -> None:
     """Run one serial batch in one worker thread and one headed Context."""
     config = config or BatchConfig()
@@ -925,6 +1271,7 @@ def run_batch_collection(
             batch_rest_seconds=config.batch_rest_seconds,
             verification_cooldown_seconds=cooldown_seconds,
             auto_resume_max=config.auto_resume_max,
+            operating_metrics_retry_max=config.operating_metrics_retry_max,
         )
     lock_acquired = False
     context = None
@@ -936,9 +1283,32 @@ def run_batch_collection(
             return
         lock_acquired = True
 
+        if persisted_batch_id is not None:
+            with session_factory() as db:
+                batch = db.get(CollectionBatch, persisted_batch_id)
+                if batch is None or batch.lifecycle_status != "created":
+                    runtime.finish("collect_failed")
+                    return
+                batch.lifecycle_status = "running"
+                batch.started_at = datetime.now(timezone.utc)
+                db.commit()
+                runtime.set_persisted_batch_state("running")
+
         runnable_ids, validation_items = _batch_validation_items(session_factory, competitor_ids)
         for item in validation_items:
             runtime.record(item)
+            if persisted_batch_id is not None:
+                with session_factory() as db:
+                    item_row = db.scalar(select(CollectionBatchItem).where(
+                        CollectionBatchItem.batch_id == persisted_batch_id,
+                        CollectionBatchItem.competitor_id == item.competitor_id,
+                    ))
+                    if item_row is not None:
+                        item_row.base_result = "failed"
+                        item_row.final_result = "final_failed"
+                        item_row.execution_status = "failed"
+                        item_row.stop_reason = item.error_code
+                        db.commit()
         if not runnable_ids:
             runtime.finish("partial_failure" if validation_items else "success")
             return
@@ -969,19 +1339,34 @@ def run_batch_collection(
 
             stop_batch = False
             continuous_accesses = 0
+            retry_candidates: list[tuple[int, int, bool, bool, str]] = []
+            circuit_streak = 0
+            circuit_breaker_open = False
             for position, competitor_id in enumerate(runnable_ids):
                 if pause_if_requested():
                     stop_batch = True
                     break
+                current_attempt_kind = "first_pass"
                 while True:
                     if runtime.stop_requested():
                         stop_batch = True
                         break
                     runtime.set_current(competitor_id)
                     retry_current = False
+                    item_id: int | None = None
                     external_accesses_before = runtime.external_accesses()
                     try:
+                        item_id, attempt_number = _batch_item_context(session_factory, persisted_batch_id, competitor_id)
                         with session_factory() as db:
+                            attempt_kwargs = {}
+                            if persisted_batch_id is not None:
+                                attempt_kwargs = {
+                                    "batch_item_id": item_id,
+                                    "attempt_kind": current_attempt_kind,
+                                    "attempt_number": attempt_number,
+                                    "stop_waiting_for_metrics": lambda: runtime.pause_requested() or runtime.stop_requested(),
+                                    "on_attempt_started": runtime.record_attempt_started,
+                                }
                             collection_result = collect_competitor(
                                 db,
                                 competitor_id,
@@ -989,6 +1374,7 @@ def run_batch_collection(
                                 batch_reservation=batch_reservation,
                                 batch_runtime=runtime,
                                 on_external_access=runtime.record_external_access,
+                                **attempt_kwargs,
                             )
                     except CollectionError as exc:
                         if exc.code == "1688_verification_required":
@@ -1002,6 +1388,7 @@ def run_batch_collection(
                                         operating_metrics_status="blocked",
                                     )
                                 )
+                                _save_item_result(session_factory, item_id, base_result="not_attempted", operating_status="blocked", final_result="verification_required", protection_reason="verification_required")
                                 runtime.mark_verification()
                                 verification_page = (
                                     getattr(context, "pages", []) or [None]
@@ -1036,28 +1423,71 @@ def run_batch_collection(
                                 runtime.set_browser_open(True)
                                 move_context_offscreen(context)
                             retry_current = True
+                            current_attempt_kind = "verification_resume"
+                            runtime.set_phase("verification_resume")
                             continue
+                        if exc.code == "collection_save_failed":
+                            runtime.finish("collect_failed")
+                            stop_batch = True
+                            break
                         runtime.record(BatchItemResult(
                             competitor_id, "failed", exc.code, exc.message,
                             operating_metrics_status=exc.operating_metrics_status,
                         ))
+                        _save_item_result(session_factory, item_id, base_result="failed", operating_status=exc.operating_metrics_status, final_result="final_failed", protection_reason=exc.code)
                     except CompetitorNotFoundError:
                         runtime.record(
                             _batch_error_item(competitor_id, "competitor_not_found", "竞品不存在")
                         )
-                    except Exception:
+                        _save_item_result(session_factory, item_id, base_result="failed", operating_status="not_attempted", final_result="final_failed", protection_reason="competitor_not_found")
+                    except Exception as exc:
                         runtime.finish("collect_failed")
                         stop_batch = True
                         break
                     else:
-                        runtime.record(
-                            BatchItemResult(
-                                competitor_id,
-                                "success",
-                                outcome=getattr(collection_result, "outcome", None),
-                                operating_metrics_status=getattr(collection_result, "operating_metrics_status", "not_attempted"),
-                            )
+                        metrics = list(getattr(collection_result, "operating_metric_data", []))
+                        technical = [metric for metric in metrics if metric.status in {"loading", "source_unavailable", "read_failed"}]
+                        all_unavailable = len(metrics) == 8 and all(metric.status == "source_unavailable" for metric in metrics)
+                        if current_attempt_kind == "first_pass":
+                            if all_unavailable:
+                                circuit_streak += 1
+                            elif any(metric.status in {"observed", "placeholder"} for metric in metrics):
+                                circuit_streak = 0
+                            if circuit_streak >= 3:
+                                circuit_breaker_open = True
+                                if persisted_batch_id is not None:
+                                    with session_factory() as db:
+                                        batch = db.get(CollectionBatch, persisted_batch_id)
+                                        if batch is not None:
+                                            batch.protection_reason = "source_unavailable_circuit_breaker"
+                                            batch.protection_details = "连续 3 个不同商品首轮八项经营字段均来源不可用"
+                                            batch.circuit_breaker_streak = circuit_streak
+                                            db.commit()
+                            elif persisted_batch_id is not None:
+                                with session_factory() as db:
+                                    batch = db.get(CollectionBatch, persisted_batch_id)
+                                    if batch is not None:
+                                        batch.circuit_breaker_streak = circuit_streak
+                                        db.commit()
+                        eligible = any(
+                            metric.status == "loading" or (
+                                metric.status == "source_unavailable"
+                                and "标题不存在或不唯一" in (metric.reason or "")
+                            ) for metric in metrics
                         )
+                        retry_pending = persisted_batch_id is not None and config.operating_metrics_retry_max > 0 and eligible
+                        if item_id is not None:
+                            if retry_pending:
+                                retry_candidates.append((competitor_id, item_id, bool(technical), current_attempt_kind == "verification_resume", collection_result.operating_metrics_status))
+                                _save_item_result(session_factory, item_id, base_result="success", operating_status=collection_result.operating_metrics_status, final_result=None)
+                            else:
+                                final = "final_failed" if technical else "verification_resume_success" if current_attempt_kind == "verification_resume" else "first_pass_success"
+                                _save_item_result(session_factory, item_id, base_result="success", operating_status=collection_result.operating_metrics_status, final_result=final)
+                        if not retry_pending:
+                            runtime.record(BatchItemResult(
+                                competitor_id, "success", outcome=getattr(collection_result, "outcome", None),
+                                operating_metrics_status=getattr(collection_result, "operating_metrics_status", "not_attempted"),
+                            ))
                     finally:
                         if not retry_current:
                             runtime.set_current(None)
@@ -1086,6 +1516,231 @@ def run_batch_collection(
                     stop_batch = True
                     break
 
+            if persisted_batch_id is not None and retry_candidates:
+                runtime.set_phase("operating_metrics_retry")
+                runtime.set_retry_total(len(retry_candidates))
+                if circuit_breaker_open:
+                    with session_factory() as db:
+                        batch = db.get(CollectionBatch, persisted_batch_id)
+                        if batch is not None:
+                            batch.circuit_breaker_cancelled += len(retry_candidates)
+                        for competitor_id, item_id, _had_technical, was_verification_resume, first_status in retry_candidates:
+                            item = db.get(CollectionBatchItem, item_id)
+                            if item is not None:
+                                item.final_result = "final_failed"
+                                item.execution_status = "completed"
+                                item.cancelled_retry_count += 1
+                                item.protection_reason = "cancelled_circuit_breaker"
+                                item.stop_reason = "source_unavailable_circuit_breaker"
+                            runtime.record(BatchItemResult(competitor_id, "success", operating_metrics_status=first_status))
+                            runtime.record_retry_completed()
+                        db.commit()
+                else:
+                    for retry_position, (competitor_id, item_id, had_technical, was_verification_resume, first_status) in enumerate(retry_candidates):
+                        current_status = first_status
+                        current_base_result = "success"
+                        current_error_code = current_error_message = None
+                        retry_stopped = False
+                        retry_verification = False
+                        for retry_index in range(min(config.operating_metrics_retry_max, 2)):
+                            if runtime.stop_requested() or pause_if_requested():
+                                retry_stopped = True
+                                stop_batch = True
+                                break
+                            if config.continuous_collection_count > 0 and continuous_accesses >= config.continuous_collection_count:
+                                runtime.enter_resting(config.batch_rest_seconds)
+                                if not runtime.wait_for_resting(config.batch_rest_seconds):
+                                    retry_stopped = True
+                                    stop_batch = True
+                                    break
+                                runtime.set_running()
+                                continuous_accesses = 0
+                            elif runtime.external_accesses() > 0 and runtime.wait_for_stop(config.item_interval_seconds):
+                                retry_stopped = True
+                                stop_batch = True
+                                break
+                            active_item_id, attempt_number = _batch_item_context(session_factory, persisted_batch_id, competitor_id)
+                            runtime.set_current(competitor_id)
+                            external_before = runtime.external_accesses()
+                            try:
+                                with session_factory() as db:
+                                    result = collect_competitor(
+                                        db, competitor_id, browser_context=context,
+                                        batch_reservation=batch_reservation, batch_runtime=runtime,
+                                        on_external_access=runtime.record_external_access,
+                                        batch_item_id=active_item_id, attempt_kind="operating_metrics_retry",
+                                        attempt_number=attempt_number,
+                                        stop_waiting_for_metrics=lambda: runtime.pause_requested() or runtime.stop_requested(),
+                                        on_attempt_started=runtime.record_attempt_started,
+                                    )
+                            except CollectionError as exc:
+                                if exc.code == "1688_verification_required":
+                                    if runtime.snapshot()["auto_resume_attempt"] >= config.auto_resume_max:
+                                        _save_item_result(session_factory, item_id, base_result="success", operating_status=exc.operating_metrics_status, final_result="final_failed", protection_reason=exc.code)
+                                        runtime.mark_verification()
+                                        verification_page = (getattr(context, "pages", []) or [None])[0]
+                                        restore_context_window(context, verification_page)
+                                        while not runtime.stop_requested():
+                                            try:
+                                                if not getattr(context, "pages", []):
+                                                    break
+                                            except Exception:
+                                                break
+                                            runtime.wait_for_stop(0.25)
+                                        retry_stopped = True
+                                        retry_verification = True
+                                        stop_batch = True
+                                        break
+                                    runtime.begin_auto_resume()
+                                    runtime.set_phase("verification_resume")
+                                    continuous_accesses = 0
+                                    _close_quietly(context)
+                                    context = None
+                                    runtime.set_browser_open(False)
+                                    runtime.enter_cooldown(config.verification_cooldown_seconds)
+                                    if not runtime.wait_for_cooldown(config.verification_cooldown_seconds):
+                                        retry_stopped = True
+                                        stop_batch = True
+                                        break
+                                    runtime.set_running()
+                                    if pause_if_requested():
+                                        retry_stopped = True
+                                        stop_batch = True
+                                        break
+                                    if context is None:
+                                        context = _launch_context(playwright)
+                                        runtime.set_browser_open(True)
+                                        move_context_offscreen(context)
+                                    active_item_id, resume_number = _batch_item_context(session_factory, persisted_batch_id, competitor_id)
+                                    while True:
+                                        try:
+                                            with session_factory() as db:
+                                                resumed = collect_competitor(
+                                                    db, competitor_id, browser_context=context,
+                                                    batch_reservation=batch_reservation, batch_runtime=runtime,
+                                                    on_external_access=runtime.record_external_access,
+                                                    batch_item_id=active_item_id, attempt_kind="verification_resume",
+                                                    attempt_number=resume_number,
+                                                    stop_waiting_for_metrics=lambda: runtime.pause_requested() or runtime.stop_requested(),
+                                                    on_attempt_started=runtime.record_attempt_started,
+                                                )
+                                        except CollectionError as resume_error:
+                                            if resume_error.code == "1688_verification_required":
+                                                if runtime.snapshot()["auto_resume_attempt"] < config.auto_resume_max:
+                                                    runtime.begin_auto_resume()
+                                                    runtime.set_phase("verification_resume")
+                                                    _close_quietly(context)
+                                                    context = None
+                                                    runtime.set_browser_open(False)
+                                                    runtime.enter_cooldown(config.verification_cooldown_seconds)
+                                                    if not runtime.wait_for_cooldown(config.verification_cooldown_seconds):
+                                                        retry_stopped = stop_batch = True
+                                                        break
+                                                    runtime.set_running()
+                                                    if pause_if_requested():
+                                                        retry_stopped = stop_batch = True
+                                                        break
+                                                    if context is None:
+                                                        context = _launch_context(playwright)
+                                                        runtime.set_browser_open(True)
+                                                        move_context_offscreen(context)
+                                                    active_item_id, resume_number = _batch_item_context(session_factory, persisted_batch_id, competitor_id)
+                                                    continue
+                                                _save_item_result(session_factory, item_id, base_result="success", operating_status="blocked", final_result="final_failed", protection_reason=resume_error.code)
+                                                runtime.mark_verification()
+                                                verification_page = (getattr(context, "pages", []) or [None])[0]
+                                                restore_context_window(context, verification_page)
+                                                while not runtime.stop_requested():
+                                                    try:
+                                                        if not getattr(context, "pages", []):
+                                                            break
+                                                    except Exception:
+                                                        break
+                                                    runtime.wait_for_stop(0.25)
+                                                retry_stopped = retry_verification = stop_batch = True
+                                                break
+                                            if resume_error.code == "collection_save_failed":
+                                                runtime.finish("collect_failed")
+                                                retry_stopped = stop_batch = True
+                                                break
+                                            current_base_result = "failed"
+                                            current_status = resume_error.operating_metrics_status
+                                            current_error_code, current_error_message = resume_error.code, resume_error.message
+                                            _save_item_result(session_factory, item_id, base_result=current_base_result, operating_status=current_status, final_result="final_failed", protection_reason=resume_error.code)
+                                            retry_stopped = True
+                                            break
+                                        else:
+                                            break
+                                    if retry_verification or stop_batch:
+                                        break
+                                    if retry_stopped:
+                                        break
+                                    current_status = resumed.operating_metrics_status
+                                    runtime.set_phase("operating_metrics_retry")
+                                    resume_metrics = list(getattr(resumed, "operating_metric_data", []))
+                                    still_technical = not resume_metrics or any(metric.status in {"loading", "source_unavailable", "read_failed"} for metric in resume_metrics)
+                                    resume_still_eligible = any(metric.status == "loading" or (
+                                        metric.status == "source_unavailable" and "标题不存在或不唯一" in (metric.reason or "")
+                                    ) for metric in resume_metrics)
+                                    if resume_still_eligible and retry_index + 1 < min(config.operating_metrics_retry_max, 2):
+                                        _save_item_result(session_factory, item_id, base_result="success", operating_status=current_status, final_result=None)
+                                        retry_stopped = False
+                                        continue
+                                    _save_item_result(
+                                        session_factory, item_id, base_result="success", operating_status=current_status,
+                                        final_result="final_failed" if still_technical else "verification_resume_success",
+                                    )
+                                    retry_stopped = False
+                                    break
+                                if exc.code == "collection_save_failed":
+                                    runtime.finish("collect_failed")
+                                    retry_stopped = stop_batch = True
+                                    break
+                                current_base_result = "failed"
+                                current_status = exc.operating_metrics_status
+                                current_error_code, current_error_message = exc.code, exc.message
+                                _save_item_result(session_factory, item_id, base_result=current_base_result, operating_status=current_status, final_result="final_failed", protection_reason=exc.code)
+                                break
+                            except Exception:
+                                current_base_result = "failed"
+                                current_status = "failed"
+                                current_error_code, current_error_message = "collection_failed", "采集失败"
+                                _save_item_result(session_factory, item_id, base_result=current_base_result, operating_status=current_status, final_result="final_failed", protection_reason=current_error_code)
+                                break
+                            if runtime.external_accesses() > external_before:
+                                continuous_accesses += 1
+                            current_status = result.operating_metrics_status
+                            metric_data = list(getattr(result, "operating_metric_data", []))
+                            remaining_technical = not metric_data or any(metric.status in {"loading", "source_unavailable", "read_failed"} for metric in metric_data)
+                            recovered = had_technical and not remaining_technical and any(metric.status in {"observed", "placeholder"} for metric in metric_data)
+                            if not remaining_technical:
+                                _save_item_result(session_factory, item_id, base_result="success", operating_status=current_status, final_result="retry_success" if recovered else "verification_resume_success" if was_verification_resume else "first_pass_success")
+                                break
+                            still_eligible = any(metric.status == "loading" or (
+                                metric.status == "source_unavailable" and "标题不存在或不唯一" in (metric.reason or "")
+                            ) for metric in metric_data)
+                            if retry_index + 1 >= min(config.operating_metrics_retry_max, 2) or not still_eligible:
+                                _save_item_result(session_factory, item_id, base_result="success", operating_status=current_status, final_result="final_failed")
+                                break
+                        runtime.set_current(None)
+                        if retry_stopped and not retry_verification:
+                            _save_item_result(session_factory, item_id, base_result=current_base_result, operating_status=current_status, final_result="final_failed", protection_reason=current_error_code or "batch_stopped")
+                        runtime.record(BatchItemResult(competitor_id, current_base_result, error_code=current_error_code, message=current_error_message, operating_metrics_status=current_status))
+                        runtime.record_retry_completed()
+                        if stop_batch:
+                            break
+            if persisted_batch_id is not None:
+                with session_factory() as db:
+                    pending_items = db.scalars(select(CollectionBatchItem).where(
+                        CollectionBatchItem.batch_id == persisted_batch_id,
+                        CollectionBatchItem.final_result.is_(None),
+                    )).all()
+                    for item in pending_items:
+                        item.final_result = "not_executed" if item.attempts_started == 0 else "final_failed"
+                        item.execution_status = "not_executed" if item.attempts_started == 0 else "completed"
+                        item.stop_reason = "batch_stopped" if runtime.stop_requested() else item.stop_reason
+                    db.commit()
+
     except Exception:
         runtime.finish("collect_failed")
     finally:
@@ -1108,8 +1763,13 @@ def run_batch_collection(
                     item.operating_metrics_status != "success" for item in runtime.items
                 ) else "success"
             )
-        if lock_acquired:
-            COLLECTION_LOCK.release()
+        try:
+            if persisted_batch_id is not None:
+                _finalize_persisted_batch(session_factory, persisted_batch_id, runtime)
+        finally:
+            runtime.set_phase(None)
+            if lock_acquired:
+                COLLECTION_LOCK.release()
 
 
 def start_batch_task(
@@ -1118,6 +1778,7 @@ def start_batch_task(
     runtime: BatchRuntime = BATCH_RUNTIME,
     batch_reservation: int | None = None,
     config: BatchConfig | None = None,
+    persisted_batch_id: int | None = None,
 ) -> asyncio.Task[Any]:
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -1127,6 +1788,7 @@ def start_batch_task(
             runtime,
             batch_reservation=batch_reservation,
             config=config,
+            persisted_batch_id=persisted_batch_id,
         )
     )
     runtime.attach_task(task)

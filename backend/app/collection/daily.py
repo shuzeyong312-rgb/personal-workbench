@@ -1,13 +1,16 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from hashlib import sha256
+import json
 from threading import Event
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.collection.service import BATCH_RUNTIME, COLLECTION_LOCK, BatchConfig, acquire_collection_slot
-from app.models import CollectionRun, Competitor
+from app.collection.service import BATCH_RUNTIME, COLLECTION_LOCK, BatchConfig, acquire_collection_slot, create_collection_batch
+from app.models import CollectionBatch, CollectionRun, Competitor
 from app.settings import batch_config_values, get_competitor_monitoring_settings
 
 _DAY = timedelta(hours=24)
@@ -28,6 +31,7 @@ class AutoBatchStart:
     competitor_ids: list[int]
     config: BatchConfig
     reservation_token: int
+    batch_id: int
 
 
 def _boundary(now: datetime, value: str, local_tz: object) -> datetime:
@@ -111,11 +115,45 @@ def prepare_auto_batch(
             ids = _due_ids(db, now=checked_at, strategy=final_strategy, boundary=final_boundary)
             if not ids:
                 return None
+            if db.scalar(select(CollectionBatch.id).where(CollectionBatch.lifecycle_status.in_(("created", "running"))).limit(1)) is not None:
+                return None
             config = BatchConfig(**batch_config_values(settings))
             if not BATCH_RUNTIME.reserve(ids, config):
                 return None
             token = BATCH_RUNTIME.reservation_token()
             assert token is not None
-            return AutoBatchStart(ids, config, token)
+            due_facts = []
+            for competitor_id in sorted(ids):
+                latest = db.scalar(select(CollectionRun).where(
+                    CollectionRun.competitor_id == competitor_id,
+                ).order_by(CollectionRun.started_at.desc(), CollectionRun.id.desc()).limit(1))
+                due_facts.append((competitor_id, latest.id if latest else None, _as_utc(latest.started_at).isoformat() if latest else None))
+            window = final_boundary.isoformat() if final_boundary is not None else "rolling_24h"
+            signature = sha256(json.dumps(due_facts, separators=(",", ":")).encode()).hexdigest()[:16]
+            prefix = f"{final_strategy}:{window}:{signature}"
+            existing_keys = db.scalars(select(CollectionBatch.scheduler_occurrence_key).where(
+                CollectionBatch.scheduler_occurrence_key.is_not(None),
+            )).all()
+            generation = sum(key.startswith(f"{prefix}:") for key in existing_keys) + 1
+            occurrence_key = f"{prefix}:{generation}"
+            try:
+                batch = create_collection_batch(
+                    db, ids, config, trigger_kind="scheduled",
+                    scheduler_occurrence_key=occurrence_key,
+                )
+            except IntegrityError:
+                db.rollback()
+                winner = db.scalar(select(CollectionBatch).where(CollectionBatch.scheduler_occurrence_key == occurrence_key))
+                if winner is None:
+                    BATCH_RUNTIME.finish("collect_failed")
+                    raise
+                BATCH_RUNTIME.finish("success")
+                return None
+            except Exception:
+                db.rollback()
+                BATCH_RUNTIME.finish("collect_failed")
+                raise
+            BATCH_RUNTIME.bind_batch(batch)
+            return AutoBatchStart(ids, config, token, batch.id)
     finally:
         COLLECTION_LOCK.release()

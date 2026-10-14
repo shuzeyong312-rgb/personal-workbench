@@ -7,7 +7,6 @@ import { createServer } from "vite";
 import { expect, test, vi } from "vitest";
 
 import { competitorPageSize, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
-import { CurrentBatchCard } from "./App";
 
 import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
@@ -85,6 +84,19 @@ const filteredIds = (filters: CompetitorFilters) => filterCompetitors(filterComp
 const makeBatchState = (status: BatchState["status"], overrides: Partial<BatchState> = {}): BatchState => ({
   status,
   outcome_code: null,
+  batch_id: null,
+  task_id: null,
+  lifecycle_status: null,
+  batch_outcome_code: null,
+  phase: null,
+  attempts_started: 0,
+  page_visits: 0,
+  page_visits_unknown: 0,
+  verification_resume_visits: 0,
+  retry_visits: 0,
+  retry_max: 0,
+  retry_total: 0,
+  retry_completed: 0,
   total: 1,
   completed: 0,
   succeeded: 0,
@@ -103,7 +115,7 @@ const makeBatchState = (status: BatchState["status"], overrides: Partial<BatchSt
   ...overrides,
 });
 
-const monitoringSettings = { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "09:30", auto_collection_missed_policy: "catch_up" };
+const monitoringSettings = { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2, operating_metrics_retry_max: 0, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "09:30", auto_collection_missed_policy: "catch_up" };
 
 async function openSettingsScenario(options: { ownGet: number; monitoringGet: number; ownPut?: number; monitoringPut?: number }) {
   const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), server: { host: "127.0.0.1", port: 0 }, clearScreen: false });
@@ -1163,7 +1175,7 @@ test("marks active root and monitoring navigation with one consistent icon style
   expect(dashboard).toContain('class="nav-item nav-child nav-active" aria-current="page"');
   expect(competitors).toContain("竞品列表");
   expect(groups).toContain("竞品分组");
-  expect(collectionTasks).toContain("采集任务");
+  expect(collectionTasks).toContain("采集记录");
   expect(priceCompare).toContain("全网比价");
   expect(priceCompare).toContain('aria-current="page"');
   expect(priceCompare).toContain('aria-expanded="false"');
@@ -1185,8 +1197,9 @@ test("renders workspace module placeholders", () => {
   expect(home).toContain("首页模块已预留");
   expect(compare).toContain("<h1>全网比价</h1>");
   expect(compare).toContain("全网比价模块已预留");
-  expect(collectionTasks).toContain("<h1>采集任务</h1>");
-  expect(collectionTasks).toContain("当前批量采集");
+  expect(collectionTasks).toContain("<h1>采集记录</h1>");
+  expect(collectionTasks).toContain("历史未归属单次采集");
+  expect(collectionTasks).not.toContain("<h2>历史单次记录</h2>");
   expect(collectionTasks).toContain("采集记录");
 });
 
@@ -1200,26 +1213,12 @@ test("shows the frozen wait countdown while a batch is paused", () => {
   expect(pausedResting).toContain("17 秒");
 });
 
-test("renders Collection Tasks runtime states and preserves missing current product IDs", () => {
-  const productById = new Map([[1, { ...competitor, title: "当前商品", offer_id: "offer-1", shop_name: "测试店铺" }]]);
-  const render = (batchState: BatchState) => renderToStaticMarkup(<CurrentBatchCard batchState={batchState} status="ready" error={null} onRetry={noop} productById={productById} />);
-  const idle = render(idleBatchState);
-  expect(idle).toContain("当前无批量采集任务");
-  expect(idle).toContain("可在竞品监控大屏点击「立即采集」发起批量采集。");
-  expect(render({ ...idleBatchState, status: "running", total: 2, completed: 1, remaining: 1, current_competitor_id: 99 })).toContain("商品 ID：99");
-  expect(render({ ...idleBatchState, status: "resting", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, resting_remaining_seconds: 17, browser_open: true, runner_active: true })).toContain("计划内主动休息");
-  expect(render({ ...idleBatchState, status: "resting", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, resting_remaining_seconds: 17, browser_open: true, runner_active: true })).toContain("休息剩余：17 秒");
-  expect(render({ ...idleBatchState, status: "paused", total: 2, completed: 1, remaining: 1, resting_remaining_seconds: 17, runner_active: true })).toContain("计划休息剩余：17 秒");
-  expect(render({ ...idleBatchState, status: "paused", total: 2, completed: 1, remaining: 1, cooldown_remaining_seconds: 17, runner_active: true })).toContain("风控冷却剩余：17 秒");
-  expect(render({ ...idleBatchState, status: "cooling_down", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, cooldown_remaining_seconds: 17, auto_resume_attempt: 1 })).toContain("风控冷却中");
-  expect(render({ ...idleBatchState, status: "verification_required", total: 2, completed: 1, remaining: 1, current_competitor_id: 1, browser_open: true, runner_active: true })).toContain("需要人工验证");
-  expect(render({ ...idleBatchState, status: "completed", total: 2, completed: 2, succeeded: 1, failed: 1, outcome_code: "completed" })).toContain("结果码：completed");
-});
-
-test("keeps collection task labels in user-facing language", () => {
+test("renders batch history separately from realtime controls", () => {
   const html = renderToStaticMarkup(<CollectionTasksPage onNavigate={noop} />);
-  expect(html).toContain("查看每次商品采集结果与失败原因");
-  expect(html).not.toMatch(/BatchRuntime|Runtime|持久化|单商品采集尝试/);
+  expect(html).toContain("采集记录");
+  expect(html).toContain("历史未归属单次采集");
+  expect(html).not.toContain("<h2>历史单次记录</h2>");
+  expect(html).not.toContain("当前批量采集");
 });
 
 test("formats the independent base and operating statuses for collection records", () => {

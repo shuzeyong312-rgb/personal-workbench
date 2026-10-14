@@ -19,6 +19,7 @@ COMPETITOR_MONITORING_SETTINGS = {
     "batch_rest_seconds": ("competitor_monitoring_batch_rest_seconds", 120, 0, 1800, True),
     "verification_cooldown_seconds": ("competitor_monitoring_verification_cooldown_seconds", 600, 60, 3600, True),
     "auto_resume_max": ("competitor_monitoring_auto_resume_max", 2, 0, 5, False),
+    "operating_metrics_retry_max": ("competitor_monitoring_operating_metrics_retry_max", 0, 0, 2, False),
 }
 AUTO_COLLECTION_SETTINGS = {
     "auto_collection_enabled": ("competitor_monitoring_auto_collection_enabled", True),
@@ -83,7 +84,7 @@ def get_competitor_monitoring_settings(db: Session) -> dict[str, object]:
 def validate_competitor_monitoring_settings(payload: object) -> dict[str, object]:
     expected = set(COMPETITOR_MONITORING_SETTINGS) | set(AUTO_COLLECTION_SETTINGS)
     if not isinstance(payload, dict) or set(payload) != expected:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "invalid_competitor_monitoring_settings", "message": "必须完整提交九项竞品监控设置"})
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "invalid_competitor_monitoring_settings", "message": "必须完整提交十项竞品监控设置"})
     values: dict[str, object] = {}
     for field, (_key, _default, minimum, maximum, minute_multiple) in COMPETITOR_MONITORING_SETTINGS.items():
         value = payload[field]

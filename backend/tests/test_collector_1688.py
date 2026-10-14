@@ -379,7 +379,9 @@ def test_verification_appearing_after_300ms_is_detected() -> None:
     with pytest.raises(VerificationRequiredError):
         collect_1688_product_in_context(context, PRODUCT_URL, "1081895898799")
 
-    assert page.wait_for_timeout_calls == [300]
+    assert page.wait_for_timeout_calls[0] == 300
+    assert sum(page.wait_for_timeout_calls[1:]) <= 5000
+    assert len(page.wait_for_timeout_calls[1:]) <= 20
 
 
 def test_second_verification_check_is_single_and_bounded() -> None:
@@ -393,7 +395,9 @@ def test_second_verification_check_is_single_and_bounded() -> None:
         result = collect_1688_product_in_context(context, PRODUCT_URL, "1081895898799")
 
     assert result.offer_id == "1081895898799"
-    assert page.wait_for_timeout_calls == [300]
+    assert page.wait_for_timeout_calls[0] == 300
+    assert sum(page.wait_for_timeout_calls[1:]) <= 5000
+    assert len(page.wait_for_timeout_calls[1:]) <= 20
 
 
 def test_collects_html_and_passes_expected_offer_id() -> None:
