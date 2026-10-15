@@ -106,4 +106,4 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 
 | Spec | 状态 | 范围与门槛 |
 | --- | --- | --- |
-| [添加链接首轮经营指标与输入去重 V1.4](collection-add-initial-metrics-and-input-dedup-v1.4.md) | Draft / 待 ChatGPT Review；基线 `0cff99870a2feb4e6d852e977bc0f2d6aab470ef` | 添加时复用同一次 `CollectionPageResult` 原子保存真实经营 Observation；剪贴板及提交前按 Offer ID 去重。继承 V1.2 Observation 与 V1.3 添加任务合同；Spec Review 通过并 Freeze 前不实施。 |
+| [添加链接首轮经营指标与输入去重 V1.4](collection-add-initial-metrics-and-input-dedup-v1.4.md) | Draft / 待 ChatGPT Review；本轮定向修订基线 `aeb748c9fb00d2e4e717fdbb804c6a1e488e35a7` | 添加时复用同一次 `CollectionPageResult` 原子保存真实经营 Observation；明确添加模式部分指标映射、收口/恢复幂等状态缓存、首页/详情异常筛选及 Offer ID 去重后的冻结输入。继承 V1.2/V1.3；Spec Review 通过并 Freeze 前不实施。 |
