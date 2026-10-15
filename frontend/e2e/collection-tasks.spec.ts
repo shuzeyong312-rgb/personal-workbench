@@ -238,7 +238,9 @@ test("add-links rejected inputs never render invented product photos or store de
   await expect(rows).toHaveCount(4);
   await expect(rows.nth(0)).toContainText("真实的已存在商品");
   await expect(rows.nth(0)).toContainText("商品已存在");
+  await expect(rows.nth(0).locator(".record-add-reason")).toHaveCount(0);
   await expect(rows.nth(1)).toContainText("invalid");
+  await expect(rows.nth(1).locator(".record-add-reason")).toHaveText("链接格式无效");
   await expect(rows.nth(2)).toContainText("Offer ID 203");
   await expect(rows.nth(3)).toContainText("身份已移除");
   await expect(rows.nth(3)).not.toContainText("204");

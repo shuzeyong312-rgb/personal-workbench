@@ -2128,7 +2128,7 @@ function AddInputTable({ detail, expanded, onToggle }: { detail: BatchRecordDeta
     return <Fragment key={item.position}>
       <tr>
         <td><div className="product-cell record-add-product">{!item.identity_removed && item.main_image_url && <ProductImage competitor={{ main_image_url: item.main_image_url }} />}<div><strong title={productTitle}>{productTitle}</strong>{item.identity_removed ? <small>第 {item.source_line ?? item.position + 1} 行 · 身份已移除</small> : <small>Offer ID：{item.offer_id || "未识别"} · 店铺：{item.shop_name || "未采集"}</small>}</div></div></td>
-        <td><RecordBadge tone={resultTone}>{inputResultLabels[item.result_code || ""] || "待处理"}</RecordBadge>{item.sanitized_reason && <small className="record-add-reason" title={item.sanitized_reason}>{item.sanitized_reason}</small>}</td>
+        <td><RecordBadge tone={resultTone}>{inputResultLabels[item.result_code || ""] || "待处理"}</RecordBadge>{item.sanitized_reason && item.sanitized_reason !== (inputResultLabels[item.result_code || ""] || "待处理") && <small className="record-add-reason" title={item.sanitized_reason}>{item.sanitized_reason}</small>}</td>
         <td>确认 {item.page_visits} 次{item.page_visits_unknown > 0 && <small>未知 {item.page_visits_unknown} 次</small>}</td>
         <td>{formatCollectionDuration(item.duration_seconds)}</td>
         <td><RecordBadge tone={metricTone}>{recordOperatingLabels[item.operating_metrics_status || "not_attempted"] || "经营状态未知"}</RecordBadge>{item.technical_exception_count > 0 && <small>技术异常 {item.technical_exception_count} 项</small>}</td>
