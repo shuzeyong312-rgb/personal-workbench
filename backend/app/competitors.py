@@ -1,10 +1,12 @@
-import re
+import asyncio
 from datetime import datetime, timezone
 from html import unescape
 from typing import Literal
-from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Response, status
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from uuid import UUID, uuid4
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -22,17 +24,16 @@ from app.collection.service import (
     create_collection_batch,
     fail_created_batch,
     collect_competitor,
-    collect_product,
     start_batch_task,
 )
+from app.collection.parser_1688 import parse_1688_url
 from app.database import get_db
-from app.models import ChangeEvent, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
+from app.models import ChangeEvent, CollectionAddInput, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
 from app.ownership import get_own_shop_name, identify_ownership
 from app.settings import batch_config_values, get_competitor_monitoring_settings
 
 
 router = APIRouter(prefix="/api/competitors", tags=["competitors"])
-OFFER_PATH = re.compile(r"^/offer/(\d+)\.html$")
 
 
 class CreateCompetitorRequest(BaseModel):
@@ -181,6 +182,9 @@ class BatchItemResponse(BaseModel):
 
 
 class BatchStatusResponse(BaseModel):
+    work_kind: Literal["collect_products", "add_links"] = "collect_products"
+    current_input_position: int | None = None
+    input_progress: dict[str, int | None] | None = None
     status: Literal["idle", "running", "pausing", "paused", "stopping", "stopped", "resting", "cooling_down", "completed", "verification_required"]
     outcome_code: str | None
     batch_id: int | None
@@ -213,28 +217,6 @@ class BatchStatusResponse(BaseModel):
     resting_remaining_seconds: int
     items: list[BatchItemResponse]
 
-
-def parse_1688_url(url: str) -> tuple[str, str]:
-    value = url.strip()
-    if not value:
-        raise ValueError("invalid competitor url")
-
-    parsed = urlparse(value)
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname != "detail.1688.com"
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.port not in (None, 443)
-    ):
-        raise ValueError("invalid competitor url")
-
-    match = OFFER_PATH.fullmatch(parsed.path)
-    if not match:
-        raise ValueError("invalid competitor url")
-
-    offer_id = match.group(1)
-    return offer_id, f"https://detail.1688.com/offer/{offer_id}.html"
 
 
 def error(code: str, message: str, status_code: int) -> HTTPException:
@@ -648,107 +630,83 @@ def end_collect_batch() -> dict[str, object]:
     return BATCH_RUNTIME.snapshot()
 
 
+class AddInputRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2048)
+    source_line: StrictInt = Field(ge=1)
+
+
+class AddBatchRequest(BaseModel):
+    submission_id: UUID
+    inputs: list[AddInputRequest] = Field(min_length=1, max_length=100)
+    group_id: StrictInt | None = None
+
+
+def _add_response(db, batch_id):
+    from app.collection.batch_records import get_batch
+    batch = db.get(CollectionBatch, batch_id)
+    result = get_batch(db, batch.task_id)
+    return {"accepted": True, "admission_state": "accepted", "task_id": batch.task_id,
+            "submission_id": batch.task_id, "task": result}
+
+
+@router.post("/add-batch")
+async def add_batch(payload: AddBatchRequest, db: Session = Depends(get_db)):
+    from app.collection.add_links import admit_add, dispatch_add
+    inputs = [row.model_dump() for row in payload.inputs]
+    if any(not row["text"].strip() for row in inputs):
+        raise error("invalid_add_request", "不能提交空行", 422)
+    batch_id, created, config = await asyncio.to_thread(admit_add, db, str(payload.submission_id), inputs, payload.group_id, BATCH_RUNTIME)
+    if created:
+        bind = db.get_bind()
+        dispatch_add(lambda: Session(bind=bind, expire_on_commit=False), batch_id, BATCH_RUNTIME, config)
+    db.expire_all()
+    result = _add_response(db, batch_id)
+    return JSONResponse(status_code=200 if result["task"]["lifecycle_status"] == "terminal" else 202,
+                        content=jsonable_encoder(result))
+
+
+@router.get("/add-batch/{submission_id}")
+def get_add_submission(submission_id: UUID, db: Session = Depends(get_db)):
+    from app.collection.add_links import find_submission
+    batch = find_submission(db, str(submission_id), BATCH_RUNTIME)
+    if batch is None:
+        raise error("admission_not_found", "未找到已受理任务", 404)
+    if batch.trigger_kind != "add_links":
+        raise error("idempotency_conflict", "标识已被其他任务使用", 409)
+    result = _add_response(db, batch.id)
+    from fastapi.encoders import jsonable_encoder
+    return JSONResponse(status_code=200 if batch.lifecycle_status == "terminal" else 202, content=jsonable_encoder(result))
+
+
 @router.post("", response_model=CompetitorResponse, status_code=status.HTTP_201_CREATED)
-def create_competitor(payload: CreateCompetitorRequest, db: Session = Depends(get_db)) -> Competitor:
+def create_competitor(payload: CreateCompetitorRequest, response: Response, db: Session = Depends(get_db),
+                      idempotency_key: str | None = Header(default=None)):
+    from app.collection.add_links import admit_add, dispatch_add
     try:
-        offer_id, normalized_url = parse_1688_url(payload.url)
-    except ValueError as exc:
-        raise error(
-            "invalid_competitor_url",
-            "仅支持 https://detail.1688.com/offer/{offerId}.html 格式的 1688 商品链接",
-            status.HTTP_400_BAD_REQUEST,
-        ) from exc
-
-    if get_own_shop_name(db) is None:
-        raise error(
-            "own_shop_name_not_configured",
-            "请先在系统设置中配置我方店铺名称",
-            status.HTTP_409_CONFLICT,
-        )
-
-    if payload.group_id is not None and db.get(CompetitorGroup, payload.group_id) is None:
-        raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
-
-    if db.scalar(select(Competitor).where(Competitor.platform == "1688", Competitor.offer_id == offer_id)):
-        raise error("competitor_already_exists", "该 1688 商品已经添加", status.HTTP_409_CONFLICT)
-
-    bind = db.get_bind()
-    db.rollback()
-    if not acquire_collection_slot():
-        raise error("collection_in_progress", "已有商品正在采集，请稍后重试", status.HTTP_409_CONFLICT)
-
-    try:
-        try:
-            product = collect_product(normalized_url, offer_id)
-        except CollectionError as exc:
-            raise error(
-                exc.code,
-                exc.message,
-                _COLLECTION_STATUS_CODES.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR),
-            ) from exc
-
-        with Session(bind=bind, expire_on_commit=False) as final_db:
-            final_shop_name = get_own_shop_name(final_db)
-            if final_shop_name is None:
-                raise error("own_shop_name_not_configured", "请先在系统设置中配置我方店铺名称", status.HTTP_409_CONFLICT)
-            if final_db.scalar(select(Competitor).where(Competitor.platform == "1688", Competitor.offer_id == offer_id)):
-                raise error("competitor_already_exists", "该 1688 商品已经添加", status.HTTP_409_CONFLICT)
-            if payload.group_id is not None and final_db.get(CompetitorGroup, payload.group_id) is None:
-                raise error("competitor_group_not_found", "竞品组不存在", status.HTTP_404_NOT_FOUND)
-
-            resolved_ownership = identify_ownership(product.shop_name, final_shop_name)
-            if resolved_ownership is None:
-                raise error("shop_name_unavailable", "无法确认店铺名称，未添加监控商品，请重试", status.HTTP_422_UNPROCESSABLE_CONTENT)
-            if resolved_ownership == "self" and payload.group_id is not None:
-                current_own = final_db.scalar(select(Competitor).where(Competitor.group_id == payload.group_id, Competitor.group_role == "own"))
-                if current_own is not None:
-                    raise error("own_product_already_bound", "该竞品组已绑定我方商品", status.HTTP_409_CONFLICT)
-
-            now = datetime.now(timezone.utc)
-            try:
-                competitor = Competitor(
-                    platform="1688", offer_id=offer_id, url=normalized_url,
-                    group_id=payload.group_id, group_role="own" if resolved_ownership == "self" and payload.group_id is not None else "competitor",
-                    ownership=resolved_ownership, title=product.title, shop_name=product.shop_name,
-                    main_image_url=product.main_image_url, status=product.product_status, is_active=True,
-                    created_at=now, updated_at=now, last_collected_at=product.captured_at,
-                )
-                final_db.add(competitor)
-                final_db.flush()
-                snapshot = ProductSnapshot(
-                    competitor_id=competitor.id, captured_at=product.captured_at, title=product.title,
-                    shop_name=product.shop_name, main_image_url=product.main_image_url, image_urls=product.image_urls,
-                    price_min=product.price_min, price_max=product.price_max, min_order_quantity=product.min_order_quantity,
-                    product_status=product.product_status, collection_source=product.collection_source,
-                    skus=[SkuSnapshot(sku_id=sku.sku_id, sku_name=sku.sku_name, stock=sku.stock, price=sku.price) for sku in product.skus],
-                )
-                final_db.add(snapshot)
-                final_db.add(CollectionRun(competitor_id=competitor.id, started_at=now, finished_at=now, status="success"))
-                final_db.commit()
-            except IntegrityError as exc:
-                final_db.rollback()
-                existing = final_db.scalar(select(Competitor).where(Competitor.platform == "1688", Competitor.offer_id == offer_id))
-                if existing:
-                    raise error("competitor_already_exists", "该 1688 商品已经添加", status.HTTP_409_CONFLICT) from exc
-                if resolved_ownership == "self" and payload.group_id is not None:
-                    current_own = final_db.scalar(
-                        select(Competitor).where(
-                            Competitor.group_id == payload.group_id,
-                            Competitor.ownership == "self",
-                            Competitor.group_role == "own",
-                        )
-                    )
-                    if current_own is not None:
-                        raise error("own_product_already_bound", "该竞品组已绑定我方商品", status.HTTP_409_CONFLICT) from exc
-                raise error(
-                    "collection_save_failed",
-                    "商品数据保存失败，请稍后重试",
-                    status.HTTP_500_INTERNAL_SERVER_ERROR,
-                ) from exc
-            final_db.refresh(competitor)
-            return competitor
-    finally:
-        COLLECTION_LOCK.release()
+        task_id = str(UUID(idempotency_key)) if idempotency_key else str(uuid4())
+    except ValueError:
+        raise error("invalid_idempotency_key", "幂等标识必须是 UUID", 422)
+    batch_id, created, config = admit_add(db, task_id, [{"text": payload.url, "source_line": 1}], payload.group_id, BATCH_RUNTIME, synchronous=True)
+    response.headers["X-Collection-Task-ID"] = task_id
+    if created:
+        bind = db.get_bind()
+        dispatch_add(lambda: Session(bind=bind, expire_on_commit=False), batch_id, BATCH_RUNTIME, config, synchronous=True)
+    db.expire_all()
+    batch = db.get(CollectionBatch, batch_id)
+    if batch.lifecycle_status != "terminal":
+        from fastapi.encoders import jsonable_encoder
+        return JSONResponse(status_code=202, content=jsonable_encoder(_add_response(db, batch_id)), headers={"X-Collection-Task-ID": task_id})
+    row = db.scalar(select(CollectionAddInput).where(CollectionAddInput.batch_id == batch_id))
+    if row.result_code != "added":
+        code = row.error_code or "collection_failed"
+        http = {"invalid_competitor_url": 400, "competitor_already_exists": 409, "duplicate_input": 409,
+                "shop_name_unavailable": 422, "own_product_already_bound": 409,
+                "competitor_group_not_found": 404, "own_shop_name_not_configured": 409}.get(code, _COLLECTION_STATUS_CODES.get(code, 500))
+        raise HTTPException(http, {"code": code, "message": row.sanitized_reason or "添加未完成", "task_id": task_id}, headers={"X-Collection-Task-ID": task_id})
+    product = db.get(Competitor, row.related_competitor_id) if row.related_competitor_id else None
+    if product is None:
+        raise HTTPException(410, {"code": "added_product_removed", "task_id": task_id})
+    return product
 
 
 @router.patch("/{competitor_id}/monitoring", response_model=CompetitorResponse)
@@ -934,8 +892,16 @@ def _delete_competitor_history(db: Session, competitors: list[Competitor]) -> No
     db.execute(
         CollectionBatchItem.__table__.update()
         .where(CollectionBatchItem.competitor_id.in_(competitor_ids))
-        .values(competitor_id=None)
+        .values(competitor_id=None, identity_state="removed")
     )
+    offer_ids = [product.offer_id for product in competitors]
+    for input_row in db.scalars(select(CollectionAddInput).where(
+        (CollectionAddInput.related_competitor_id.in_(competitor_ids)) | (CollectionAddInput.offer_id.in_(offer_ids))
+    )).all():
+        input_row.input_text = input_row.normalized_url = input_row.offer_id = None
+        input_row.related_competitor_id = input_row.duplicate_of_input_id = None
+        input_row.sanitized_reason = None
+        input_row.identity_removed = True
     snapshot_ids = select(ProductSnapshot.id).where(ProductSnapshot.competitor_id.in_(competitor_ids))
     db.execute(delete(ChangeEvent).where(ChangeEvent.competitor_id.in_(competitor_ids)))
     db.execute(delete(OperatingMetricObservation).where(OperatingMetricObservation.competitor_id.in_(competitor_ids)))

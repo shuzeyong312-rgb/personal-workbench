@@ -169,9 +169,10 @@ class CollectionRun(Base):
 class CollectionBatch(Base):
     __tablename__ = "collection_batches"
     __table_args__ = (
-        CheckConstraint("trigger_kind IN ('manual_selected', 'manual_all_active', 'scheduled')", name="ck_collection_batches_trigger_kind"),
+        CheckConstraint("trigger_kind IN ('manual_selected', 'manual_all_active', 'scheduled', 'manual_single', 'add_links')", name="ck_collection_batches_trigger_kind"),
         CheckConstraint("lifecycle_status IN ('created', 'running', 'terminal')", name="ck_collection_batches_lifecycle"),
         CheckConstraint("outcome_code IS NULL OR outcome_code IN ('success', 'partial_success', 'partial_failure', 'user_ended', 'verification_required', 'collect_failed', 'infrastructure_error', 'interrupted')", name="ck_collection_batches_outcome"),
+        CheckConstraint("trigger_kind != 'add_links' OR request_fingerprint IS NOT NULL", name="ck_collection_batches_add_fingerprint"),
         CheckConstraint("planned_products >= 0", name="ck_collection_batches_planned_products"),
         UniqueConstraint("task_id", name="uq_collection_batches_task_id"),
         UniqueConstraint("scheduler_occurrence_key", name="uq_collection_batches_scheduler_occurrence"),
@@ -180,6 +181,7 @@ class CollectionBatch(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -200,9 +202,12 @@ class CollectionBatchItem(Base):
     __tablename__ = "collection_batch_items"
     __table_args__ = (
         CheckConstraint("execution_status IN ('queued', 'running', 'completed', 'failed', 'not_executed')", name="ck_collection_batch_items_execution_status"),
-        CheckConstraint("final_result IS NULL OR final_result IN ('first_pass_success', 'verification_resume_success', 'retry_success', 'final_failed', 'verification_required', 'not_executed')", name="ck_collection_batch_items_final_result"),
+        CheckConstraint("final_result IS NULL OR final_result IN ('first_pass_success', 'verification_resume_success', 'retry_success', 'final_failed', 'verification_required', 'not_executed', 'business_rejected')", name="ck_collection_batch_items_final_result"),
         CheckConstraint("base_result IS NULL OR base_result IN ('success', 'failed', 'not_attempted')", name="ck_collection_batch_items_base_result"),
         CheckConstraint("attempts_started >= 0 AND page_visits >= 0 AND page_visits_unknown >= 0 AND verification_resume_visits >= 0 AND retry_visits >= 0 AND placeholder_count >= 0 AND source_unavailable_count >= 0 AND loading_count >= 0 AND read_failed_count >= 0", name="ck_collection_batch_items_counts"),
+        CheckConstraint("identity_state IN ('pending', 'linked', 'removed')", name="ck_collection_batch_items_identity"),
+        CheckConstraint("(identity_state = 'linked' AND competitor_id IS NOT NULL) OR (identity_state IN ('pending', 'removed') AND competitor_id IS NULL)", name="ck_collection_batch_items_identity_fk"),
+        CheckConstraint("final_result IS NULL OR final_result != 'business_rejected' OR (execution_status = 'completed' AND base_result IS NOT NULL AND base_result = 'not_attempted')", name="ck_collection_batch_items_business_rejected"),
         UniqueConstraint("batch_id", "position", name="uq_collection_batch_items_position"),
         UniqueConstraint("batch_id", "competitor_id", name="uq_collection_batch_items_competitor"),
         Index("ix_collection_batch_items_batch_status", "batch_id", "execution_status", "final_result"),
@@ -212,6 +217,7 @@ class CollectionBatchItem(Base):
     batch_id: Mapped[int] = mapped_column(ForeignKey("collection_batches.id"), nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     competitor_id: Mapped[int | None] = mapped_column(ForeignKey("competitors.id"), nullable=True)
+    identity_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
     execution_status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", server_default="queued")
     final_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
     base_result: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -301,3 +307,47 @@ class ChangeEvent(Base):
     delta_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     delta_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+@event.listens_for(CollectionBatchItem, "before_insert")
+@event.listens_for(CollectionBatchItem, "before_update")
+def _batch_item_identity(_mapper, _connection, item):
+    if item.competitor_id is not None:
+        item.identity_state = "linked"
+    elif item.identity_state in (None, "linked"):
+        item.identity_state = "removed"
+
+
+class CollectionAddInput(Base):
+    __tablename__ = "collection_add_inputs"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "position", name="uq_collection_add_inputs_position"),
+        UniqueConstraint("batch_item_id", name="uq_collection_add_inputs_item"),
+        CheckConstraint("position >= 0 AND source_line >= 1", name="ck_collection_add_inputs_position"),
+        CheckConstraint("input_text IS NULL OR length(input_text) <= 2048", name="ck_collection_add_inputs_length"),
+        CheckConstraint("result_code IS NULL OR result_code IN ('added', 'invalid_url', 'duplicate_input', 'already_exists', 'identity_rejected', 'technical_failed', 'verification_required', 'not_executed', 'interrupted')", name="ck_collection_add_inputs_result"),
+        CheckConstraint("finished_at IS NULL OR result_code IS NOT NULL", name="ck_collection_add_inputs_finished"),
+        CheckConstraint("navigation_confirmed_at IS NULL OR navigation_claimed_at IS NOT NULL", name="ck_collection_add_inputs_navigation"),
+        CheckConstraint("identity_removed = 0 OR (input_text IS NULL AND normalized_url IS NULL AND offer_id IS NULL AND related_competitor_id IS NULL AND sanitized_reason IS NULL AND duplicate_of_input_id IS NULL)", name="ck_collection_add_inputs_removed"),
+        Index("ix_collection_add_inputs_batch_result", "batch_id", "result_code"),
+        Index("ix_collection_add_inputs_offer", "offer_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("collection_batches.id"), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_text: Mapped[str | None] = mapped_column(String(2048))
+    normalized_url: Mapped[str | None] = mapped_column(String(2048))
+    offer_id: Mapped[str | None] = mapped_column(String(128))
+    duplicate_of_input_id: Mapped[int | None] = mapped_column(ForeignKey("collection_add_inputs.id"))
+    batch_item_id: Mapped[int | None] = mapped_column(ForeignKey("collection_batch_items.id"))
+    related_competitor_id: Mapped[int | None] = mapped_column(ForeignKey("competitors.id"))
+    result_code: Mapped[str | None] = mapped_column(String(32))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    sanitized_reason: Mapped[str | None] = mapped_column(String(512))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    navigation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    navigation_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    navigation_terminal_reason: Mapped[str | None] = mapped_column(String(64))
+    identity_removed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")

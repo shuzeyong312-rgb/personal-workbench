@@ -8,7 +8,7 @@ import { expect, test, vi } from "vitest";
 
 import { competitorPageSize, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
 
-import { addCompetitorsSequentially, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { submitAddLinks, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -335,66 +335,48 @@ test.each([
 
 test.each([
   ["https://detail.1688.com/offer/123.html", ["https://detail.1688.com/offer/123.html"]],
-  [" A \r\n\r\n B \n A ", ["A", "B"]],
-] as const)("parses one URL per line, trims blank lines, and de-duplicates in order", (value, expected) => {
+  [" A \r\n\r\n B \n A ", ["A", "B", "A"]],
+] as const)("parses nonempty lines and retains duplicate submission inputs", (value, expected) => {
   expect(parseCompetitorUrls(value)).toEqual(expected);
 });
 
-test("submits each URL sequentially with the same group", async () => {
-  const calls: { url: string; groupId: number | null }[] = [];
-  const progress: number[] = [];
-  const result = await addCompetitorsSequentially(["A", "B", "C"], 19, async (_input, init) => {
-    const body = JSON.parse(String(init?.body)) as { url: string; group_id: number | null };
-    calls.push({ url: body.url, groupId: body.group_id });
-    return { ok: true, json: async () => ({}) } as Response;
-  }, (completed) => progress.push(completed));
-  expect(result).toEqual({ succeeded: ["A", "B", "C"], failures: [] });
-  expect(calls).toEqual([{ url: "A", groupId: 19 }, { url: "B", groupId: 19 }, { url: "C", groupId: 19 }]);
-  expect(progress).toEqual([1, 2, 3]);
-});
-
-test("continues after one URL fails and retains failure reasons", async () => {
-  const result = await addCompetitorsSequentially(["A", "B", "C", "D"], null, async (_input, init) => {
-    const url = (JSON.parse(String(init?.body)) as { url: string }).url;
-    const code = url === "B" ? "competitor_already_exists" : url === "C" ? "invalid_competitor_url" : undefined;
-    return { ok: !code, json: async () => ({ code }) } as Response;
+test("submits all ordered inputs once with one stable submission identity", async () => {
+  const envelope = { submission_id: "submission-1", group_id: 19, inputs: [{ text: "A", source_line: 1 }, { text: "A", source_line: 3 }, { text: "invalid", source_line: 4 }] };
+  const calls: { input: string; body: unknown }[] = [];
+  const result = await submitAddLinks(envelope, async (input, init) => {
+    calls.push({ input: String(input), body: JSON.parse(String(init?.body)) });
+    return { ok: true, status: 202, json: async () => ({ accepted: true, task_id: "submission-1", task: { task_id: "submission-1", lifecycle_status: "running" } }) } as Response;
   });
-  expect(result.succeeded).toEqual(["A", "D"]);
-  expect(result.failures).toEqual([
-    { url: "B", code: "competitor_already_exists", reason: "已存在" },
-    { url: "C", code: "invalid_competitor_url", reason: "链接格式无效" },
-  ]);
-  expect(getAddFailureReason("competitor_group_not_found")).toBe("竞品组不存在");
+  expect(calls).toEqual([{ input: "/api/competitors/add-batch", body: envelope }]);
+  expect(result.task_id).toBe("submission-1");
 });
 
-test("preserves network and HTTP error categories without stopping", async () => {
-  const result = await addCompetitorsSequentially(["A", "B"], null, async (_input, init) => {
-    const url = (JSON.parse(String(init?.body)) as { url: string }).url;
-    if (url === "A") throw new Error("offline");
-    return { ok: false, json: async () => ({}) } as Response;
-  });
-  expect(result.succeeded).toEqual([]);
-  expect(result.failures.map(({ url, code }) => ({ url, code }))).toEqual([{ url: "A", code: "network-error" }, { url: "B", code: "server-error" }]);
+test("pending recovery does not resubmit or invent a new identity", async () => {
+  const calls: string[] = [];
+  await expect(submitAddLinks({ submission_id: "same", inputs: [{ text: "A", source_line: 1 }], group_id: null }, async input => {
+    calls.push(String(input));
+    return { ok: true, status: 202, json: async () => ({ accepted: false, code: "admission_pending" }) } as Response;
+  }, true)).rejects.toThrow("受理结果尚未确认");
+  expect(calls).toEqual(["/api/competitors/add-batch/same"]);
 });
 
-test.each([
-  ["own_shop_name_not_configured", "own_shop_name_not_configured"],
-  ["collection_in_progress", "collection_in_progress"],
-  ["competitor_already_exists", "competitor_already_exists"],
-  ["competitor_group_not_found", "competitor_group_not_found"],
-  ["own_product_already_bound", "own_product_already_bound"],
-  ["1688_login_required", "1688_login_required"],
-  ["1688_verification_required", "1688_verification_required"],
-  ["collection_timeout", "collection_timeout"],
-  ["collection_parse_failed", "collection_parse_failed"],
-  ["collection_save_failed", "collection_save_failed"],
-] as const)("keeps add error code %s instead of collapsing it", async (backendCode, expectedCode) => {
-  const result = await addCompetitorsSequentially(["A"], null, async () => ({
-    ok: false,
-    status: 409,
-    json: async () => ({ code: backendCode }),
-  } as Response));
-  expect(result.failures[0].code).toBe(expectedCode);
+test("only a confirmed not-found recovery resends the original envelope", async () => {
+  const envelope = { submission_id: "same", inputs: [{ text: "A", source_line: 1 }], group_id: null };
+  const calls: string[] = [];
+  await submitAddLinks(envelope, async (input, init) => {
+    calls.push(String(input));
+    if (!init) return { status: 404 } as Response;
+    expect(JSON.parse(String(init.body))).toEqual(envelope);
+    return { ok: true, status: 200, json: async () => ({ accepted: true, task_id: "same", task: { task_id: "same", lifecycle_status: "terminal" } }) } as Response;
+  }, true);
+  expect(calls).toEqual(["/api/competitors/add-batch/same", "/api/competitors/add-batch"]);
+});
+
+test("unknown admission and network errors never trigger a second request", async () => {
+  let requests = 0;
+  const envelope = { submission_id: "same", inputs: [{ text: "A", source_line: 1 }], group_id: null };
+  await expect(submitAddLinks(envelope, async () => { requests++; return { ok: false, status: 503, json: async () => ({ code: "admission_unknown" }) } as Response; })).rejects.toThrow("受理结果尚未确认");
+  expect(requests).toBe(1);
 });
 
 test("renders loading, empty, error and normal list states", () => {
@@ -716,7 +698,7 @@ test.each([
   expect(getCollectionFailureMessage(failure)).toBe(expected);
 });
 
-test("appends clipboard links after current links and removes duplicates", () => {
+test("appends raw clipboard lines and retains duplicates for task classification", () => {
   expect(mergeCompetitorUrlText(
     "https://detail.1688.com/offer/111.html",
     "https://detail.1688.com/offer/222.html",
@@ -725,7 +707,7 @@ test("appends clipboard links after current links and removes duplicates", () =>
   expect(mergeCompetitorUrlText(
     "https://detail.1688.com/offer/111.html",
     "https://detail.1688.com/offer/111.html\n\nhttps://detail.1688.com/offer/333.html",
-  )).toBe("https://detail.1688.com/offer/111.html\nhttps://detail.1688.com/offer/333.html");
+  )).toBe("https://detail.1688.com/offer/111.html\nhttps://detail.1688.com/offer/111.html\n\nhttps://detail.1688.com/offer/333.html");
 });
 
 test("renders a clipboard add action beside the competitor link field", () => {
@@ -1198,7 +1180,7 @@ test("renders workspace module placeholders", () => {
   expect(compare).toContain("<h1>全网比价</h1>");
   expect(compare).toContain("全网比价模块已预留");
   expect(collectionTasks).toContain("<h1>采集记录</h1>");
-  expect(collectionTasks).toContain("历史未归属单次采集");
+  expect(collectionTasks).not.toContain("历史未归属单次采集");
   expect(collectionTasks).not.toContain("<h2>历史单次记录</h2>");
   expect(collectionTasks).toContain("采集记录");
 });
@@ -1216,7 +1198,7 @@ test("shows the frozen wait countdown while a batch is paused", () => {
 test("renders batch history separately from realtime controls", () => {
   const html = renderToStaticMarkup(<CollectionTasksPage onNavigate={noop} />);
   expect(html).toContain("采集记录");
-  expect(html).toContain("历史未归属单次采集");
+  expect(html).not.toContain("历史未归属单次采集");
   expect(html).not.toContain("<h2>历史单次记录</h2>");
   expect(html).not.toContain("当前批量采集");
 });

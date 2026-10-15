@@ -30,7 +30,7 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
         session.add(SystemSetting(key="own_shop_name", value="我方店铺"))
         session.commit()
 
-    def fake_collect_product(_url: str, offer_id: str) -> ProductData:
+    def fake_collect_product(_url: str, offer_id: str, **_callbacks) -> ProductData:
         shop_name = "我方店铺" if offer_id in {"22", "904", "909"} else "竞品店铺"
         now = datetime(2026, 10, 4, tzinfo=timezone.utc)
         return ProductData(
@@ -54,7 +54,7 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
     app.state.collection_session_factory = session_factory
     test_client = TestClient(app)
     try:
-        with patch("app.competitors.collect_product", side_effect=fake_collect_product):
+        with patch("app.collection.service.collect_product", side_effect=fake_collect_product):
             yield test_client, session_factory
     finally:
         test_client.close()

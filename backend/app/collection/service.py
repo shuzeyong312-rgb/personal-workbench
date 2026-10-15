@@ -71,6 +71,10 @@ class BatchRuntime:
 
     def __init__(self) -> None:
         self._lock = Lock()
+        self.admissions: dict[str, dict[str, object]] = {}
+        self.work_kind = "collect_products"
+        self.current_input_position: int | None = None
+        self.input_progress: dict[str, int | None] | None = None
         self.status = "idle"
         self.outcome_code: str | None = None
         self.total = 0
@@ -114,7 +118,7 @@ class BatchRuntime:
         with self._lock:
             return self.runner_active or self.browser_open
 
-    def reserve(self, competitor_ids: list[int], config: BatchConfig | None = None) -> bool:
+    def reserve(self, competitor_ids: list[int] | None, config: BatchConfig | None = None, *, input_positions: list[int] | None = None) -> bool:
         with self._lock:
             if self.runner_active or self.browser_open:
                 return False
@@ -122,7 +126,10 @@ class BatchRuntime:
             self._active_reservation = self._reservation_sequence
             self.status = "running"
             self.outcome_code = None
-            self.total = len(competitor_ids)
+            self.work_kind = "add_links" if input_positions is not None else "collect_products"
+            self.current_input_position = None
+            self.input_progress = ({"total": len(input_positions), "candidate_total": None, "processed": 0, "pending": len(input_positions), "remaining": len(input_positions), **{key: 0 for key in ("added", "business_rejected", "technical_failed", "verification_required", "interrupted", "not_executed")}} if input_positions is not None else None)
+            self.total = len(competitor_ids or [])
             self.completed = 0
             self.succeeded = 0
             self.failed = 0
@@ -141,7 +148,7 @@ class BatchRuntime:
             self.task_id = None
             self.lifecycle_status = None
             self.batch_outcome_code = None
-            self.phase = "first_pass"
+            self.phase = None if self.work_kind == "add_links" else "first_pass"
             self.attempts_started = 0
             self.page_visits = 0
             self.page_visits_unknown = 0
@@ -149,7 +156,7 @@ class BatchRuntime:
             self.retry_visits = 0
             self.retry_total = 0
             self.retry_completed = 0
-            self.operating_metrics_retry_max = (config or BatchConfig()).operating_metrics_retry_max
+            self.operating_metrics_retry_max = 0 if self.work_kind == "add_links" else (config or BatchConfig()).operating_metrics_retry_max
             self.stop_event = Event()
             self.resume_event = Event()
             self.resume_event.set()
@@ -157,6 +164,17 @@ class BatchRuntime:
             self._end_requested = False
             self.task = None
             return True
+
+    def reserve_add(self, positions: list[int], config: BatchConfig) -> bool:
+        return self.reserve(None, config, input_positions=positions)
+
+    def set_input_progress(self, summary: dict[str, int | None]) -> None:
+        with self._lock:
+            self.input_progress = dict(summary)
+
+    def set_current_input(self, position: int | None) -> None:
+        with self._lock:
+            self.current_input_position = position
 
     def reservation_token(self) -> int | None:
         with self._lock:
@@ -219,10 +237,10 @@ class BatchRuntime:
     def wait_for_cooldown(self, seconds: float) -> bool:
         return self._wait_with_remaining(seconds, "cooldown_remaining_seconds")
 
-    def wait_for_resting(self, seconds: float) -> bool:
-        return self._wait_with_remaining(seconds, "resting_remaining_seconds")
+    def wait_for_resting(self, seconds: float, on_pause=None) -> bool:
+        return self._wait_with_remaining(seconds, "resting_remaining_seconds", on_pause=on_pause)
 
-    def _wait_with_remaining(self, seconds: float, field: str) -> bool:
+    def _wait_with_remaining(self, seconds: float, field: str, on_pause=None) -> bool:
         remaining = max(0, seconds)
         while True:
             with self._lock:
@@ -242,6 +260,10 @@ class BatchRuntime:
                     setattr(self, field, 0)
                 return False
             if paused:
+                if on_pause is not None and not on_pause():
+                    with self._lock:
+                        setattr(self, field, 0)
+                    return False
                 if not self.wait_for_resume():
                     with self._lock:
                         setattr(self, field, 0)
@@ -320,6 +342,7 @@ class BatchRuntime:
             self.status = status
             self.outcome_code = outcome_code
             self.current_competitor_id = None
+            self.current_input_position = None
             self.runner_active = False
             self._active_reservation = None
             self.cooldown_remaining_seconds = 0
@@ -374,7 +397,7 @@ class BatchRuntime:
         with self._lock:
             if not self.runner_active or self.stop_event.is_set() or self.status not in {"running", "resting", "cooling_down"}:
                 return False
-            was_collecting = self.status == "running" and self.current_competitor_id is not None
+            was_collecting = self.status == "running" and (self.current_competitor_id is not None or self.current_input_position is not None)
             self._paused_status = self.status
             self.resume_event.clear()
             self.status = "pausing" if was_collecting else "paused"
@@ -427,6 +450,9 @@ class BatchRuntime:
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             return {
+                "work_kind": self.work_kind,
+                "current_input_position": self.current_input_position,
+                "input_progress": dict(self.input_progress) if self.input_progress is not None else None,
                 "status": self.status,
                 "outcome_code": self.outcome_code,
                 "batch_id": self.batch_id,
@@ -649,13 +675,18 @@ def collect_product(
     offer_id: str,
     *,
     browser_context: object | None = None,
+    on_navigation_claim: Callable[[], None] | None = None,
+    on_navigation_confirmed: Callable[[], None] | None = None,
 ) -> ProductData:
     """Collect and validate a product before any new monitoring row exists."""
     try:
-        if browser_context is None:
-            product = collect_1688_product(url, offer_id)
-        else:
-            product = collect_1688_product(url, offer_id, context=browser_context)
+        kwargs = {}
+        if browser_context is not None:
+            kwargs["context"] = browser_context
+        if on_navigation_claim is not None:
+            kwargs["on_navigation_claim"] = on_navigation_claim
+            kwargs["on_navigation_confirmed"] = on_navigation_confirmed
+        product = collect_1688_product(url, offer_id, **kwargs)
         if isinstance(product, ProductData) and (not isinstance(product.shop_name, str) or not product.shop_name.strip()):
             raise CollectionError(
                 "shop_name_unavailable",
@@ -799,6 +830,74 @@ def _mark_failed(
     db.commit()
 
 
+def _collect_single_batch(db, competitor_id, *, browser_context, runtime, on_external_access, stop_waiting_for_metrics):
+    competitor = db.get(Competitor, competitor_id)
+    if competitor is None:
+        raise CompetitorNotFoundError
+    if not competitor.is_active:
+        raise CollectionError("competitor_inactive", "该竞品已停止监控，无法立即采集")
+    if not acquire_collection_slot(runtime=runtime):
+        raise CollectionInProgressError
+    token = None
+    batch_id = None
+    bind = db.get_bind()
+    factory = lambda: Session(bind=bind, expire_on_commit=False)
+    try:
+        if not runtime.reserve([competitor_id], BatchConfig(operating_metrics_retry_max=0)):
+            raise CollectionInProgressError
+        token = runtime.reservation_token()
+        batch = create_collection_batch(db, [competitor_id], BatchConfig(operating_metrics_retry_max=0), trigger_kind="manual_single")
+        batch_id = batch.id
+        batch.started_at = datetime.now(timezone.utc)
+        batch.lifecycle_status = "running"
+        db.commit()
+        runtime.bind_batch(batch)
+        runtime.set_current(competitor_id)
+        item = db.scalar(select(CollectionBatchItem).where(CollectionBatchItem.batch_id == batch_id))
+        item_id = item.id
+    except Exception:
+        if token is not None:
+            runtime.finish("collect_failed")
+        raise
+    finally:
+        COLLECTION_LOCK.release()
+    result = None
+    caught = None
+    try:
+        result = collect_competitor(db, competitor_id, browser_context=browser_context, batch_runtime=runtime,
+                                    batch_reservation=token, batch_item_id=item_id, attempt_kind="first_pass", attempt_number=1,
+                                    on_external_access=on_external_access, stop_waiting_for_metrics=stop_waiting_for_metrics,
+                                    on_attempt_started=runtime.record_attempt_started)
+        return result
+    except Exception as exc:
+        caught = exc
+        raise
+    finally:
+        try:
+            with factory() as final_db:
+                row = final_db.get(CollectionBatchItem, item_id)
+                run = final_db.scalar(select(CollectionRun).where(CollectionRun.collection_batch_item_id == item_id).order_by(CollectionRun.id.desc()))
+                if run is not None:
+                    _refresh_item_exception_counts(final_db, row)
+                    row.base_result = "success" if run.status == "success" else "failed"
+                    row.operating_metrics_status = run.operating_metrics_status
+                    row.final_result = "verification_required" if run.error_type == "1688_verification_required" else "final_failed" if run.status != "success" or row.technical_exception_count else "first_pass_success"
+                    row.execution_status = "failed" if row.base_result == "failed" else "completed"
+                    row.stop_reason = run.error_type
+                else:
+                    row.final_result, row.execution_status = "not_executed", "not_executed"
+                final_db.commit()
+                if run is not None:
+                    runtime.record(BatchItemResult(competitor_id, "verification_required" if run.error_type == "1688_verification_required" else "success" if run.status == "success" else "failed", run.error_type, run.error_message, result.outcome if result else None, run.operating_metrics_status))
+            runtime.finish("verification_required" if isinstance(caught, CollectionError) and caught.code == "1688_verification_required" else "partial_failure" if caught else "success")
+            _finalize_persisted_batch(factory, batch_id, runtime)
+            with factory() as final_db:
+                finished = final_db.get(CollectionBatch, batch_id)
+                runtime.finish(finished.outcome_code, status="verification_required" if finished.outcome_code == "verification_required" else "completed")
+        finally:
+            runtime.mark_runner_stopped()
+
+
 def collect_competitor(
     db: Session,
     competitor_id: int,
@@ -813,6 +912,9 @@ def collect_competitor(
     stop_waiting_for_metrics: Callable[[], bool] | None = None,
     on_attempt_started: Callable[[], None] | None = None,
 ) -> CollectionResult:
+    if batch_item_id is None and batch_reservation is None:
+        return _collect_single_batch(db, competitor_id, browser_context=browser_context, runtime=batch_runtime,
+                                     on_external_access=on_external_access, stop_waiting_for_metrics=stop_waiting_for_metrics)
     competitor = db.get(Competitor, competitor_id)
     if competitor is None:
         raise CompetitorNotFoundError
@@ -1182,6 +1284,11 @@ def recover_interrupted_batches(session_factory: Callable[[], Session]) -> int:
     with session_factory() as db:
         batches = db.scalars(select(CollectionBatch).where(CollectionBatch.lifecycle_status.in_(("created", "running")))).all()
         for batch in batches:
+            if batch.trigger_kind == "add_links":
+                from app.collection.add_links import finalize_add_batch
+                finalize_add_batch(db, batch, "interrupted")
+                recovered += 1
+                continue
             items = db.scalars(select(CollectionBatchItem).where(CollectionBatchItem.batch_id == batch.id)).all()
             items_by_id = {item.id: item for item in items}
             runs = db.scalars(select(CollectionRun).where(
@@ -1263,6 +1370,10 @@ def run_batch_collection(
     persisted_batch_id: int | None = None,
 ) -> None:
     """Run one serial batch in one worker thread and one headed Context."""
+    if runtime.work_kind == "add_links":
+        from app.collection.add_links import execute_add_batch
+        execute_add_batch(session_factory, persisted_batch_id, runtime, batch_reservation, config)
+        return
     config = config or BatchConfig()
     if cooldown_seconds is not None:
         config = BatchConfig(

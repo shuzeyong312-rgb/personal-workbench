@@ -8,7 +8,7 @@ async function addFromDashboard(page: Page, url: string) {
   await expect(page.getByRole("heading", { name: "竞品监控大屏" })).toBeVisible();
   await page.getByRole("button", { name: "添加监控商品" }).click();
   await page.getByLabel("1688 商品链接").fill(url);
-  const request = page.waitForRequest((candidate) => candidate.method() === "POST" && candidate.url().endsWith("/api/competitors"));
+  const request = page.waitForRequest((candidate) => candidate.method() === "POST" && candidate.url().endsWith("/api/competitors/add-batch"));
   await page.getByRole("dialog").getByRole("button", { name: "添加监控商品" }).click();
   return request;
 }
@@ -21,8 +21,8 @@ test("adds self from Dashboard, lists it under own products, and binds it to one
   await page.getByRole("button", { name: "立即采集" }).click();
   expect((await collectRequest).postDataJSON()).toEqual({ mode: "all_active" });
   const addRequest = await addFromDashboard(page, "https://detail.1688.com/offer/1001.html");
-  expect((await addRequest).postDataJSON()).toEqual({ url: "https://detail.1688.com/offer/1001.html", group_id: null });
-  await expect(page.locator(".toast")).toContainText("已识别为我方商品");
+  expect((await addRequest).postDataJSON()).toMatchObject({ inputs: [{ text: "https://detail.1688.com/offer/1001.html", source_line: 1 }], group_id: null });
+  await expect(page.locator(".toast")).toContainText("新增 1");
 
   await page.getByRole("button", { name: "我方商品" }).click();
   await expect(page.getByRole("heading", { name: "我方商品", exact: true })).toBeVisible();
@@ -45,8 +45,8 @@ test("adds self from Dashboard, lists it under own products, and binds it to one
 test("adds competitor from Dashboard and keeps it in the competitor list", async ({ page }) => {
   const mock = await installApiMock(page, { competitors: [], groups: [group], addProducts: { "2002": "competitor" } });
   const addRequest = await addFromDashboard(page, "https://detail.1688.com/offer/2002.html");
-  expect((await addRequest).postDataJSON()).toEqual({ url: "https://detail.1688.com/offer/2002.html", group_id: null });
-  await expect(page.locator(".toast")).toContainText("已添加监控商品");
+  expect((await addRequest).postDataJSON()).toMatchObject({ inputs: [{ text: "https://detail.1688.com/offer/2002.html", source_line: 1 }], group_id: null });
+  await expect(page.locator(".toast")).toContainText("新增 1");
 
   await page.getByRole("button", { name: "竞品列表" }).click();
   await expect(page.getByRole("heading", { name: "竞品列表" })).toBeVisible();

@@ -43,8 +43,11 @@ export async function installApiMock(page: Page, options: { competitors: Competi
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(batchStatus) });
       return;
     }
-    if (key === "POST /api/competitors") {
-      const body = request.postDataJSON() as { url: string; group_id?: number | null };
+    if (key === "POST /api/competitors/add-batch") {
+      const submission = request.postDataJSON() as { submission_id: string; inputs: { text: string; source_line: number }[]; group_id: number | null };
+      const items = [];
+      for (const [position, input] of submission.inputs.entries()) {
+        const body = { url: input.text, group_id: submission.group_id };
       const offerId = body.url.match(/\/offer\/(\d+)\.html/i)?.[1] ?? String(nextId);
       const ownership = options.addProducts?.[offerId] ?? "competitor";
       const groupId = body.group_id ?? null;
@@ -56,7 +59,12 @@ export async function installApiMock(page: Page, options: { competitors: Competi
         latest_snapshot: { price_min: null, price_max: null, sku_count: 0 }, latest_change: null,
       };
       competitors = [...competitors, added];
-      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(added) });
+
+        items.push({ position, source_line: input.source_line, input_text: input.text, result_code: "added", sanitized_reason: null, competitor_id: added.id, title: added.title, page_visits: 1, page_visits_unknown: 0, attempts: [] });
+      }
+      const input_summary = { total: items.length, candidate_total: items.length, processed: items.length, pending: 0, remaining: 0, added: items.length, business_rejected: 0, technical_failed: 0, verification_required: 0, interrupted: 0, not_executed: 0, anomaly_inputs: 0 };
+      const task = { task_id: submission.submission_id, task_kind: "add_links", trigger_kind: "add_links", lifecycle_status: "terminal", outcome_code: "success", planned_products: items.length, counts: { first_pass_success: items.length }, input_summary, items, total: items.length, page: 1, page_size: 100 };
+      await route.fulfill({ status: 200, json: { accepted: true, task_id: submission.submission_id, task } });
       return;
     }
     if (key === "POST /api/competitors/collect-batch") {

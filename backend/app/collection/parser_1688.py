@@ -327,3 +327,29 @@ def parse_1688_html(html: str, expected_offer_id: str | None = None) -> ProductD
         skus=skus,
         min_order_quantity=min_order_quantity,
     )
+
+
+_OFFER_PATH = re.compile(r"^/offer/(\d+)\.html$")
+
+
+def parse_1688_url(url: str) -> tuple[str, str]:
+    value = url.strip()
+    if not value:
+        raise ValueError("invalid competitor url")
+
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "detail.1688.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in (None, 443)
+    ):
+        raise ValueError("invalid competitor url")
+
+    match = _OFFER_PATH.fullmatch(parsed.path)
+    if not match:
+        raise ValueError("invalid competitor url")
+
+    offer_id = match.group(1)
+    return offer_id, f"https://detail.1688.com/offer/{offer_id}.html"

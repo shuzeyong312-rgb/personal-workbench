@@ -1,13 +1,15 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
-from sqlalchemy import String, case, func, or_, select
+from sqlalchemy import String, and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, OperatingMetricObservation
+from fastapi import HTTPException
+
+from app.models import CollectionAddInput, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, OperatingMetricObservation
 
 
-Anomaly = Literal["current", "none", "recovered", "all", "placeholder", "source_unavailable", "loading", "read_failed", "base_failed"]
+Anomaly = Literal["current", "none", "recovered", "all", "placeholder", "source_unavailable", "loading", "read_failed", "base_failed", "rejected", "verification_required"]
 _ANOMALY_STATUS = {
     "placeholder": "placeholder",
     "source_unavailable": "source_unavailable",
@@ -21,7 +23,11 @@ TECHNICAL_STATUSES = {"source_unavailable", "loading", "read_failed"}
 
 
 def duration_seconds(start: datetime | None, finish: datetime | None) -> float | None:
-    return (finish - start).total_seconds() if start and finish and finish >= start else None
+    if start is None or finish is None:
+        return None
+    start = start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start
+    finish = finish.replace(tzinfo=timezone.utc) if finish.tzinfo is None else finish
+    return (finish - start).total_seconds() if finish >= start else None
 
 
 def current_anomaly():
@@ -46,7 +52,7 @@ def list_collection_runs(
     if started_before is not None:
         filters.append(CollectionRun.started_at <= started_before)
     if trigger_kind != "all":
-        filters.append(CollectionRun.collection_batch_item_id.is_(None) if trigger_kind == "unknown" else CollectionBatch.trigger_kind.in_(["manual_selected", "manual_all_active"]) if trigger_kind == "manual" else CollectionBatch.trigger_kind == trigger_kind)
+        filters.append(CollectionRun.collection_batch_item_id.is_(None) if trigger_kind == "unknown" else CollectionBatch.trigger_kind.in_(["manual_selected", "manual_all_active", "manual_single"]) if trigger_kind == "manual" else CollectionBatch.trigger_kind == trigger_kind)
     if status != "all":
         filters.append(CollectionRun.status == status)
     if ownership != "all":
@@ -117,15 +123,31 @@ def list_batches(
 ) -> dict[str, object]:
     filters = []
     if trigger_kind != "all":
-        filters.append(CollectionBatch.trigger_kind.in_(["manual_selected", "manual_all_active"]) if trigger_kind == "manual" else CollectionBatch.trigger_kind == trigger_kind)
+        filters.append(CollectionBatch.trigger_kind.in_(["manual_selected", "manual_all_active", "manual_single"]) if trigger_kind == "manual" else CollectionBatch.trigger_kind == trigger_kind)
     if search and search.strip():
         pattern = "%" + search.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         product_match = select(CollectionBatchItem.id).join(Competitor, Competitor.id == CollectionBatchItem.competitor_id).where(CollectionBatchItem.batch_id == CollectionBatch.id, or_(func.lower(Competitor.title).like(pattern, escape="\\"), func.lower(Competitor.shop_name).like(pattern, escape="\\"), func.lower(Competitor.offer_id).like(pattern, escape="\\"))).exists()
         filters.append(or_(func.lower(CollectionBatch.task_id).like(pattern, escape="\\"), product_match))
+    from app.collection.add_links import REJECTED
+    add_mode = CollectionBatch.trigger_kind == "add_links"
+    def add_has(codes):
+        return select(CollectionAddInput.id).where(CollectionAddInput.batch_id == CollectionBatch.id, CollectionAddInput.result_code.in_(codes)).exists()
+    add_current = or_(add_has(["technical_failed", "verification_required", "interrupted"]), CollectionBatch.outcome_code.in_(["infrastructure_error", "interrupted"]))
+    add_none = and_(CollectionBatch.lifecycle_status == "terminal", ~add_current, ~add_has(["not_executed"]), ~select(CollectionAddInput.id).where(CollectionAddInput.batch_id == CollectionBatch.id, CollectionAddInput.result_code.is_(None)).exists())
+    if trigger_kind != "unknown" and ((trigger_kind == "add_links" and anomaly in {"recovered", "placeholder", "source_unavailable", "loading", "read_failed"}) or (trigger_kind not in {"all", "add_links"} and anomaly == "rejected")):
+        raise HTTPException(422, {"code": "incompatible_filter", "allowed_anomalies": ["all", "current", "none", "base_failed", "rejected", "verification_required"] if trigger_kind == "add_links" else ["all", "current", "none", "recovered", "placeholder", "source_unavailable", "loading", "read_failed", "base_failed", "verification_required"]})
     if anomaly in {"current", "none", "recovered"}:
         current = select(CollectionBatchItem.id).where(CollectionBatchItem.batch_id == CollectionBatch.id, current_anomaly()).exists()
         recovered = select(CollectionBatchItem.id).where(CollectionBatchItem.batch_id == CollectionBatch.id, CollectionBatchItem.final_result.in_(SUCCESS_RESULTS), historical_anomaly()).exists()
-        filters.append(current if anomaly == "current" else ~current if anomaly == "none" else recovered)
+        incomplete = select(CollectionBatchItem.id).where(CollectionBatchItem.batch_id == CollectionBatch.id, or_(CollectionBatchItem.final_result.is_(None), CollectionBatchItem.final_result == "not_executed")).exists()
+        normal_none = and_(CollectionBatch.lifecycle_status == "terminal", CollectionBatch.outcome_code.notin_(["infrastructure_error", "interrupted"]), ~current, ~incomplete)
+        normal = current if anomaly == "current" else normal_none if anomaly == "none" else recovered
+        filters.append(or_(and_(~add_mode, normal), and_(add_mode, add_current if anomaly == "current" else add_none if anomaly == "none" else False)))
+    if anomaly == "rejected":
+        filters.append(and_(add_mode, add_has(REJECTED)))
+    if anomaly == "verification_required":
+        normal = select(CollectionBatchItem.id).where(CollectionBatchItem.batch_id == CollectionBatch.id, CollectionBatchItem.final_result == "verification_required").exists()
+        filters.append(or_(and_(add_mode, add_has(["verification_required"])), and_(~add_mode, normal)))
     if outcome != "all":
         filters.append(CollectionBatch.outcome_code == outcome)
     if started_after is not None:
@@ -178,10 +200,10 @@ def list_batches(
                 func.sum(CollectionBatchItem.attempts_started),
                 func.sum(CollectionBatchItem.verification_resume_visits),
                 func.sum(CollectionBatchItem.technical_exception_count),
-                func.sum(CollectionBatchItem.base_result == "failed"),
-                func.sum(CollectionBatchItem.final_result.is_not(None) & (CollectionBatchItem.final_result != "not_executed")),
+                func.sum(case((CollectionBatchItem.base_result == "failed", 1), else_=0)),
+                func.sum(case((CollectionBatchItem.final_result.is_not(None) & (CollectionBatchItem.final_result != "not_executed"), 1), else_=0)),
                 func.sum(CollectionBatchItem.page_visits_unknown),
-                func.sum(CollectionBatchItem.final_result == "verification_required"),
+                func.sum(case((CollectionBatchItem.final_result == "verification_required", 1), else_=0)),
                 func.sum(case((
                     (CollectionBatchItem.final_result == "final_failed") & (CollectionBatchItem.technical_exception_count > 0), 1
                 ), else_=0)),
@@ -212,6 +234,11 @@ def list_batches(
                 func.sum(CollectionBatchItem.read_failed_count),
             ).where(CollectionBatchItem.batch_id.in_(batch_ids)).group_by(CollectionBatchItem.batch_id))
         }
+    from app.collection.add_links import input_summary
+    add_inputs = {}
+    if batch_ids:
+        for row in db.scalars(select(CollectionAddInput).where(CollectionAddInput.batch_id.in_(batch_ids))):
+            add_inputs.setdefault(row.batch_id, []).append(row)
     items = []
     for batch in batches:
         summary = summaries[batch.id]
@@ -252,13 +279,25 @@ def list_batches(
                 ("base_failed", totals[3]),
             ) if count],
         })
+    for value, batch in zip(items, batches):
+        value["task_kind"] = "add_links" if batch.trigger_kind == "add_links" else "collect_products"
+        if batch.trigger_kind == "add_links":
+            summary = input_summary(add_inputs.get(batch.id, []), batch.planned_products)
+            value["input_summary"] = summary
+            value["anomaly_products"] = summary["anomaly_inputs"]
+            value["base_failed_products"] = summary["technical_failed"]
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-def get_batch(db: Session, task_id: str, *, search: str | None = None, final_result: str = "all", anomaly: str = "all", attempt_kind: str = "all", reason: str = "all", anomalies_first: bool = False, page: int = 1, page_size: int | None = None) -> dict[str, object] | None:
+def get_batch(db: Session, task_id: str, *, search: str | None = None, final_result: str = "all", anomaly: str = "all", attempt_kind: str = "all", reason: str = "all", anomalies_first: bool = False, page: int = 1, page_size: int | None = None, input_result: str = "all") -> dict[str, object] | None:
     batch = db.scalar(select(CollectionBatch).where(CollectionBatch.task_id == task_id))
     if batch is None:
         return None
+    if batch.trigger_kind == "add_links":
+        from app.collection.add_links import add_task_detail
+        return add_task_detail(db, batch, search=search, final_result=final_result, anomaly=anomaly, input_result=input_result, attempt_kind=attempt_kind, reason=reason, anomalies_first=anomalies_first, page=page, page_size=page_size)
+    if input_result != "all":
+        raise HTTPException(422, {"code": "incompatible_filter"})
     rows = db.execute(
         select(CollectionBatchItem, Competitor)
         .outerjoin(Competitor, Competitor.id == CollectionBatchItem.competitor_id)
@@ -323,7 +362,8 @@ def get_batch(db: Session, task_id: str, *, search: str | None = None, final_res
             "cancelled_retry_count": item.cancelled_retry_count,
             "protection_reason": item.protection_reason, "stop_reason": item.stop_reason,
             "attempts": runs_by_item[item.id],
-            "identity_removed": item.competitor_id is None,
+            "identity_state": item.identity_state,
+            "identity_removed": item.identity_state == "removed",
             "deletion_notice": "商品已删除，字段明细已随商品删除" if item.competitor_id is None else None,
         } for item, competitor in rows],
     }
@@ -363,6 +403,10 @@ def get_batch(db: Session, task_id: str, *, search: str | None = None, final_res
             return False
         if final_result not in {"all", "success", "exception", "pending"} and item["final_result"] != final_result:
             return False
+        if anomaly == "base_failed" and item["base_result"] != "failed":
+            return False
+        if anomaly == "verification_required" and item["final_result"] != "verification_required":
+            return False
         if anomaly == "current" and not item["has_anomaly"]:
             return False
         if anomaly == "recovered" and not (item["had_anomaly"] and item["final_result"] in SUCCESS_RESULTS and not item["has_anomaly"]):
@@ -392,6 +436,8 @@ def get_collection_run(db: Session, run_id: int) -> dict[str, object] | None:
         return None
     run, competitor = row
     observations = db.scalars(select(OperatingMetricObservation).where(OperatingMetricObservation.collection_run_id == run.id).order_by(OperatingMetricObservation.metric_key)).all()
+    add_input = db.scalar(select(CollectionAddInput).where(CollectionAddInput.batch_item_id == run.collection_batch_item_id)) if run.collection_batch_item_id is not None else None
+    navigation = add_input if add_input is not None else run
     return {
         "id": run.id, "competitor_id": competitor.id, "title": competitor.title,
         "shop_name": competitor.shop_name, "offer_id": competitor.offer_id, "main_image_url": competitor.main_image_url,
@@ -401,7 +447,8 @@ def get_collection_run(db: Session, run_id: int) -> dict[str, object] | None:
         "duration_seconds": duration_seconds(run.started_at, run.finished_at),
         "status": run.status, "operating_metrics_status": run.operating_metrics_status,
         "error_type": run.error_type, "error_message": run.error_message,
-        "navigation_claimed_at": run.navigation_claimed_at, "navigation_confirmed_at": run.navigation_confirmed_at,
-        "navigation_terminal_reason": run.navigation_terminal_reason,
+        "navigation_evidence_source": "add_input" if add_input is not None else "collection_run",
+        "navigation_claimed_at": navigation.navigation_claimed_at, "navigation_confirmed_at": navigation.navigation_confirmed_at,
+        "navigation_terminal_reason": navigation.navigation_terminal_reason,
         "observations": [{"metric_key": observation.metric_key, "status": observation.status, "raw_value": observation.raw_value, "reason": observation.reason, "source": observation.source, "observed_at": observation.observed_at} for observation in observations],
     }

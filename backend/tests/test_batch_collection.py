@@ -114,6 +114,8 @@ def test_collect_competitor_reports_external_access_before_each_external_outcome
     observed: list[str] = []
 
     def external_collector(*_args: object, **_kwargs: object) -> ProductData:
+        _kwargs["on_navigation_claim"]()
+        _kwargs["on_navigation_confirmed"]()
         observed.append("collector")
         assert observed == ["callback", "collector"]
         if isinstance(collector_result, BaseException):
@@ -144,15 +146,19 @@ def test_collect_competitor_reports_external_access_when_the_following_save_fail
     with client[1]() as session:
         original_commit = session.commit
         commits = 0
+        failed_once = False
 
         def commit() -> None:
-            nonlocal commits
+            nonlocal commits, failed_once
             commits += 1
-            if commits == 2:
+            if observed == ["callback", "collector"] and not failed_once:
+                failed_once = True
                 raise RuntimeError("save failed")
             original_commit()
 
         def external_collector(*_args: object, **_kwargs: object) -> ProductData:
+            _kwargs["on_navigation_claim"]()
+            _kwargs["on_navigation_confirmed"]()
             observed.append("collector")
             assert observed == ["callback", "collector"]
             return _collected_product("1000000000001")
@@ -1437,7 +1443,7 @@ def test_collect_competitor_forwards_metrics_stop_callback(client):
     stop = lambda: True
     received = []
 
-    def collector(_url, offer_id, *, stop_waiting_for_metrics=None):
+    def collector(_url, offer_id, *, stop_waiting_for_metrics=None, **_callbacks):
         received.append(stop_waiting_for_metrics)
         return CollectionPageResult(offer_id, _collected_product(offer_id), None, [
             OperatingMetricData(key, "placeholder", "-", "assistant", offer_id, datetime.now(timezone.utc), None)

@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from alembic import command
 from alembic.config import Config
@@ -323,7 +323,7 @@ def test_add_real_self_persists_baseline_and_classifies_from_shop_name(client):
     assert body["group_id"] is None
     assert body["group_role"] == "competitor"
     assert body["title"] == "真实商品"
-    collector.assert_called_once_with("https://detail.1688.com/offer/123.html", "123")
+    collector.assert_called_once_with("https://detail.1688.com/offer/123.html", "123", on_navigation_claim=ANY, on_navigation_confirmed=ANY)
     with client[1]() as session:
         assert session.query(Competitor).count() == 1
         assert session.query(ProductSnapshot).count() == 1
@@ -403,7 +403,7 @@ def test_successful_collection_reidentifies_ownership_and_group_atomically(clien
         _existing_competitor(session, 7, "collect-7", ownership="self", group_id=4, group_role="own", shop_name="我方店铺")
         session.commit()
 
-    def collected(_url: str, offer_id: str) -> ProductData:
+    def collected(_url: str, offer_id: str, **_callbacks) -> ProductData:
         return _collected(offer_id, "其他店铺" if offer_id == "collect-7" else "我方店铺")
 
     with patch("app.collection.service.collect_1688_product", side_effect=collected):
@@ -452,12 +452,12 @@ def test_add_final_validation_reads_own_shop_name_after_collector_transaction(cl
     release_collector = Event()
     responses = []
 
-    def blocking_collect(_url, _offer_id):
+    def blocking_collect(_url, _offer_id, **_callbacks):
         collector_entered.set()
         assert release_collector.wait(timeout=2)
         return _collected("130", "采集前店铺")
 
-    with patch("app.competitors.collect_product", side_effect=blocking_collect):
+    with patch("app.collection.service.collect_product", side_effect=blocking_collect):
         request_thread = Thread(
             target=lambda: responses.append(
                 client[0].post("/api/competitors", json={"url": "https://detail.1688.com/offer/130.html"})
@@ -487,12 +487,12 @@ def test_add_final_validation_reads_deleted_group_after_collector_transaction(cl
     release_collector = Event()
     responses = []
 
-    def blocking_collect(_url, _offer_id):
+    def blocking_collect(_url, _offer_id, **_callbacks):
         collector_entered.set()
         assert release_collector.wait(timeout=2)
         return _collected("131", "其他店铺")
 
-    with patch("app.competitors.collect_product", side_effect=blocking_collect):
+    with patch("app.collection.service.collect_product", side_effect=blocking_collect):
         request_thread = Thread(
             target=lambda: responses.append(
                 client[0].post(
@@ -524,8 +524,11 @@ def test_add_final_validation_reads_deleted_group_after_collector_transaction(cl
 def test_add_integrity_error_without_duplicate_or_own_conflict_is_save_failure(client, monkeypatch):
     assert client[0].put("/api/settings/own-shop-name", json={"own_shop_name": "我方店铺"}).status_code == 200
 
+    original_commit = competitors_module.Session.commit
     def fail_commit(_session):
-        raise IntegrityError("forced", {}, RuntimeError("unrelated constraint"))
+        if any(isinstance(row, (ProductSnapshot, CollectionRun)) for row in _session.new):
+            raise IntegrityError("forced", {}, RuntimeError("unrelated constraint"))
+        return original_commit(_session)
 
     monkeypatch.setattr(competitors_module.Session, "commit", fail_commit)
     with patch("app.collection.service.collect_1688_product", return_value=_collected("127", "其他店铺")):
@@ -546,7 +549,7 @@ def test_batch_reservation_rejects_add_before_collector_without_sleep(client):
     assert client[0].put("/api/settings/own-shop-name", json={"own_shop_name": "我方店铺"}).status_code == 200
     assert BATCH_RUNTIME.reserve([1]) is True
     try:
-        with patch("app.competitors.collect_product") as collector:
+        with patch("app.collection.service.collect_product") as collector:
             response = client[0].post(
                 "/api/competitors",
                 json={"url": "https://detail.1688.com/offer/128.html"},
@@ -598,12 +601,12 @@ def test_add_collection_lock_rejects_batch_reservation_without_sleep(client):
     release_collector = Event()
     add_responses = []
 
-    def blocking_collect(_url, _offer_id):
+    def blocking_collect(_url, _offer_id, **_callbacks):
         collector_entered.set()
         assert release_collector.wait(timeout=2)
         return _collected("129", "其他店铺")
 
-    with patch("app.competitors.collect_product", side_effect=blocking_collect):
+    with patch("app.collection.service.collect_product", side_effect=blocking_collect):
         add_thread = Thread(
             target=lambda: add_responses.append(
                 client[0].post("/api/competitors", json={"url": "https://detail.1688.com/offer/129.html"})

@@ -2,7 +2,7 @@ from collections.abc import Generator
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -152,7 +152,8 @@ def test_success_persists_run_snapshot_skus_and_competitor(
 
     assert response.status_code == 200
     collector.assert_called_once_with(
-        "https://detail.1688.com/offer/1081895898799.html", "1081895898799"
+        "https://detail.1688.com/offer/1081895898799.html", "1081895898799",
+        on_navigation_claim=ANY, on_navigation_confirmed=ANY,
     )
     body = response.json()
     assert body["snapshot"]["main_image_url"] == "https://example.com/product.jpg"

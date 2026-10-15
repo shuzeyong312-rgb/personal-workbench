@@ -1,6 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
 
 import { competitors23 } from "./fixtures/competitors";
 import { installApiMock } from "./support/api-mock";
@@ -53,102 +52,6 @@ const openRecords = async (page: Page) => {
   await expect(page.getByRole("heading", { name: "采集记录", exact: true })).toBeVisible();
 };
 
-test("record type round trip retains compatible payload without runtime errors", async ({ page }, testInfo) => {
-  const evidence: { errors: string[]; console: string[]; network: { event: string; url: string; status?: number }[] } = { errors: [], console: [], network: [] };
-  page.on("pageerror", error => evidence.errors.push(error.stack || error.message));
-  page.on("console", message => { if (message.type() === "error") evidence.console.push(message.text()); });
-  page.on("request", request => { if (/api\/collection-(batches|runs)/.test(request.url())) evidence.network.push({ event: "request", url: request.url() }); });
-  page.on("response", response => { if (/api\/collection-(batches|runs)/.test(response.url())) evidence.network.push({ event: "response", url: response.url(), status: response.status() }); });
-  const mock = await installApiMock(page, { competitors: [], collectionBatches: batchPage, collectionRuns: { items: [{ id: 51, competitor_id: 1, title: "历史独立记录", offer_id: "123450051", shop_name: "隔离店铺", started_at: "2026-10-14T00:00:00Z", finished_at: "2026-10-14T00:00:04Z", status: "success", operating_metrics_status: "success", has_anomaly: false }], total: 1, page: 1, page_size: 20 } });
-  try {
-    await openRecords(page);
-    await expect(page.locator(".record-table tbody tr")).toContainText("手动");
-    await page.getByRole("combobox", { name: "记录类型", exact: true }).selectOption("single");
-    await expect(page.locator(".record-table tbody tr")).toContainText("单次记录 #51");
-    await page.getByRole("combobox", { name: "记录类型", exact: true }).selectOption("batch");
-    await expect(page.getByRole("heading", { name: "采集记录", exact: true })).toBeVisible();
-    await expect(page.locator(".record-table tbody tr")).toContainText("手动");
-    expect(evidence.errors).toEqual([]);
-    expect(evidence.console).toEqual([]);
-    await mock.expectNoUnexpectedApi();
-  } finally {
-    const dir = path.resolve("../.artifacts/collection-ui-final");
-    await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, `repro-${testInfo.repeatEachIndex}.json`), JSON.stringify(evidence, null, 2));
-    if (testInfo.repeatEachIndex === 0) await writeFile(path.join(dir, "repro.json"), JSON.stringify(evidence, null, 2));
-  }
-});
-
-test("legacy search debounces committed IME text and clears incompatible filters", async ({ page }) => {
-  const requests: URL[] = [];
-  const mock = await installApiMock(page, { competitors: [], collectionBatches: batchPage, collectionRuns: url => { requests.push(url); return { items: [], total: 0, page: 1, page_size: 20 }; } });
-  await openRecords(page);
-  await expect(page.getByLabel("搜索", { exact: true })).toHaveCount(0);
-  await page.getByRole("combobox", { name: "触发方式", exact: true }).selectOption("manual");
-  await page.getByRole("combobox", { name: "异常情况", exact: true }).selectOption("recovered");
-  await page.getByRole("combobox", { name: "记录类型", exact: true }).selectOption("single");
-  await expect.poll(() => requests.length).toBeGreaterThan(0);
-  expect(requests.at(-1)!.searchParams.get("trigger_kind")).toBe("all");
-  const input = page.getByLabel("搜索", { exact: true });
-  await input.dispatchEvent("compositionstart");
-  await input.fill("shang");
-  await page.waitForTimeout(450);
-  expect(requests.some(url => url.searchParams.get("search") === "shang")).toBe(false);
-  await input.fill("商品");
-  await input.dispatchEvent("compositionend", { data: "商品" });
-  await page.waitForTimeout(150);
-  expect(requests.some(url => url.searchParams.get("search") === "商品")).toBe(false);
-  await expect.poll(() => requests.at(-1)!.searchParams.get("search")).toBe("商品");
-  await input.fill("商品1"); await input.fill("商品12"); await input.fill("商品123");
-  await expect.poll(() => requests.at(-1)!.searchParams.get("search")).toBe("商品123");
-  expect(requests.some(url => ["商品1", "商品12"].includes(url.searchParams.get("search") || ""))).toBe(false);
-  await input.fill("");
-  await expect.poll(() => requests.at(-1)!.searchParams.get("search")).toBe("");
-  await page.getByRole("combobox", { name: "记录类型", exact: true }).selectOption("batch");
-  await expect(page.getByRole("button", { name: "查看详情", exact: true })).toBeVisible();
-  await mock.expectNoUnexpectedApi();
-});
-
-test("type switching handles page two empty failures and delayed obsolete records", async ({ page }) => {
-  const errors: string[] = [];
-  page.on("pageerror", error => errors.push(error.message));
-  const mock = await installApiMock(page, { competitors: [] });
-  let mode = "ready";
-  let release: (() => void) | undefined;
-  await page.route("**/api/collection-batches?*", async route => { const url = new URL(route.request().url()); await route.fulfill({ json: { ...batchPage, page: Number(url.searchParams.get("page")), total: 41 } }); });
-  await page.route("**/api/collection-runs?*", async route => {
-    const requestMode = mode;
-    if (requestMode === "delayed") await new Promise<void>(resolve => { release = resolve; });
-    await route.fulfill({ status: requestMode === "error" ? 503 : 200, json: { items: [], total: 0, page: 1, page_size: 20 } });
-  });
-  await openRecords(page);
-  await expect(page.getByRole("button", { name: "查看详情", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "下一页", exact: true }).click();
-  await expect(page.getByText("第 2 / 3 页", { exact: true })).toBeVisible();
-  const type = page.getByRole("combobox", { name: "记录类型", exact: true });
-  await type.selectOption("single");
-  await expect(page.getByText("暂无符合条件的采集记录，可清除筛选后重试。", { exact: true })).toBeVisible();
-  await type.selectOption("batch");
-  await expect(page.getByText("第 1 / 3 页", { exact: true })).toBeVisible();
-  mode = "error"; await type.selectOption("single");
-  await expect(page.getByRole("alert")).toContainText("采集记录加载失败");
-  mode = "ready"; await page.getByRole("button", { name: "重试", exact: true }).click();
-  await expect(page.getByRole("alert")).toHaveCount(0);
-  await type.selectOption("batch");
-  await expect(page.getByRole("button", { name: "查看详情", exact: true })).toBeVisible();
-  mode = "delayed"; await type.selectOption("single");
-  await expect.poll(() => !!release).toBe(true);
-  await expect(page.locator(".record-table tbody tr")).toHaveCount(0);
-  await type.selectOption("batch");
-  await expect(page.getByRole("button", { name: "查看详情", exact: true })).toBeVisible();
-  release!();
-  for (let index = 0; index < 4; index++) { mode = "ready"; await type.selectOption("single"); await type.selectOption("batch"); }
-  await expect(page.getByRole("button", { name: "查看详情", exact: true })).toBeVisible();
-  await expect(page.locator(".record-table tbody tr")).toHaveCount(1);
-  expect(errors).toEqual([]);
-  await mock.expectNoUnexpectedApi();
-});
-
 test("detail stale responses cannot overwrite automatic filters and IME search", async ({ page }) => {
   const mock = await installApiMock(page, { competitors: [], collectionBatches: batchPage });
   const requests: URL[] = [];
@@ -191,7 +94,7 @@ test("one task table opens final product results and authentic attempt history",
   await expect(page.getByRole("heading", { name: "历史单次记录" })).toHaveCount(0);
   await expect(page.locator(".record-table tbody tr")).toHaveCount(1);
   const headers = page.locator(".record-table thead th");
-  await expect(headers).toHaveText(["开始时间", "触发方式", "计划商品", "成功", "异常", "页面访问", "补采访问", "耗时", "任务状态", "操作"]);
+  await expect(headers).toHaveText(["开始时间", "触发方式", "计划商品 / 提交链接", "成功", "异常", "页面访问", "补采访问", "耗时", "任务状态", "操作"]);
   await expect(page.locator(".record-table tbody tr")).toContainText("5分10秒");
   await page.setViewportSize({ width: 1680, height: 1000 });
   await page.screenshot({ path: acceptanceScreenshot(testInfo, "collection-records.png"), fullPage: true });
@@ -314,7 +217,7 @@ test("home combined filters use server query and reset page", async ({ page }) =
   await expect(page.getByLabel("搜索", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "查询", exact: true })).toHaveCount(0);
   await expect(page.getByText("第 1 / 3 页", { exact: true })).toBeVisible();
-  expect(Object.fromEntries(requests.at(-1)!.searchParams)).toMatchObject({ page: "1", trigger_kind: "manual", anomaly: "current", search: "" });
+  expect(Object.fromEntries(requests.at(-1)!.searchParams)).toMatchObject({ page: "1", trigger_kind: "manual", anomaly: "current" });
   expect(requests.at(-1)!.searchParams.get("started_after")).toBe(await page.evaluate(() => new Date("2026-10-01T00:00:00").toISOString()));
   expect(requests.at(-1)!.searchParams.get("started_before")).toBe(await page.evaluate(() => new Date("2026-10-14T23:59:59.999").toISOString()));
   await mock.expectNoUnexpectedApi();
@@ -327,6 +230,11 @@ test("home accepts one-sided dates rejects inverted ranges and restores defaults
   await openRecords(page);
   await expect(page.getByRole("button", { name: "查看详情", exact: true })).toBeVisible();
   const initial = Object.fromEntries(requests.at(-1)!.searchParams);
+  expect(initial).toMatchObject({ page: "1", page_size: "20", trigger_kind: "all", anomaly: "all" });
+  expect(requests.at(-1)!.searchParams.has("started_after")).toBe(false);
+  expect(requests.at(-1)!.searchParams.has("started_before")).toBe(false);
+  await expect(page.getByLabel("开始日期", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("结束日期", { exact: true })).toHaveValue("");
   await page.getByLabel("开始日期", { exact: true }).fill("");
   await page.getByLabel("结束日期", { exact: true }).fill("2026-10-14");
   await expect.poll(() => requests.at(-1)!.searchParams.get("started_before")).not.toBeNull();
@@ -368,36 +276,12 @@ test("server count shrink clamps home and detail pagination to a valid page", as
   await mock.expectNoUnexpectedApi();
 });
 
-test("legacy records stay accessible only by explicit type and preserve dual statuses", async ({ page }) => {
-  const statuses = ["success", "partial", "no_values", "failed", "blocked", "not_attempted", undefined] as const;
-  const labels = ["经营成功", "经营部分成功", "经营页面暂无值", "经营失败", "经营已阻止", "经营未尝试", "经营未采集"];
-  const requested: URL[] = [];
-  const mock = await installApiMock(page, { competitors: [], collectionBatches: batchPage, collectionRuns: url => {
-    requested.push(url);
-    return { items: statuses.map((operating_metrics_status, index) => ({ id: index + 1, competitor_id: 1, ownership: "competitor", title: `状态记录 ${index + 1}`, offer_id: `offer-${index + 1}`, shop_name: "测试店铺", started_at: "2026-10-14T00:00:00Z", finished_at: "2026-10-14T00:00:04Z", status: "success", ...(operating_metrics_status ? { operating_metrics_status } : {}), error_type: null, error_message: null, duration_seconds: 4 })), total: statuses.length, page: 1, page_size: 20 };
-  } });
-  await openRecords(page);
-  await expect(page.getByRole("button", { name: "查看详情", exact: true })).toBeVisible();
-  expect(requested).toHaveLength(0);
-  await page.getByRole("combobox", { name: "记录类型", exact: true }).selectOption("single");
-  await expect(page.locator(".record-table tbody tr")).toHaveCount(statuses.length);
-  expect(requested.at(-1)!.searchParams.get("unbatched")).toBe("true");
-  for (const [index, label] of labels.entries()) await expect(page.locator(".record-table tbody tr").nth(index)).toContainText(label);
-  await expect(page.locator(".record-table")).toHaveCount(1);
-  await page.route("**/api/collection-runs/1", route => route.fulfill({ json: { ...attempt(1, 1, "first_pass", ["observed", "placeholder", ...observed.slice(2)]), title: "状态记录 1", offer_id: "offer-1", shop_name: "测试店铺", main_image_url: null, collection_batch_item_id: null } }));
-  await page.getByRole("button", { name: "查看详情", exact: true }).first().click();
-  await expect(page.getByRole("heading", { name: "单次采集详情", exact: true })).toBeVisible();
-  await expect(page.getByText("历史未归属单次采集 · 无可靠批次身份", { exact: true })).toBeVisible();
-  await page.getByText("查看 8 项字段明细", { exact: true }).click();
-  await expect(page.getByText("页面显示 -，无需补采", { exact: true })).toBeVisible();
-  await mock.expectNoUnexpectedApi();
-});
 
-test("empty history page retains server pagination and returns to previous page", async ({ page }) => {
+test("empty task page retains server pagination and returns to previous page", async ({ page }) => {
   const requestedPages: number[] = [];
-  const mock = await installApiMock(page, { competitors: [], collectionRuns: url => { const requestedPage = Number(url.searchParams.get("page")); requestedPages.push(requestedPage); return { items: [], total: requestedPage === 1 ? 41 : 21, page: requestedPage, page_size: 20 }; } });
+  const mock = await installApiMock(page, { competitors: [] });
+  await page.route("**/api/collection-batches?*", route => { const requestedPage = Number(new URL(route.request().url()).searchParams.get("page")); requestedPages.push(requestedPage); return route.fulfill({ json: { items: [], total: requestedPage === 1 ? 41 : 21, page: requestedPage, page_size: 20 } }); });
   await openRecords(page);
-  await page.getByRole("combobox", { name: "记录类型", exact: true }).selectOption("single");
   await expect(page.getByText("第 1 / 3 页", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "下一页", exact: true }).click();
   await expect(page.getByText("暂无符合条件的采集记录，可清除筛选后重试。", { exact: true })).toBeVisible();

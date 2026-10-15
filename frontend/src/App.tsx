@@ -131,6 +131,9 @@ export function updatePageSelection(selectedIds: ReadonlySet<number>, pageIds: r
 }
 
 export type BatchState = {
+  work_kind?: "collect_products" | "add_links";
+  input_progress?: AddInputSummary | null;
+  current_input_position?: number | null;
   status: BatchStatus;
   outcome_code: string | null;
   batch_id: number | null;
@@ -551,16 +554,15 @@ export function getResponseStatus(responseOk: boolean, code?: string): AddStatus
 }
 
 export function parseCompetitorUrls(value: string): string[] {
-  return [...new Set(value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))];
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
 export function mergeCompetitorUrlText(currentValue: string, clipboardValue: string): string {
-  return [...new Set([...parseCompetitorUrls(currentValue), ...parseCompetitorUrls(clipboardValue)])].join("\n");
+  return [currentValue, clipboardValue].filter(Boolean).join("\n");
 }
 
 export type AddFailureCode = "invalid_competitor_url" | "competitor_already_exists" | "competitor_group_not_found" | "own_shop_name_not_configured" | "shop_name_unavailable" | "own_product_already_bound" | "collection_in_progress" | "1688_login_required" | "1688_verification_required" | "collection_timeout" | "collection_parse_failed" | "collection_partial_data" | "offer_id_mismatch" | "collection_save_failed" | "collection_failed" | "validation-error" | "http-error" | "network-error" | "timeout" | "server-error";
 export type AddFailure = { url: string; code: AddFailureCode; reason: string };
-export type AddSubmissionResult = { succeeded: string[]; failures: AddFailure[] };
 
 export function getAddFailureReason(code?: string): string {
   if (code === "invalid_competitor_url") return "链接格式无效";
@@ -585,30 +587,14 @@ export function getAddFailureReason(code?: string): string {
 
 type CompetitorRequest = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export async function addCompetitorsSequentially(urls: readonly string[], groupId: number | null, request: CompetitorRequest = fetch, onProgress?: (completed: number, total: number) => void, onSuccess?: (url: string, body: { ownership?: "self" | "competitor"; title?: string | null }) => void): Promise<AddSubmissionResult> {
-  const succeeded: string[] = [];
-  const failures: AddFailure[] = [];
-  for (const url of urls) {
-    try {
-      const response = await request("/api/competitors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, group_id: groupId }) });
-      if (response.ok) {
-        succeeded.push(url);
-        try { onSuccess?.(url, await response.json() as { ownership?: "self" | "competitor"; title?: string | null }); } catch { onSuccess?.(url, {}); }
-      }
-      else {
-        let code: string | undefined;
-        try { code = (await response.json() as { code?: string }).code; } catch { /* use the stable fallback below */ }
-        const knownCode = code && ["invalid_competitor_url", "competitor_already_exists", "competitor_group_not_found", "own_shop_name_not_configured", "shop_name_unavailable", "own_product_already_bound", "collection_in_progress", "1688_login_required", "1688_verification_required", "collection_timeout", "collection_parse_failed", "collection_partial_data", "offer_id_mismatch", "collection_save_failed", "collection_failed"] .includes(code) ? code as AddFailureCode : undefined;
-        const failureCode: AddFailureCode = knownCode || (response.status >= 400 && response.status < 500 ? response.status === 400 || response.status === 422 ? "validation-error" : "http-error" : "server-error");
-        failures.push({ url, code: failureCode, reason: getAddFailureReason(failureCode) });
-      }
-    } catch (error) {
-      const failureCode: AddFailureCode = error instanceof DOMException && error.name === "AbortError" ? "timeout" : "network-error";
-      failures.push({ url, code: failureCode, reason: getAddFailureReason(failureCode) });
-    }
-    onProgress?.(succeeded.length + failures.length, urls.length);
-  }
-  return { succeeded, failures };
+export type AddEnvelope = { submission_id: string; inputs: { text: string; source_line: number }[]; group_id: number | null };
+const pendingAddKey = "workbench.add-submission.v1";
+export async function submitAddLinks(envelope: AddEnvelope, request: CompetitorRequest = fetch, recover = false) {
+  let response = recover ? await request(`/api/competitors/add-batch/${envelope.submission_id}`) : null;
+  if (!response || response.status === 404) response = await request("/api/competitors/add-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(envelope) });
+  const body = await response.json() as { accepted?: boolean; code?: string; message?: string; task_id?: string; task?: BatchRecordDetail };
+  if (!response.ok || body.accepted !== true || !body.task_id || body.task_id !== envelope.submission_id || !body.task || body.task.task_id !== envelope.submission_id) throw new Error(body.message || (body.code === "idempotency_conflict" ? "同一提交标识内容冲突，请保留原提交并核对" : "受理结果尚未确认，请使用原提交重试查询"));
+  return body as { accepted: true; task_id: string; task: BatchRecordDetail };
 }
 
 export function getGroupCreateStatus(responseOk: boolean, code?: string): GroupCreateStatus {
@@ -1699,10 +1685,17 @@ function CollectionOverview({ data, status, error, batchState, onRetry, onToggle
     {status === "error" && <div className="dashboard-support-error" role="alert"><span>{error || "暂时无法获取采集统计和趋势。"}</span><button type="button" className="text-link-button" onClick={onRetry}>重试</button></div>}
     <div className="collection-summary-grid"><div><span>最近采集时间</span><strong>{summary?.last_collection_at ? formatDate(summary.last_collection_at) : "暂无采集记录"}</strong></div><div><span>今日成功</span><strong>{summary ? summary.success_runs : "—"}</strong></div><div><span>今日失败</span><strong className={summary?.failed_runs ? "collection-value-error" : ""}>{summary ? summary.failed_runs : "—"}</strong></div><div><span>平均耗时</span><strong>{formatDuration(summary?.average_duration_seconds ?? null)}</strong></div></div>
     <div className={`collection-batch collection-batch-${batchState.status}`}>
+      {batchState.work_kind === "add_links" && batchState.input_progress ? <>
+        <div className="collection-batch-heading"><strong>添加链接：已处理 {batchState.input_progress.processed}/{batchState.input_progress.total}</strong><span>{batchState.batch_outcome_code === "infrastructure_error" ? "基础设施异常中止" : batchState.batch_outcome_code === "interrupted" ? "进程中断" : batchState.status === "completed" ? batchState.input_progress.added ? batchState.input_progress.added === batchState.input_progress.total ? "全部新增" : "部分新增成功" : batchState.input_progress.technical_failed ? "添加失败" : "未新增" : batchState.status === "stopped" ? "用户已结束" : batchState.status === "paused" ? pausedWait || "已暂停" : batchState.status === "resting" ? `计划休息剩余 ${formatBatchCooldown(batchState.resting_remaining_seconds)}` : batchState.status === "verification_required" ? "需要验证，已停止访问" : "处理中"}</span></div>
+        {batchState.current_input_position != null && <div className="collection-batch-current">当前输入：第 {batchState.current_input_position + 1} 条</div>}
+        <div className="collection-batch-meta"><span>新增 {batchState.input_progress.added}</span><span>业务拒绝 {batchState.input_progress.business_rejected}</span><span>技术失败 {batchState.input_progress.technical_failed}</span><span>验证 {batchState.input_progress.verification_required}</span><span>中断 {batchState.input_progress.interrupted}</span><span>{batchState.runner_active ? "剩余" : "未执行"} {batchState.input_progress.remaining}</span><span>页面访问 {batchState.page_visits} · 未知 {batchState.page_visits_unknown}</span></div>
+        <div className="collection-progress" role="progressbar" aria-label={`添加进度 ${batchState.input_progress.processed} / ${batchState.input_progress.total}`} aria-valuemin={0} aria-valuemax={batchState.input_progress.total} aria-valuenow={batchState.input_progress.processed}><span style={{ width: `${100 * batchState.input_progress.processed / batchState.input_progress.total}%` }} /></div>
+      </> : <>
       <div className="collection-batch-heading"><strong>{batchState.status === "running" ? `采集中 ${batchState.completed} / ${batchState.total}` : batchState.status === "pausing" ? `当前商品完成后暂停 · ${batchState.completed} / ${batchState.total}` : batchState.status === "paused" ? `采集已暂停 · ${batchState.completed} / ${batchState.total}` : batchState.status === "stopping" ? `当前商品完成后结束 · ${batchState.completed} / ${batchState.total}` : batchState.status === "stopped" ? `采集已结束 · ${batchState.completed} / ${batchState.total}` : batchState.status === "resting" ? "计划休息中" : batchState.status === "cooling_down" ? "冷却中" : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务"}</strong><span>{batchState.status === "running" ? `成功 ${batchState.succeeded} · 失败 ${batchState.failed}` : batchState.status === "pausing" || batchState.status === "stopping" || batchState.status === "stopped" ? `已完成 ${batchState.completed} / ${batchState.total} · 剩余 ${batchState.remaining}` : batchState.status === "paused" ? pausedWait || `已完成 ${batchState.completed} / ${batchState.total} · 剩余 ${batchState.remaining}` : batchState.status === "resting" ? `休息剩余 ${formatBatchCooldown(batchState.resting_remaining_seconds)} · 已完成 ${batchState.completed} / ${batchState.total} · 剩余 ${batchState.remaining}` : batchState.status === "cooling_down" ? `冷却剩余 ${formatBatchCooldown(batchState.cooldown_remaining_seconds)} · 自动恢复 ${batchState.auto_resume_attempt}/${batchState.auto_resume_max} · 已完成 ${batchState.completed} · 剩余 ${batchState.remaining}` : batchState.status === "completed" ? `成功 ${batchState.succeeded} / 失败 ${batchState.failed}` : batchState.status === "verification_required" ? `已完成 ${batchState.completed} / ${batchState.total}` : "今日采集统计仍会保留"}</span></div>
       {batchState.current_competitor_id !== null && <div className="collection-batch-current"><span>当前商品</span><strong>{batchState.current_competitor_title || `商品 ${batchState.current_competitor_id}`}</strong></div>}
       <div className="collection-batch-meta"><span>阶段：{batchState.phase === "operating_metrics_retry" ? `经营补采 ${batchState.retry_completed}/${batchState.retry_total}` : batchState.phase === "verification_resume" ? "验证恢复" : "首次采集"}</span><span>完成 {batchState.completed} / {batchState.total} · 剩余 {batchState.remaining}</span><span>页面访问 {batchState.page_visits}{batchState.page_visits_unknown ? ` + ${batchState.page_visits_unknown} 次未知` : ""}</span><span>补采访问 {batchState.retry_visits} · 上限 {batchState.retry_max}</span></div>
-      {(batchState.status === "running" || batchState.status === "pausing" || batchState.status === "paused" || batchState.status === "resting") && <div className="collection-progress" role="progressbar" aria-label={`采集进度 ${batchState.completed} / ${batchState.total}`} aria-valuemin={0} aria-valuemax={batchState.total} aria-valuenow={batchState.completed}><span style={{ width: `${progress}%` }} /></div>}
+      {(batchState.status === "running" || batchState.status === "pausing" || batchState.status === "paused" || batchState.status === "resting") && <div className="collection-progress" role="progressbar" aria-label={`采集进度 ${batchState.completed} / ${batchState.total}`} aria-valuemin={0} aria-valuemax={batchState.total} aria-valuenow={batchState.completed}><span style={{ width: `${progress}%` }} /></div>}      </>}
+
     </div>
   </section>;
 }
@@ -1897,7 +1890,7 @@ type AddDialogProps = { url: string; status: AddStatus; onUrlChange: (url: strin
 
 export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups, groupId, onGroupChange, newGroupName, onNewGroupNameChange, onCreateGroup, groupCreateStatus, failures = [], succeededCount = 0, progress = { completed: 0, total: 0 } }: AddDialogProps) {
   const busy = status === "submitting";
-  const urlCount = parseCompetitorUrls(url).length;
+  const urlCount = url.split(/\r?\n/).filter(line => line.trim()).length;
   const [clipboardFeedback, setClipboardFeedback] = useState<{ kind: "success" | "info" | "error"; message: string } | null>(null);
 
   async function handleClipboardAdd() {
@@ -1932,7 +1925,7 @@ export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups,
     <p className="dialog-description">添加 1688 商品链接，系统会先确认真实店铺，再自动分流到我方商品或竞品列表。</p>
     <form onSubmit={onSubmit}><div className="dialog-field-header"><label htmlFor="competitor-url">1688 商品链接</label><button type="button" className="text-button clipboard-add-button" onClick={() => void handleClipboardAdd()} disabled={busy}>从剪贴板添加</button></div><textarea id="competitor-url" rows={5} value={url} onChange={(event) => { setClipboardFeedback(null); onUrlChange(event.target.value); }} placeholder={"https://detail.1688.com/offer/123456789.html\nhttps://detail.1688.com/offer/987654321.html"} autoComplete="off" spellCheck={false} autoCapitalize="none" autoCorrect="off" disabled={busy} /><p className="hint">每行一个链接，支持一次添加多个监控商品；仅支持 detail.1688.com/offer/{"{offerId}"}.html</p>{clipboardFeedback && <p className={"clipboard-feedback clipboard-feedback-" + clipboardFeedback.kind} role="status" aria-live="polite">{clipboardFeedback.message}</p>}<label htmlFor="competitor-group">竞品组</label><select id="competitor-group" value={groupId === null ? "" : String(groupId)} onChange={(event) => onGroupChange(event.target.value ? Number(event.target.value) : null)} disabled={busy}><option value="">未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><label htmlFor="new-competitor-group">新增竞品组</label><div className="group-create-controls"><input id="new-competitor-group" type="text" value={newGroupName} onChange={(event) => onNewGroupNameChange(event.target.value)} placeholder="输入商品型号作为组名，例如 A19" maxLength={64} disabled={busy} /><button type="button" className="secondary-button" onClick={onCreateGroup} disabled={busy || groupCreateStatus === "submitting"}>{groupCreateStatus === "submitting" ? "创建中…" : "创建"}</button></div><div className={getGroupFeedbackClass(groupCreateStatus)} role="status" aria-live="polite">{groupCreateStatus === "success" && "竞品组已创建并已选中。"}{groupCreateStatus === "invalid" && "请输入有效的竞品组名称"}{groupCreateStatus === "duplicate" && "该竞品组已存在"}{groupCreateStatus === "server-error" && "竞品组创建失败，请稍后重试。"}</div><div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>取消</button><button type="submit" className="primary-button" disabled={busy || urlCount === 0}>{busy ? (progress.total ? `正在添加 ${progress.completed} / ${progress.total}…` : "正在添加…") : urlCount > 1 ? `添加 ${urlCount} 个监控商品` : "添加监控商品"}</button></div></form>
     <div className={"feedback feedback-" + status} role="status" aria-live="polite">{status === "partial" && `已添加 ${succeededCount} 个，${failures.length} 个未添加`}{status === "failed" && `未添加 ${failures.length} 个监控商品`}{status === "invalid" && "链接无效：请输入指定格式的 1688 商品链接。"}{status === "duplicate" && "该 1688 商品已经添加。"}{status === "server-error" && "服务暂时不可用，请稍后重试。"}</div>
-    {failures.length > 0 && <div className="add-failures" role="status" aria-live="polite"><strong>未添加：</strong><ul>{failures.map((failure) => <li key={failure.url}>{failure.url} — {failure.reason}</li>)}</ul></div>}
+    {failures.length > 0 && <div className="add-failures" role="status" aria-live="polite"><strong>未添加：</strong><ul>{failures.map((failure, index) => <li key={index}>{failure.url} — {failure.reason}</li>)}</ul></div>}
   </section></div>;
 }
 
@@ -1977,26 +1970,26 @@ export function PaginationBar({ total, itemLabel, pageSize, page, totalPages, on
   return <div className="pagination-bar"><span>共 {total} {itemLabel}</span>{pageSize && <span className="pagination-page-size">每页 {pageSize} 条</span>}<button type="button" disabled={previousDisabled} onClick={onPrevious}>上一页</button><span className="page-number" aria-current="page">{page}</span><button type="button" disabled={nextDisabled} onClick={onNext}>下一页</button><span>第 {page} / {totalPages} 页</span></div>;
 }
 
+type AddInputSummary = { total: number; candidate_total: number | null; processed: number; remaining: number; pending: number; added: number; business_rejected: number; technical_failed: number; verification_required: number; interrupted: number; not_executed: number; anomaly_inputs: number };
 type BatchObservation = { metric_key: string; status: string; raw_value: string | null; reason: string | null };
 type BatchAttempt = { id: number; attempt_number: number | null; attempt_kind: string | null; started_at: string | null; finished_at: string | null; status: string; operating_metrics_status: string; error_message: string | null; navigation_claimed_at?: string | null; navigation_confirmed_at?: string | null; duration_seconds?: number | null; observations: BatchObservation[] };
-type BatchRecord = { task_id: string; trigger_kind: string; started_at: string | null; finished_at: string | null; lifecycle_status: string; outcome_code: string | null; planned_products: number; completed: number; remaining: number; counts: Record<string, number>; page_visits: number; page_visits_unknown: number; verification_resume_visits: number; retry_visits: number };
-type BatchRecordItem = { position: number; competitor_id: number | null; offer_id: string | null; main_image_url: string | null; title: string | null; shop_name: string | null; final_result: string | null; base_result: string | null; attempts_started: number; page_visits: number; page_visits_unknown: number; retry_visits: number; technical_exception_count: number; attempts: BatchAttempt[]; identity_removed: boolean; had_anomaly: boolean; has_anomaly: boolean; duration_seconds: number | null };
+type BatchRecord = { task_kind?: "add_links" | "collect_products"; input_summary?: AddInputSummary; task_id: string; trigger_kind: string; started_at: string | null; finished_at: string | null; lifecycle_status: string; outcome_code: string | null; planned_products: number; completed: number; remaining: number; counts: Record<string, number>; page_visits: number; page_visits_unknown: number; verification_resume_visits: number; retry_visits: number };
+type BatchRecordItem = { input_text?: string | null; source_line?: number; result_code?: string | null; sanitized_reason?: string | null; navigation_claimed_at?: string | null; navigation_confirmed_at?: string | null; identity_state?: string; position: number; competitor_id: number | null; offer_id: string | null; main_image_url: string | null; title: string | null; shop_name: string | null; final_result: string | null; base_result: string | null; attempts_started: number; page_visits: number; page_visits_unknown: number; retry_visits: number; technical_exception_count: number; attempts: BatchAttempt[]; identity_removed: boolean; had_anomaly: boolean; has_anomaly: boolean; duration_seconds: number | null };
 type BatchRecordPage = { items: BatchRecord[]; total: number; page: number; page_size: number };
 type BatchRecordDetail = BatchRecord & { summary: BatchRecord; items: BatchRecordItem[]; total: number; page: number; page_size: number; protection_details: string | null; circuit_breaker_cancelled: number };
-type LegacyRun = BatchAttempt & { title: string | null; offer_id: string; shop_name: string | null; main_image_url: string | null; has_anomaly?: boolean; had_anomaly?: boolean };
-type LegacyPage = { items: LegacyRun[]; total: number; page: number; page_size: number };
 type CollectionTaskProps = { onNavigate: (page: Page) => void; batchState?: BatchState; batchStatus?: ListStatus; batchError?: string | null; onRefreshBatch?: () => Promise<boolean> };
 const collectionFieldLabels: Record<string, string> = { listing_time: "上架时间", monthly_deal: "月成交", monthly_dropship: "月分销代发", annual_units: "年成交件数", annual_orders: "年成交订单数", review_count: "评价数", positive_rate: "好评率", pickup_rate: "揽收率" };
 const batchResultLabels: Record<string, string> = { first_pass_success: "成功", verification_resume_success: "验证恢复成功", retry_success: "补采恢复成功", final_failed: "异常", verification_required: "需要人工验证", not_executed: "未执行" };
 const batchTriggerLabels: Record<string, string> = { manual_selected: "手动选择采集", manual_all_active: "手动全部在监控", scheduled: "定时采集" };
+Object.assign(batchTriggerLabels, { manual_single: "手动采集", manual_selected: "手动采集", manual_all_active: "手动采集", scheduled: "定时采集", add_links: "添加链接" });
 const batchOutcomeLabels: Record<string, string> = { success: "成功", partial_success: "部分成功", partial_failure: "部分失败", user_ended: "用户结束", verification_required: "需要人工验证", collect_failed: "采集失败", infrastructure_error: "运行异常", interrupted: "进程中断" };
 const batchAttemptKindLabels: Record<string, string> = { first_pass: "首次采集", verification_resume: "验证恢复", operating_metrics_retry: "经营指标补采" };
 const observationStatusLabels: Record<string, string> = { observed: "已读取", placeholder: "页面占位 -，无需补采", loading: "加载未完成", source_unavailable: "来源不可用", read_failed: "字段读取失败" };
 const recordOperatingLabels: Record<string, string> = { not_attempted: "尚未读取经营指标", success: "经营指标完整", partial: "经营部分指标可用", no_values: "页面没有有效经营值", failed: "经营指标读取异常", blocked: "经营指标读取已阻止" };
 const technicalStatuses = new Set(["source_unavailable", "loading", "read_failed"]);
-const batchTitle = (batch: Pick<BatchRecord, "outcome_code" | "lifecycle_status">) => batch.outcome_code ? batchOutcomeLabels[batch.outcome_code] || "终态未知" : ["running", "created"].includes(batch.lifecycle_status) ? "进行中" : "状态未知";
-const successfulProducts = (batch: BatchRecord) => ["first_pass_success", "verification_resume_success", "retry_success"].reduce((n, key) => n + (batch.counts[key] || 0), 0);
-const exceptionProducts = (batch: BatchRecord) => (batch.counts.final_failed || 0) + (batch.counts.verification_required || 0);
+const batchTitle = (batch: Pick<BatchRecord, "outcome_code" | "lifecycle_status" | "input_summary">) => batch.input_summary && batch.lifecycle_status === "terminal" && !["infrastructure_error", "interrupted", "verification_required", "user_ended"].includes(batch.outcome_code || "") ? batch.input_summary.added === batch.input_summary.total ? "全部新增" : batch.input_summary.added ? "部分新增成功" : batch.input_summary.technical_failed ? "添加失败" : "未新增" : batch.outcome_code ? batchOutcomeLabels[batch.outcome_code] || "终态未知" : ["running", "created"].includes(batch.lifecycle_status) ? "进行中" : "状态未知";
+const successfulProducts = (batch: BatchRecord) => batch.input_summary ? batch.input_summary.added : ["first_pass_success", "verification_resume_success", "retry_success"].reduce((n, key) => n + (batch.counts[key] || 0), 0);
+const exceptionProducts = (batch: BatchRecord) => batch.input_summary ? batch.input_summary.anomaly_inputs : (batch.counts.final_failed || 0) + (batch.counts.verification_required || 0);
 export function collectionDuration(start: string | null, finish: string | null, running = false): string {
   if (!start) return "开始时间缺失";
   if (!finish) return running ? "进行中" : "结束时间缺失";
@@ -2037,6 +2030,10 @@ const recordMetricIcons: Record<string, ReactNode> = {
 };
 function RecordSummary({ detail }: { detail: BatchRecordDetail }) {
   const summary = detail.summary;
+  if (detail.input_summary) {
+    const input = detail.input_summary;
+    return <section className="table-card record-summary" aria-label="批次汇总">{[["提交链接", input.total], ["候选商品", detail.planned_products], ["新增商品", input.added], ["业务拒绝", input.business_rejected], ["技术失败", input.technical_failed], ["需要验证", input.verification_required], ["中断", input.interrupted], ["未执行", input.not_executed], ["页面访问", summary.page_visits], ["未知访问", summary.page_visits_unknown], ["耗时", collectionDuration(detail.started_at, detail.finished_at, detail.lifecycle_status !== "terminal")], ["任务状态", batchTitle(detail)]].map(([label, value]) => <div className="record-metric record-metric-neutral" key={label}><span className="record-metric-icon" aria-hidden="true"><svg viewBox="0 0 24 24">{recordMetricIcons.state}</svg></span><div className="record-metric-value"><span>{label}</span><strong>{value}</strong></div></div>)}</section>;
+  }
   const anomalies = exceptionProducts(summary);
   const active = ["created", "running"].includes(detail.lifecycle_status);
   const stateTone = active ? "blue" : detail.outcome_code === "success" ? "green" : ["partial_success", "partial_failure", "user_ended", "verification_required"].includes(detail.outcome_code || "") ? "orange" : anomalies > 0 || ["collect_failed", "infrastructure_error"].includes(detail.outcome_code || "") ? "red" : "neutral";
@@ -2055,9 +2052,7 @@ function RecordSummary({ detail }: { detail: BatchRecordDetail }) {
   </section>;
 }
 const initialRecordFilters = () => {
-  const now = new Date();
-  const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  return { record_type: "batch", start: localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30)), end: "", trigger_kind: "all", anomaly: "all", search: "" };
+  return { start: "", end: "", trigger_kind: "all", anomaly: "all" };
 };
 const emptyItemFilters = { search: "", final_result: "all", anomaly: "all", attempt_kind: "all", reason: "all", anomalies_first: "false" };
 function RecordSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
@@ -2067,63 +2062,52 @@ function RecordState({ status, error, retry }: { status: ListStatus; error: stri
   return status === "loading" ? <div className="state-panel"><div className="spinner" /><strong role="status" aria-live="polite">正在加载采集记录…</strong></div> : status === "error" ? <div className="state-panel state-error" role="alert"><strong>采集记录加载失败</strong><span>{error}</span><button className="secondary-button" onClick={retry}>重试</button></div> : null;
 }
 function RecordBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: string }) { return <span className={`record-badge record-badge-${tone}`}>{children}</span>; }
+const inputResultLabels: Record<string, string> = { added: "新增成功", invalid_url: "链接无效", duplicate_input: "提交内重复", already_exists: "商品已存在", identity_rejected: "身份或归组拒绝", technical_failed: "技术失败", verification_required: "需要验证", not_executed: "未执行", interrupted: "中断，结果未知" };
+const anomalyOptions: [string, string][] = [["all", "全部"], ["current", "当前有异常"], ["none", "无当前异常"], ["recovered", "曾异常但已恢复"], ["placeholder", "页面占位"], ["source_unavailable", "官方助手来源不可用"], ["loading", "加载未完成"], ["read_failed", "字段读取失败"], ["base_failed", "基础采集失败"], ["rejected", "业务拒绝"], ["verification_required", "需要验证"]];
+export function allowedRecordAnomalies(trigger: string) {
+  return anomalyOptions.filter(([key]) => trigger === "add_links" ? ["all", "current", "none", "base_failed", "rejected", "verification_required"].includes(key) : trigger === "all" || key !== "rejected");
+}
+function AddInputTable({ detail }: { detail: BatchRecordDetail }) {
+  return <div className="table-scroll"><table className="record-table"><thead><tr><th>输入</th><th>处理结果</th><th>页面访问</th><th>耗时</th><th>原因与真实历史</th></tr></thead><tbody>{detail.items.map(item => <tr key={item.position}><td><strong>第 {item.source_line ?? item.position + 1} 行</strong><small>{item.identity_removed ? "身份已移除" : item.input_text}</small></td><td><RecordBadge tone={item.has_anomaly ? "danger" : item.result_code === "added" ? "success" : "neutral"}>{inputResultLabels[item.result_code || ""] || "待处理"}</RecordBadge></td><td>确认 {item.page_visits} 次{item.page_visits_unknown > 0 && <small>未知 {item.page_visits_unknown} 次</small>}</td><td>{formatCollectionDuration(item.duration_seconds)}</td><td>{item.sanitized_reason || (item.identity_removed ? "商品身份已移除，匿名汇总保留" : "—")}<small>经营指标未采集</small>{item.attempts.length > 0 ? <details><summary>真实采集历史（{item.attempts.length}）</summary><AttemptHistory attempts={item.attempts} /></details> : <small>无商品采集 Run；保留输入处理事实</small>}</td></tr>)}</tbody></table></div>;
+}
 export function CollectionTasksPage({ onNavigate }: CollectionTaskProps) {
   const [filters, setFilters] = useState(initialRecordFilters);
-  const [searchText, setSearchText] = useState("");
-  const [searchComposing, setSearchComposing] = useState(false);
+  const [filterNotice, setFilterNotice] = useState("");
   const [page, setPage] = useState(1);
-  const [records, setRecords] = useState<BatchRecordPage | LegacyPage | null>(null);
-  const [selected, setSelected] = useState<{ kind: string; id: string } | null>(null);
+  const [records, setRecords] = useState<BatchRecordPage | null>(null);
+  const [selected, setSelected] = useState<{ id: string; kind: "batch" } | null>(null);
   const [itemFilters, setItemFilters] = useState(emptyItemFilters);
   const [itemSearchText, setItemSearchText] = useState("");
   const [itemSearchComposing, setItemSearchComposing] = useState(false);
   const [itemPage, setItemPage] = useState(1);
   const [detail, setDetail] = useState<BatchRecordDetail | null>(null);
-  const [single, setSingle] = useState<LegacyRun | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [status, setStatus] = useState<ListStatus>("loading");
   const [error, setError] = useState<string | null>(null);
   const [loadedQuery, setLoadedQuery] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const changeFilters = (patch: Partial<typeof filters>) => {
-    setFilters(current => ({ ...current, ...patch }));
+    const next = { ...filters, ...patch };
+    const compatible = allowedRecordAnomalies(next.trigger_kind).some(([key]) => key === next.anomaly);
+    setFilterNotice(compatible ? "" : "该触发方式不适用此异常类别，已恢复为全部异常情况。");
+    setFilters({ ...next, anomaly: compatible ? next.anomaly : "all" });
     setPage(1);
   };
-  const changeItemFilters = (patch: Partial<typeof itemFilters>) => {
-    setItemFilters(current => ({ ...current, ...patch }));
-    setItemPage(1);
-    setExpanded(new Set());
-  };
+  const changeItemFilters = (patch: Partial<typeof itemFilters>) => { setItemFilters(current => ({ ...current, ...patch })); setItemPage(1); setExpanded(new Set()); };
   useEffect(() => {
-    if (selected || filters.record_type !== "single" || searchComposing || searchText === filters.search) return;
-    const timer = window.setTimeout(() => {
-      setFilters(current => ({ ...current, search: searchText }));
-      setPage(1);
-    }, 350);
-    return () => window.clearTimeout(timer);
-  }, [selected, filters.record_type, filters.search, searchText, searchComposing]);
-  useEffect(() => {
-    if (selected?.kind !== "batch" || itemSearchComposing || itemSearchText === itemFilters.search) return;
-    const timer = window.setTimeout(() => {
-      setItemFilters(current => ({ ...current, search: itemSearchText }));
-      setItemPage(1);
-      setExpanded(new Set());
-    }, 350);
+    if (!selected || itemSearchComposing || itemSearchText === itemFilters.search) return;
+    const timer = window.setTimeout(() => { setItemFilters(current => ({ ...current, search: itemSearchText })); setItemPage(1); setExpanded(new Set()); }, 350);
     return () => window.clearTimeout(timer);
   }, [selected, itemFilters.search, itemSearchText, itemSearchComposing]);
-  const datesValid = (!filters.start || !Number.isNaN(Date.parse(`${filters.start}T00:00:00`)))
-    && (!filters.end || !Number.isNaN(Date.parse(`${filters.end}T00:00:00`)))
-    && (!filters.start || !filters.end || filters.start <= filters.end);
+  const datesValid = (!filters.start || !Number.isNaN(Date.parse(`${filters.start}T00:00:00`))) && (!filters.end || !Number.isNaN(Date.parse(`${filters.end}T00:00:00`))) && (!filters.start || !filters.end || filters.start <= filters.end);
   let requestUrl: string | null = null;
   if (selected) {
-    const params = new URLSearchParams({ ...itemFilters, page: String(itemPage), page_size: "10" });
-    requestUrl = selected.kind === "batch" ? `/api/collection-batches/${encodeURIComponent(selected.id)}?${params}` : `/api/collection-runs/${selected.id}`;
+    requestUrl = `/api/collection-batches/${encodeURIComponent(selected.id)}?${new URLSearchParams({ ...itemFilters, page: String(itemPage), page_size: "10" })}`;
   } else if (datesValid) {
-    const params = new URLSearchParams({ page: String(page), page_size: "20", trigger_kind: filters.trigger_kind, anomaly: filters.anomaly, search: filters.search });
+    const params = new URLSearchParams({ page: String(page), page_size: "20", trigger_kind: filters.trigger_kind, anomaly: filters.anomaly });
     if (filters.start) params.set("started_after", new Date(`${filters.start}T00:00:00`).toISOString());
     if (filters.end) params.set("started_before", new Date(`${filters.end}T23:59:59.999`).toISOString());
-    if (filters.record_type === "single") params.set("unbatched", "true");
-    requestUrl = `/api/${filters.record_type === "batch" ? "collection-batches" : "collection-runs"}?${params}`;
+    requestUrl = `/api/collection-batches?${params}`;
   }
   useEffect(() => {
     if (!requestUrl) return;
@@ -2133,61 +2117,41 @@ export function CollectionTasksPage({ onNavigate }: CollectionTaskProps) {
       if (!response.ok) throw new Error("查询失败，请稍后重试");
       const value = await response.json();
       if (controller.signal.aborted) return;
-      if (selected?.kind !== "single") {
-        if (!Array.isArray(value?.items) || !Number.isInteger(value.total) || value.total < 0 || !Number.isInteger(value.page_size) || value.page_size <= 0
-          || (selected ? !value.summary?.counts : filters.record_type === "batch" && value.items.some((item: BatchRecord) => !item.counts))) {
-          throw new Error("采集记录响应格式不正确，请重试");
-        }
-        const lastPage = Math.max(1, Math.ceil(value.total / value.page_size));
-        if ((selected ? itemPage : page) > lastPage) {
-          if (selected) setItemPage(lastPage); else setPage(lastPage);
-          setExpanded(new Set());
-          return;
-        }
-      } else if (!Array.isArray(value?.observations)) {
-        throw new Error("采集记录响应格式不正确，请重试");
-      }
-      if (selected?.kind === "batch") setDetail(value); else if (selected) setSingle(value); else setRecords(value);
-      setLoadedQuery(requestUrl);
-      setStatus("ready");
+      if (!Array.isArray(value?.items) || !Number.isInteger(value.total) || value.total < 0 || !Number.isInteger(value.page_size) || value.page_size <= 0 || (selected ? !value.summary?.counts : value.items.some((item: BatchRecord) => !item.counts))) throw new Error("采集记录响应格式不正确，请重试");
+      const lastPage = Math.max(1, Math.ceil(value.total / value.page_size));
+      if ((selected ? itemPage : page) > lastPage) { if (selected) setItemPage(lastPage); else setPage(lastPage); setExpanded(new Set()); return; }
+      if (selected) setDetail(value); else setRecords(value);
+      setLoadedQuery(requestUrl); setStatus("ready");
     }).catch(reason => { if (!controller.signal.aborted) { setError(reason instanceof Error ? reason.message : "查询失败"); setLoadedQuery(requestUrl); setStatus("error"); } });
     return () => controller.abort();
-  }, [requestUrl, selected, filters.record_type, page, itemPage, refresh]);
-  const searchPending = selected?.kind === "batch" ? itemSearchComposing || itemSearchText !== itemFilters.search : !selected && filters.record_type === "single" && (searchComposing || searchText !== filters.search);
-  // A response is renderable only for the exact request that produced it, even before effects run.
+  }, [requestUrl, selected, page, itemPage, refresh]);
+  const searchPending = !!selected && (itemSearchComposing || itemSearchText !== itemFilters.search);
   const viewStatus = !requestUrl ? "ready" : searchPending || loadedQuery !== requestUrl ? "loading" : status;
-  const open = (kind: string, id: string) => { setDetail(null); setSingle(null); setExpanded(new Set()); setItemSearchText(""); setItemSearchComposing(false); setItemFilters(emptyItemFilters); setItemPage(1); setSelected({ kind, id }); };
-
+  const open = (id: string) => { setDetail(null); setExpanded(new Set()); setItemSearchText(""); setItemSearchComposing(false); setItemFilters(emptyItemFilters); setItemPage(1); setSelected({ id, kind: "batch" }); };
   const totalPages = records ? Math.max(1, Math.ceil(records.total / records.page_size)) : 1;
   const itemPages = detail ? Math.max(1, Math.ceil(detail.total / detail.page_size)) : 1;
-  const title = selected ? selected.kind === "batch" ? "批次详情" : "单次采集详情" : "采集记录";
+  const adding = detail?.task_kind === "add_links";
+  const title = selected ? "批次详情" : "采集记录";
   return <AppShell page="collection-tasks" onNavigate={onNavigate} breadcrumb={selected ? `采集记录 / ${title}` : "采集记录"}>
-    <div className="collection-records"><header className="page-header"><div><h1>{title}</h1><p className="page-description">{selected ? detail ? `${batchTriggerLabels[detail.trigger_kind] || "触发方式未知"} · ${formatDate(detail.started_at)} · ${batchTitle(detail)}` : selected.kind === "single" ? "历史未归属单次采集 · 无可靠批次身份" : "查看本次任务的商品结果与每轮采集历史。" : "按每次采集任务查看结果、耗时与异常情况。"}</p></div>{selected && <button className="secondary-button" onClick={() => { setSelected(null); setDetail(null); setSingle(null); }}>← 返回采集记录</button>}</header>
-    {!selected && <div className="table-card record-filters">
-      <div className="record-date-range"><label>开始日期<input type="date" value={filters.start} onChange={event => changeFilters({ start: event.target.value })} /></label><label>结束日期<input type="date" value={filters.end} min={filters.start} onChange={event => changeFilters({ end: event.target.value })} /></label></div>
-      <RecordSelect label="触发方式" value={filters.trigger_kind} onChange={trigger_kind => changeFilters({ trigger_kind })} options={[["all", "全部"], ["manual", "手动"], ["scheduled", "定时"], ["unknown", "历史触发方式未知"]]} />
-      <RecordSelect label="异常情况" value={filters.anomaly} onChange={anomaly => changeFilters({ anomaly })} options={[["all", "全部"], ["current", "有异常"], ["none", "无异常"], ["recovered", "曾异常但已恢复"]]} />
-      <RecordSelect label="记录类型" value={filters.record_type} onChange={record_type => { changeFilters({ record_type, trigger_kind: "all", anomaly: "all", search: "" }); setSearchText(""); setSearchComposing(false); }} options={[["batch", "批次任务"], ["single", "历史未归属单次采集"]]} />
-      {filters.record_type === "single" && <label className="record-search">搜索<input value={searchText} onChange={event => setSearchText(event.target.value)} onCompositionStart={() => setSearchComposing(true)} onCompositionEnd={event => { setSearchText(event.currentTarget.value); setSearchComposing(false); }} placeholder="搜索商品名称 / Offer ID" /></label>}
-      <button className="secondary-button" type="button" onClick={() => { setFilters(initialRecordFilters()); setSearchText(""); setSearchComposing(false); setPage(1); }}>清除筛选</button>
-      {!datesValid && <p className="record-date-error" role="alert">请输入有效日期，开始日期不能晚于结束日期。</p>}
+    <div className="collection-records"><header className="page-header"><div><h1>{title}</h1><p className="page-description">{selected && detail ? `${batchTriggerLabels[detail.trigger_kind]} · ${formatDate(detail.started_at)} · ${batchTitle(detail)}` : "按每次采集任务查看结果、耗时与异常情况。"}</p></div>{selected && <button className="secondary-button" onClick={() => { setSelected(null); setDetail(null); }}>← 返回采集记录</button>}</header>
+    {!selected && <div className="table-card record-filters"><div className="record-date-range"><label>开始日期<input type="date" value={filters.start} onChange={event => changeFilters({ start: event.target.value })} /></label><label>结束日期<input type="date" value={filters.end} min={filters.start} onChange={event => changeFilters({ end: event.target.value })} /></label></div>
+      <RecordSelect label="触发方式" value={filters.trigger_kind} onChange={trigger_kind => changeFilters({ trigger_kind })} options={[["all", "全部"], ["manual", "手动采集"], ["scheduled", "定时采集"], ["add_links", "添加链接"]]} />
+      <RecordSelect label="异常情况" value={filters.anomaly} onChange={anomaly => changeFilters({ anomaly })} options={allowedRecordAnomalies(filters.trigger_kind)} />
+      <button className="secondary-button" onClick={() => { setFilters(initialRecordFilters()); setFilterNotice(""); setPage(1); }}>清除筛选</button>{filterNotice && <p role="status">{filterNotice}</p>}{!datesValid && <p role="alert" className="record-date-error">请输入有效日期，开始日期不能晚于结束日期。</p>}
     </div>}
-    {selected?.kind === "batch" && detail && <RecordSummary detail={detail} />}
-    {selected?.kind === "batch" && <div className="table-card record-filters record-item-filters">
-      <label className="record-search">关键词<input value={itemSearchText} onChange={event => setItemSearchText(event.target.value)} onCompositionStart={() => setItemSearchComposing(true)} onCompositionEnd={event => { setItemSearchText(event.currentTarget.value); setItemSearchComposing(false); }} placeholder="搜索商品 / Offer / 店铺" /></label>
-      <RecordSelect label="最终结果" value={itemFilters.final_result} onChange={final_result => changeItemFilters({ final_result })} options={[["all", "全部"], ["success", "成功"], ["exception", "异常"], ["not_executed", "未执行"], ["verification_required", "需要人工验证"], ["pending", "进行中"]]} />
-      <RecordSelect label="是否异常" value={itemFilters.anomaly} onChange={anomaly => changeItemFilters({ anomaly })} options={[["all", "全部"], ["current", "当前有异常"], ["recovered", "曾异常但已恢复"], ["none", "无技术异常"]]} />
-      <RecordSelect label="尝试类型" value={itemFilters.attempt_kind} onChange={attempt_kind => changeItemFilters({ attempt_kind })} options={[["all", "全部"], ...Object.entries(batchAttemptKindLabels)]} />
-      <RecordSelect label="异常原因" value={itemFilters.reason} onChange={reason => changeItemFilters({ reason })} options={[["all", "全部"], ["placeholder", "页面占位（非技术异常）"], ["source_unavailable", "官方助手来源不可用"], ["loading", "加载未完成"], ["read_failed", "字段读取失败"], ["base_failed", "基础商品读取失败"]]} />
-      <button className="secondary-button" type="button" onClick={() => { setItemFilters(emptyItemFilters); setItemSearchText(""); setItemSearchComposing(false); setItemPage(1); setExpanded(new Set()); }}>重置</button>
-      <label className="record-sort"><input type="checkbox" checked={itemFilters.anomalies_first === "true"} onChange={event => changeItemFilters({ anomalies_first: String(event.target.checked) })} />异常优先</label>
+    {selected && detail && <RecordSummary detail={detail} />}
+    {selected && <div className="table-card record-filters record-item-filters"><label className="record-search">关键词<input value={itemSearchText} onChange={event => setItemSearchText(event.target.value)} onCompositionStart={() => setItemSearchComposing(true)} onCompositionEnd={event => { setItemSearchText(event.currentTarget.value); setItemSearchComposing(false); }} placeholder="搜索商品 / Offer / 店铺" /></label>
+      <RecordSelect label="最终结果" value={itemFilters.final_result} onChange={final_result => changeItemFilters({ final_result })} options={[["all", "全部"], ["success", "成功"], ["exception", "异常"], ["not_executed", "未执行"], ...(adding ? [["business_rejected", "业务拒绝"]] as [string, string][] : [["verification_required", "需要人工验证"]] as [string, string][]), ["pending", "进行中"]]} />
+      <RecordSelect label="是否异常" value={itemFilters.anomaly} onChange={anomaly => changeItemFilters({ anomaly })} options={[["all", "全部"], ["current", "当前有异常"], ...(adding ? [["rejected", "业务拒绝"], ["verification_required", "需要验证"]] as [string, string][] : [["recovered", "曾异常但已恢复"]] as [string, string][]), ["none", "无技术异常"]]} />
+      {!adding && <><RecordSelect label="尝试类型" value={itemFilters.attempt_kind} onChange={attempt_kind => changeItemFilters({ attempt_kind })} options={[["all", "全部"], ...Object.entries(batchAttemptKindLabels)]} /><RecordSelect label="异常原因" value={itemFilters.reason} onChange={reason => changeItemFilters({ reason })} options={[["all", "全部"], ["placeholder", "页面占位（非技术异常）"], ["source_unavailable", "官方助手来源不可用"], ["loading", "加载未完成"], ["read_failed", "字段读取失败"], ["base_failed", "基础商品读取失败"]]} /></>}
+      <button className="secondary-button" onClick={() => { setItemFilters(emptyItemFilters); setItemSearchText(""); setItemSearchComposing(false); setItemPage(1); setExpanded(new Set()); }}>重置</button><label className="record-sort"><input type="checkbox" checked={itemFilters.anomalies_first === "true"} onChange={event => changeItemFilters({ anomalies_first: String(event.target.checked) })} />异常优先</label>
     </div>}
     <RecordState status={viewStatus} error={error} retry={() => setRefresh(refresh + 1)} />
-    {viewStatus === "ready" && requestUrl !== null && !selected && records && <section className="table-card"><div className="table-scroll"><table className="record-table"><thead><tr>{["开始时间", "触发方式", "计划商品", "成功", "异常", "页面访问", "补采访问", "耗时", "任务状态", "操作"].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{filters.record_type === "batch" ? (records as BatchRecordPage).items.map(batch => <tr key={batch.task_id}><td title={batch.task_id}>{formatDate(batch.started_at)}</td><td>{batchTriggerLabels[batch.trigger_kind] || "触发方式未知"}</td><td>{batch.planned_products}</td><td className="record-success">{successfulProducts(batch)}</td><td className={exceptionProducts(batch) ? "record-error" : ""}>{exceptionProducts(batch)}</td><td>{batch.page_visits}{batch.page_visits_unknown > 0 && <small>另 {batch.page_visits_unknown} 次未知</small>}</td><td>{batch.retry_visits}</td><td title="批次真实开始到结束，包含等待、休息、验证冷却和补采">{collectionDuration(batch.started_at, batch.finished_at, ["created", "running"].includes(batch.lifecycle_status))}</td><td><RecordBadge tone={exceptionProducts(batch) ? "warning" : batch.outcome_code === "success" ? "success" : "neutral"}>{batchTitle(batch)}</RecordBadge>{!batch.outcome_code && <small>{batch.completed} / {batch.planned_products}</small>}</td><td><button className="secondary-button" onClick={() => open("batch", batch.task_id)}>查看详情</button></td></tr>) : (records as LegacyPage).items.map(run => <tr key={run.id}><td>{formatDate(run.started_at)}<small>单次记录 #{run.id}</small></td><td>历史未归属单次采集<small>触发方式未知</small></td><td>1</td><td>{run.status === "success" && run.has_anomaly === false ? 1 : "—"}</td><td>{run.has_anomaly ? 1 : run.has_anomaly === false ? 0 : "未知"}</td><td>—</td><td>不适用</td><td>{collectionDuration(run.started_at, run.finished_at, run.status === "running")}</td><td><RecordBadge>{formatCollectionRunStatus(run.status as "running" | "success" | "failed", run.operating_metrics_status as OperatingMetricsStatus)}</RecordBadge></td><td><button className="secondary-button" onClick={() => open("single", String(run.id))}>查看详情</button></td></tr>)}</tbody></table></div>{records.items.length === 0 && <div className="detail-empty">暂无符合条件的采集记录，可清除筛选后重试。</div>}<PaginationBar total={records.total} itemLabel="条记录" pageSize={records.page_size} page={records.page} totalPages={totalPages} onPrevious={() => setPage(page - 1)} onNext={() => setPage(page + 1)} previousDisabled={page <= 1} nextDisabled={page >= totalPages} /></section>}
-    {viewStatus === "ready" && requestUrl !== null && selected?.kind === "batch" && detail && <>{detail.protection_details && <p className="collection-batch-notice">{detail.protection_details} · 已取消补采 {detail.circuit_breaker_cancelled}</p>}<section className="table-card"><div className="table-scroll"><table className="record-table record-product-table"><thead><tr>{["商品信息", "最终结果", "尝试次数", "页面访问数", "耗时", "异常摘要", "操作"].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{detail.items.map(item => <Fragment key={item.position}><tr><td><div className="product-cell"><ProductImage competitor={{ main_image_url: item.main_image_url }} /><div><strong>{item.identity_removed ? "商品已删除" : item.title || "标题未采集"}</strong>{item.identity_removed ? <small>字段明细已随商品删除</small> : <small>Offer ID：{item.offer_id || "未采集"} ｜ 店铺：{item.shop_name || "未采集"}</small>}</div></div></td><td><RecordBadge tone={item.final_result === "final_failed" ? "danger" : item.has_anomaly ? "warning" : item.final_result?.includes("success") ? "success" : "neutral"}>{batchResultLabels[item.final_result || ""] || "进行中"}</RecordBadge></td><td>{item.attempts_started}</td><td>{item.page_visits}{item.page_visits_unknown > 0 && <small>另 {item.page_visits_unknown} 次未知</small>}</td><td title="该商品本批次首次尝试到最终结果确定的历时，包含跨队列等待，不是连续页面加载时间">{formatCollectionDuration(item.duration_seconds)}</td><td className="record-anomaly">{item.has_anomaly ? item.final_result === "verification_required" ? "需要人工验证" : item.attempts.length ? attemptSummary([...item.attempts].reverse().find(attempt => attemptSummary(attempt) !== "—") || item.attempts[item.attempts.length - 1]) : "最终异常（字段已删除）" : item.had_anomaly ? "历史技术异常已恢复" : "—"}</td><td><button className="text-button" aria-expanded={expanded.has(item.position)} aria-label={`${expanded.has(item.position) ? "收起" : "展开"} ${item.title || "商品已删除"}`} onClick={() => setExpanded(previous => { const next = new Set(previous); if (next.has(item.position)) next.delete(item.position); else next.add(item.position); return next; })}>{expanded.has(item.position) ? "收起 ∧" : "展开 ∨"}</button></td></tr>{expanded.has(item.position) && <tr><td colSpan={7}>{item.attempts.length ? <AttemptHistory attempts={item.attempts} /> : <div className="detail-empty">{item.identity_removed ? "商品已删除，字段明细已随商品删除；匿名汇总仍保留。" : "尚无采集尝试"}</div>}</td></tr>}</Fragment>)}</tbody></table></div>{detail.items.length === 0 && <div className="detail-empty">没有符合条件的商品，可重置筛选后重试。</div>}<PaginationBar total={detail.total} itemLabel="个商品" pageSize={detail.page_size} page={detail.page} totalPages={itemPages} onPrevious={() => { setItemPage(itemPage - 1); setExpanded(new Set()); }} onNext={() => { setItemPage(itemPage + 1); setExpanded(new Set()); }} previousDisabled={itemPage <= 1} nextDisabled={itemPage >= itemPages} /></section></>}
-    {viewStatus === "ready" && requestUrl !== null && selected?.kind === "single" && single && <section className="table-card record-single"><div className="product-cell"><ProductImage competitor={{ main_image_url: single.main_image_url }} /><div><strong>{single.title || "标题未采集"}</strong><small>Offer ID：{single.offer_id} ｜ 店铺：{single.shop_name || "未采集"}</small></div></div><AttemptHistory attempts={[single]} /></section>}
-    <p className="record-duration-note">采集耗时包含等待与补采；页面显示 - 不属于技术异常。<span title="批次：真实开始至结束，含休息、验证冷却与补采。商品：本批次首次尝试至可信终态，含跨队列等待，并非连续页面加载。单轮：真实开始至结束；时间不完整显示缺失或 —。未归属单次记录不推断批次及触发方式。" tabIndex={0} className="record-help">耗时与记录说明 ⓘ</span></p>
-    </div>
+    {viewStatus === "ready" && requestUrl && !selected && records && <section className="table-card"><div className="table-scroll"><table className="record-table"><thead><tr>{["开始时间", "触发方式", "计划商品 / 提交链接", "成功", "异常", "页面访问", "补采访问", "耗时", "任务状态", "操作"].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{records.items.map(batch => <tr key={batch.task_id}><td title={batch.task_id}>{formatDate(batch.started_at)}</td><td>{batchTriggerLabels[batch.trigger_kind] || "手动采集"}</td><td>{batch.input_summary ? <>提交 {batch.input_summary.total} 条<small>候选 {batch.planned_products} 个</small></> : batch.planned_products}</td><td className="record-success">{successfulProducts(batch)}</td><td className={exceptionProducts(batch) ? "record-error" : ""}>{exceptionProducts(batch)}{batch.input_summary && <small>业务拒绝 {batch.input_summary.business_rejected}</small>}</td><td>{batch.page_visits}{batch.page_visits_unknown > 0 && <small>另 {batch.page_visits_unknown} 次未知</small>}</td><td>{batch.retry_visits}</td><td>{collectionDuration(batch.started_at, batch.finished_at, ["created", "running"].includes(batch.lifecycle_status))}</td><td><RecordBadge tone={exceptionProducts(batch) ? "warning" : batch.outcome_code === "success" ? "success" : "neutral"}>{batchTitle(batch)}</RecordBadge></td><td><button className="secondary-button" onClick={() => open(batch.task_id)}>查看详情</button></td></tr>)}</tbody></table></div>{records.items.length === 0 && <div className="detail-empty">暂无符合条件的采集记录，可清除筛选后重试。</div>}<PaginationBar total={records.total} itemLabel="条记录" pageSize={records.page_size} page={records.page} totalPages={totalPages} onPrevious={() => setPage(page - 1)} onNext={() => setPage(page + 1)} previousDisabled={page <= 1} nextDisabled={page >= totalPages} /></section>}
+    {viewStatus === "ready" && selected && detail && adding && <section className="table-card"><AddInputTable detail={detail} />{detail.total === 0 && <div className="detail-empty">没有符合条件的输入</div>}<PaginationBar total={detail.total} itemLabel="条输入" pageSize={detail.page_size} page={itemPage} totalPages={itemPages} onPrevious={() => setItemPage(itemPage - 1)} onNext={() => setItemPage(itemPage + 1)} previousDisabled={itemPage <= 1} nextDisabled={itemPage >= itemPages} /></section>}
+    {viewStatus === "ready" && requestUrl !== null && selected && detail && detail.task_kind !== "add_links" && <>{detail.protection_details && <p className="collection-batch-notice">{detail.protection_details} · 已取消补采 {detail.circuit_breaker_cancelled}</p>}<section className="table-card"><div className="table-scroll"><table className="record-table record-product-table"><thead><tr>{["商品信息", "最终结果", "尝试次数", "页面访问数", "耗时", "异常摘要", "操作"].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{detail.items.map(item => <Fragment key={item.position}><tr><td><div className="product-cell"><ProductImage competitor={{ main_image_url: item.main_image_url }} /><div><strong>{item.identity_removed ? "商品已删除" : item.title || "标题未采集"}</strong>{item.identity_removed ? <small>字段明细已随商品删除</small> : <small>Offer ID：{item.offer_id || "未采集"} ｜ 店铺：{item.shop_name || "未采集"}</small>}</div></div></td><td><RecordBadge tone={item.final_result === "final_failed" ? "danger" : item.has_anomaly ? "warning" : item.final_result?.includes("success") ? "success" : "neutral"}>{batchResultLabels[item.final_result || ""] || "进行中"}</RecordBadge></td><td>{item.attempts_started}</td><td>{item.page_visits}{item.page_visits_unknown > 0 && <small>另 {item.page_visits_unknown} 次未知</small>}</td><td title="该商品本批次首次尝试到最终结果确定的历时，包含跨队列等待，不是连续页面加载时间">{formatCollectionDuration(item.duration_seconds)}</td><td className="record-anomaly">{item.has_anomaly ? item.final_result === "verification_required" ? "需要人工验证" : item.attempts.length ? attemptSummary([...item.attempts].reverse().find(attempt => attemptSummary(attempt) !== "—") || item.attempts[item.attempts.length - 1]) : "最终异常（字段已删除）" : item.had_anomaly ? "历史技术异常已恢复" : "—"}</td><td><button className="text-button" aria-expanded={expanded.has(item.position)} aria-label={`${expanded.has(item.position) ? "收起" : "展开"} ${item.title || "商品已删除"}`} onClick={() => setExpanded(previous => { const next = new Set(previous); if (next.has(item.position)) next.delete(item.position); else next.add(item.position); return next; })}>{expanded.has(item.position) ? "收起 ∧" : "展开 ∨"}</button></td></tr>{expanded.has(item.position) && <tr><td colSpan={7}>{item.attempts.length ? <AttemptHistory attempts={item.attempts} /> : <div className="detail-empty">{item.identity_removed ? "商品已删除，字段明细已随商品删除；匿名汇总仍保留。" : "尚无采集尝试"}</div>}</td></tr>}</Fragment>)}</tbody></table></div>{detail.items.length === 0 && <div className="detail-empty">没有符合条件的商品，可重置筛选后重试。</div>}<PaginationBar total={detail.total} itemLabel="个商品" pageSize={detail.page_size} page={detail.page} totalPages={itemPages} onPrevious={() => { setItemPage(itemPage - 1); setExpanded(new Set()); }} onNext={() => { setItemPage(itemPage + 1); setExpanded(new Set()); }} previousDisabled={itemPage <= 1} nextDisabled={itemPage >= itemPages} /></section></>}
+
+    <p className="record-duration-note">采集耗时包含等待与补采；页面显示 - 不属于技术异常。<span className="record-help" tabIndex={0} title="任务：真实开始到结束；商品：本任务首次尝试到可信终态；单轮：真实开始到结束。缺少可信时间时显示 —。">耗时与记录说明 ⓘ</span></p></div>
   </AppShell>;
 }
 
@@ -2453,10 +2417,13 @@ function App() {
       setBatchStatus("ready");
       setBatchError(null);
       const wasActiveBatch = previous.status === "running" || previous.status === "pausing" || previous.status === "paused" || previous.status === "stopping" || previous.status === "resting" || previous.status === "cooling_down";
-      if ((next.status === "completed" || next.status === "stopped") && wasActiveBatch) {
+      const addFinished = next.work_kind === "add_links" && next.lifecycle_status === "terminal" && (wasActiveBatch || previous.task_id !== next.task_id);
+      if (addFinished || (next.status === "completed" || next.status === "stopped") && wasActiveBatch) {
         const refreshSucceeded = (await Promise.all([loadCurrentProducts(), loadDashboard()])).every(Boolean);
         setNotice(refreshSucceeded
-          ? next.status === "stopped"
+          ? next.work_kind === "add_links" && next.input_progress
+            ? { message: `添加任务：新增 ${next.input_progress.added}，业务拒绝 ${next.input_progress.business_rejected}，技术失败 ${next.input_progress.technical_failed}，未执行 ${next.input_progress.not_executed}`, type: next.input_progress.anomaly_inputs ? "error" : "success" }
+            : next.status === "stopped"
             ? { message: `采集已结束：已完成 ${next.completed} 件，剩余 ${next.remaining} 件未采集`, type: "success" }
             : { message: `采集完成：成功 ${next.succeeded}，失败 ${next.failed}`, type: next.failed ? "error" : "success" }
           : { message: batchRefreshFailureMessage, type: "error" });
@@ -2521,7 +2488,9 @@ function App() {
     if (updated) setDetailDays(days);
     setDetailRangeLoading(false);
   }
-  function openDialog() { setNotice(null); setUrl(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true); }
+  function openDialog() { setNotice(null); setUrl(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true);
+    try { const stored = localStorage.getItem(pendingAddKey); if (stored) { const pending = JSON.parse(stored) as AddEnvelope; setUrl(Array.from({ length: Math.max(...pending.inputs.map(input => input.source_line)) }, (_, index) => pending.inputs.find(input => input.source_line === index + 1)?.text || "").join("\n")); setGroupId(pending.group_id); setNotice({ message: "有待确认的添加提交，点击添加将先查询原任务，不会重复采集。", type: "error" }); } } catch { setNotice({ message: "无法读取提交恢复信息，请检查浏览器存储。", type: "error" }); }
+  }
   function openDashboardAddDialog() {
     if (!ownShopName) { navigate("settings"); return; }
     openDialog();
@@ -2701,18 +2670,48 @@ function App() {
   }
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const urls = parseCompetitorUrls(url);
-    if (addStatus === "submitting" || urls.length === 0) return;
-    setAddStatus("submitting"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: urls.length });
-    const successLabels: string[] = [];
-    const result = await addCompetitorsSequentially(urls, groupId, fetch, (completed, total) => setAddProgress({ completed, total }), (_url, body) => {
-      successLabels.push(body.ownership === "self" ? `已识别为我方商品「${body.title || "新商品"}」，已添加至我方商品` : `已添加监控商品「${body.title || "新商品"}」`);
-    });
-    if (result.failures.length === 0) {
-      setDialogOpen(false); setUrl(""); setGroupId(null); setNewGroupName(""); setAddStatus("initial"); setGroupCreateStatus("initial"); setAddProgress({ completed: 0, total: 0 }); const refreshSucceeded = (await Promise.all([loadCompetitors(), loadOwnProducts(), loadDashboard()])).every(Boolean); setNotice(getBatchRefreshNotice(successLabels.length === 1 ? successLabels[0] : `已添加 ${result.succeeded.length} 个监控商品`, refreshSucceeded)); if (refreshSucceeded) setPaginationResetVersion((version) => version + 1); return;
+    if (addStatus === "submitting") return;
+    const inputs = url.split(/\r?\n/).map((text, index) => ({ text, source_line: index + 1 })).filter(input => input.text.trim());
+    if (!inputs.length) return;
+    if (inputs.length > 100 || inputs.some(input => input.text.length > 2048)) { setNotice({ message: "最多提交100条非空链接，每条最长2048字符。", type: "error" }); return; }
+    setAddStatus("submitting"); setAddFailures([]); setAddSucceededCount(0);
+    try {
+      const stored = localStorage.getItem(pendingAddKey);
+      let previous: AddEnvelope | null = stored ? JSON.parse(stored) : null;
+      if (previous && (JSON.stringify(previous.inputs) !== JSON.stringify(inputs) || previous.group_id !== groupId)) {
+        const response = await fetch(`/api/competitors/add-batch/${previous.submission_id}`);
+        if (response.status !== 404) {
+          const body = await response.json();
+          if (!response.ok || body.accepted !== true || body.task_id !== previous.submission_id) throw new Error("原提交受理结果未知，编辑内容尚未发送，请先查询原任务。");
+          localStorage.setItem("workbench.add-task.v1", body.task_id);
+        }
+        previous = null;
+      }
+      const envelope: AddEnvelope = previous || { submission_id: crypto.randomUUID(), inputs, group_id: groupId };
+      // Save before sending. Storage failures must not send an unresumable request.
+      localStorage.setItem(pendingAddKey, JSON.stringify(envelope));
+      const result = await submitAddLinks(envelope, fetch, !!previous);
+      localStorage.setItem("workbench.add-task.v1", result.task_id);
+      localStorage.removeItem(pendingAddKey);
+      const task = result.task;
+      setAddProgress({ completed: task.input_summary?.processed || 0, total: envelope.inputs.length });
+      if (task.lifecycle_status !== "terminal") {
+        setDialogOpen(false); setUrl(""); setAddStatus("initial");
+        setNotice({ message: "添加任务已受理，可在大屏查看进度，在采集记录查看所有输入结果。", type: "success" });
+        await loadBatchStatus();
+        return;
+      }
+      const failed = task.items.filter(input => input.result_code !== "added").map(input => ({ url: input.input_text || "身份已移除", code: (input.result_code === "already_exists" ? "competitor_already_exists" : input.result_code === "invalid_url" ? "invalid_competitor_url" : "server-error") as AddFailureCode, reason: input.sanitized_reason || inputResultLabels[input.result_code || ""] || "未处理" }));
+      const succeeded = task.input_summary?.added || 0;
+      setAddFailures(failed); setAddSucceededCount(succeeded);
+      setUrl(failed.map(input => input.url).join("\n")); setAddStatus(failed.length ? succeeded ? "partial" : "failed" : "initial");
+      if (!failed.length) setDialogOpen(false);
+      await Promise.all([loadCompetitors(), loadOwnProducts(), loadDashboard(), loadBatchStatus()]);
+      setNotice({ message: `添加任务：新增 ${succeeded}，业务拒绝 ${task.input_summary?.business_rejected || 0}，技术失败 ${task.input_summary?.technical_failed || 0}；完整结果见采集记录。`, type: task.input_summary?.anomaly_inputs ? "error" : "success" });
+    } catch (error) {
+      setAddStatus("server-error");
+      setNotice({ message: error instanceof Error ? error.message : "受理结果未知，请使用原提交重试查询。", type: "error" });
     }
-    setAddFailures(result.failures); setAddSucceededCount(result.succeeded.length); setUrl(result.failures.map((failure) => failure.url).join("\n")); setAddStatus(result.succeeded.length ? "partial" : "failed");
-    if (result.succeeded.length > 0) { const refreshSucceeded = (await Promise.all([loadCompetitors(), loadOwnProducts(), loadDashboard()])).every(Boolean); setNotice(getBatchRefreshNotice(`已添加 ${result.succeeded.length} 个监控商品`, refreshSucceeded)); if (refreshSucceeded) setPaginationResetVersion((version) => version + 1); }
   }
   function openBatchGroupDialog(selectedCompetitorIds: number[]) {
     const selected = currentProducts.filter((item) => selectedCompetitorIds.includes(item.id));

@@ -9,14 +9,15 @@ const noop = () => undefined;
 test("collection records has no live collection controls or second progress surface", () => {
   const html = renderToStaticMarkup(createElement(CollectionTasksPage, { onNavigate: noop }));
   expect(html).toContain("采集记录");
-  expect(html).toContain("批次");
-  expect(html).toContain("历史未归属单次采集");
+
+  expect(html).not.toContain("历史未归属单次采集");
   expect(html).not.toContain("<h2>历史单次记录</h2>");
   expect(html).toContain("开始日期");
   expect(html).toContain("结束日期");
   expect(html).toContain("触发方式");
   expect(html).toContain("异常情况");
-  expect(html).toContain("记录类型");
+  expect(html).not.toContain("记录类型");
+  expect(html).toContain("添加链接");
   expect(html).not.toContain(">查询</button>");
   expect(html).not.toContain("搜索批次 / 商品 / 店铺 / Offer");
   expect(html).not.toContain("暂停采集");
@@ -74,6 +75,7 @@ test("elapsed time uses actual timestamps and explicit missing boundaries", () =
   expect(collectionDuration("2026-10-14T00:00:00Z", null)).toBe("结束时间缺失");
   expect(collectionDuration("2026-10-14T00:05:10Z", "2026-10-14T00:00:00Z")).toBe("时间信息不足");
   expect(collectionDuration("not-a-date", "2026-10-14T00:00:00Z")).toBe("时间信息不足");
+  expect(collectionDuration("2026-10-15T03:45:47.168528Z", "2026-10-15T03:45:47.408197Z")).toBe("0秒");
   expect(formatCollectionDuration(null)).toBe("—");
   expect(formatCollectionDuration(0)).toBe("0秒");
   expect(formatCollectionDuration(3661)).toBe("1小时1分1秒");

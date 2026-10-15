@@ -97,7 +97,7 @@ app.include_router(settings_router)
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
     if isinstance(exc.detail, dict):
-        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+        return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
