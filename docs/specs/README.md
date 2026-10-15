@@ -94,10 +94,10 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | --- | --- | --- |
 | [collection-reliability-records-v1.2.md](collection-reliability-records-v1.2.md) | ChatGPT 独立 Final Spec Review PASS / Frozen；P0/P1/P2 = 0/0/0；审核基线 `02e9c6a0f61b76091f993b6b0af25796b5024cc8` | 真实 SQLite 诊断；批次生命周期/outcome 分离、匿名删除后汇总、导航事件计数、调度 occurrence 幂等；默认关闭且有熔断的有限经营指标补采。按冻结合同进入 Implement。 |
 
-## Draft / 待 ChatGPT Review（2026-10-15）
+## 已 Freeze Spec（2026-10-15）
 
 | Spec | 状态 | 范围 |
 | --- | --- | --- |
-| [collection-trigger-unification-v1.3.md](collection-trigger-unification-v1.3.md) | Draft / 待 ChatGPT Final Spec Review；已按 `178a58c` Review 的 P1×3/P2×1 集中修订，未 Freeze、未实施 | 手动/定时/添加链接统一真实任务；明确业务拒绝终态、添加 Runtime 输入进度、同 ID 并发受理及 unknown 查询兼容。继承 V1.2，新增合同只在 Review / Freeze 后实施。 |
+| [collection-trigger-unification-v1.3.md](collection-trigger-unification-v1.3.md) | Frozen；ChatGPT 独立 Final Spec Review PASS，P0/P1/P2=0/0/0；审核基线 `761ba2be7a16ef347693f84aebaf1f1acf15e1e1`；已批准实施 | 手动/定时/添加链接统一真实任务；明确业务拒绝终态、添加 Runtime 输入进度、同 ID 并发受理及 unknown 查询兼容。继承 V1.2，新增合同只在 Review / Freeze 后实施。 |
 
 本节为增量索引，不改写上方带日期的历史统计与 V1.2 冻结状态。

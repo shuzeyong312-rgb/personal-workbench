@@ -1,8 +1,8 @@
 # 采集来源统一与记录筛选简化 V1.3
 
-状态：**Draft / 待 ChatGPT Review**。日期：2026-10-15。不得据此进入 Implement 或自行 Freeze。
+状态：**Frozen / 已冻结**（2026-10-15；ChatGPT 独立 Final Spec Review PASS；P0/P1/P2 = 0/0/0；审核基线 `761ba2be7a16ef347693f84aebaf1f1acf15e1e1`）。已获批准进入 Implement；业务代码提交另需用户验收授权。
 
-集中修订依据：ChatGPT 对 `178a58cc08b969f925b872b7d20e760658ef096e` 的 Final Spec Review（P0=0、P1=3、P2=1）；本次处理业务拒绝统计、添加 Runtime、并发受理和 unknown 查询兼容，等待再次独立 Review。
+集中修订依据：ChatGPT 对 `178a58cc08b969f925b872b7d20e760658ef096e` 的 Final Spec Review（P0=0、P1=3、P2=1）；本次处理业务拒绝统计、添加 Runtime、并发受理和 unknown 查询兼容，本次修订已通过上述 Final Spec Review。
 
 调查基线：`c967005ba39bae926fa27f93ab40fdb890f73557`。V1.2 已交付及正式数据库 revision `20261012_14` 由本轮任务给定；仓库 ORM / 迁移链与其一致，本轮未连接正式数据库核验。下文“现状”是静态代码证据，“合同”是待 Review 的 V1.3 设计，不宣称已经实现。
 
@@ -322,7 +322,7 @@ downgrade：只有不存在 V1.3 add_links/manual_single 任务、输入事实�
 
 产品已确认：添加遇验证停止、不自动重访；原批量验证恢复不变；单商品保持同步；旧无 key 客户端跨请求去重有限；添加不做经营补采、不虚构 Observation；100 条/2048 字符上限；删除后去身份化；有 V1.3 数据拒绝有损 downgrade；全业务拒绝显示“未新增”。这些规则不再作为待决风险。
 
-本次四项 Finding 已给出唯一完整合同，无留给 Implement 自行决定的未决产品合同：P1-1 使用输入权威分类及 business_rejected 候选终态；P1-2 使用唯一 Runtime 的显式添加预约/input_progress；P1-3 使用短期 admission 标记+既有互斥+持久唯一键，未决提交不重派；P2-1 保留 unknown 的旧 API 空查询。仍待 ChatGPT Final Spec Review 确认此次修订，不等于已 Freeze。
+本次四项 Finding 已给出唯一完整合同，无留给 Implement 自行决定的未决产品合同：P1-1 使用输入权威分类及 business_rejected 候选终态；P1-2 使用唯一 Runtime 的显式添加预约/input_progress；P1-3 使用短期 admission 标记+既有互斥+持久唯一键，未决提交不重派；P2-1 保留 unknown 的旧 API 空查询。此次修订已由 ChatGPT Final Spec Review PASS，按本轮授权 Freeze。
 
 工程边界：admission 标记只在现有单进程采集部署内有效，不能扩成多进程保障；若原事务无法核对，采集互斥可能保持占用直至 DB 恢复/进程重启后核验，这是避免重复访问的明确限制。正式 schema/真实副本、并发/崩溃与 UI 合同尚未实施验证，须后续按验收矩阵落地；这些是工程验证门槛，不重开已确认的产品决策。
 
@@ -333,5 +333,5 @@ downgrade：只有不存在 V1.3 add_links/manual_single 任务、输入事实�
 - 已定义幂等/短事务/未知提交、导航计数/中断恢复、失败无 ID、删除匿名化、筛选能力及旧同步接口兼容。
 - 本次集中核对 result_code→Item final_result/base_result→Batch outcome→Runtime→列表/详情/异常筛选→恢复→迁移 CHECK→验收；业务拒绝不计技术失败，pending 受理不伪装持久任务，unknown 旧 API 仍兼容。
 - 新迁移只设计，旧 _14 不修改；无业务代码、测试、正式数据、设置或 Profile 改动。
-- 自检是作者检查，不替代 ChatGPT 独立 Spec Review；状态保持 Draft / 待 Review。
-- 仅提交本文及必要 README 索引；Push 后核对远端 SHA。完成后停止，等 ChatGPT 从 GitHub 独立 Review，未 Freeze 不 Implement。
+- 自检是作者检查，不替代 ChatGPT 独立 Spec Review；本文已通过审核并按明确授权 Freeze。
+- 仅提交本文及必要 README 索引；Push 后核对远端 SHA。本轮 Freeze 文档 Push 核验成功后自动进入 Implement；实现、测试与迁移保持未提交，完成离线验证和独立 Review / Final Gate 后交付人工验收。
