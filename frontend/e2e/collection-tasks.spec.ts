@@ -180,6 +180,9 @@ test("add-links batch uses the compact product table, seven summary cards, and f
   const mock = await installApiMock(page, { competitors: [], collectionBatches: addBatchPage, batchDetails: { "add-task": addDetail } });
   await page.route("http://127.0.0.1:5201/product-thumb.svg", route => route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60"><rect width="60" height="60" fill="#d8e6fa"/></svg>' }));
   await openRecords(page);
+  const addBatchRow = page.locator(".record-table tbody tr").first();
+  await expect(addBatchRow.locator("td").nth(2)).toHaveText("提交 9 条");
+  await expect(addBatchRow.locator("td").nth(4)).toHaveText("0");
   await page.getByRole("button", { name: "查看详情", exact: true }).click();
   const summaryCards = page.getByRole("region", { name: "批次汇总" }).locator(".record-metric");
   await expect(summaryCards).toHaveCount(7);
