@@ -101,3 +101,9 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | [collection-trigger-unification-v1.3.md](collection-trigger-unification-v1.3.md) | Frozen；ChatGPT 独立 Final Spec Review PASS，P0/P1/P2=0/0/0；审核基线 `761ba2be7a16ef347693f84aebaf1f1acf15e1e1`；已批准实施 | 手动/定时/添加链接统一真实任务；明确业务拒绝终态、添加 Runtime 输入进度、同 ID 并发受理及 unknown 查询兼容。继承 V1.2，新增合同只在 Review / Freeze 后实施。 |
 
 本节为增量索引，不改写上方带日期的历史统计与 V1.2 冻结状态。
+
+## 待 Review Spec（2026-10-15）
+
+| Spec | 状态 | 范围与门槛 |
+| --- | --- | --- |
+| [添加链接首轮经营指标与输入去重 V1.4](collection-add-initial-metrics-and-input-dedup-v1.4.md) | Draft / 待 ChatGPT Review；基线 `0cff99870a2feb4e6d852e977bc0f2d6aab470ef` | 添加时复用同一次 `CollectionPageResult` 原子保存真实经营 Observation；剪贴板及提交前按 Offer ID 去重。继承 V1.2 Observation 与 V1.3 添加任务合同；Spec Review 通过并 Freeze 前不实施。 |
