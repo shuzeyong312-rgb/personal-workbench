@@ -603,6 +603,9 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 
 /* Acceptance fixes remain scoped to the collection records pages. */
 .collection-records .record-summary { grid-template-columns: repeat(7, minmax(0, 1fr)); padding: 20px 16px 14px; }
+.collection-records .record-summary-add .record-metric:last-of-type strong { font-size: 14px; white-space: nowrap; }
+.collection-records .record-summary-alert { color: #c9475b; font-weight: 700; }
+.collection-records .record-summary-add .record-summary-note span { display: inline; margin: 0; }
 .collection-records .record-metric { display: flex; align-items: center; gap: 12px; padding: 0 12px; --metric-color: #425c82; --metric-bg: #f0f4fa; }
 .collection-records .record-metric-icon { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; margin: 0; border-radius: 11px; color: var(--metric-color); background: var(--metric-bg); }
 .record-metric-icon svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -630,6 +633,24 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .collection-records .record-fields th:nth-child(3) { width: 23%; }
 .collection-records .record-fields td { max-width: none; word-break: normal; overflow-wrap: anywhere; line-height: 1.7; }
 .collection-records .record-fields th { white-space: normal; }
+.collection-records .record-fields { min-width: 720px; }
+.collection-records .record-field-provenance { display: inline; color: #7c91ad; font-size: 10px; }
+.collection-records .record-add-table { min-width: 1080px; table-layout: fixed; }
+.collection-records .record-add-table th:nth-child(1) { width: 38%; }
+.collection-records .record-add-table th:nth-child(2) { width: 16%; }
+.collection-records .record-add-table th:nth-child(3) { width: 12%; }
+.collection-records .record-add-table th:nth-child(4) { width: 10%; }
+.collection-records .record-add-table th:nth-child(5) { width: 17%; }
+.collection-records .record-add-table th:nth-child(6) { width: 7%; }
+.collection-records .record-add-product { min-width: 0; max-width: none; }
+.collection-records .record-add-product > div { min-width: 0; }
+.collection-records .record-add-product strong { display: -webkit-box; max-width: none; overflow: hidden; white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.collection-records .record-add-product small, .collection-records .record-add-reason { overflow-wrap: anywhere; }
+.collection-records .record-add-detail-row > td { padding: 0 14px 14px; }
+.collection-records .record-add-detail { min-width: 0; }
+.collection-records .record-add-input { display: grid; grid-template-columns: minmax(140px, 190px) minmax(0, 1fr); gap: 12px; padding: 12px 4px; color: #7183a4; font-size: 11px; }
+.collection-records .record-add-input span { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.collection-records .record-add-detail .record-attempts { min-width: 0; max-width: 100%; margin: 0; }
 .collection-records .state-panel { min-height: 210px; border: 1px solid #e2eaf6; border-radius: 12px; background: #fff; }
 .collection-records .record-help { margin-left: 12px; cursor: help; color: #4e72a1; }
 .collection-records .record-date-error { flex-basis: 100%; margin: 0; color: #b44b5b; font-size: 12px; }

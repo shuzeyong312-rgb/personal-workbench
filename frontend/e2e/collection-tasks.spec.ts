@@ -52,6 +52,20 @@ const openRecords = async (page: Page) => {
   await expect(page.getByRole("heading", { name: "采集记录", exact: true })).toBeVisible();
 };
 
+test("manual batch keeps the accepted seven-card 51/51 summary", async ({ page }, testInfo) => {
+  const manualSummary = { ...batch, outcome_code: "success", planned_products: 51, completed: 51, remaining: 0, page_visits: 51, retry_visits: 0, counts: { first_pass_success: 51 } };
+  const manualItems = Array.from({ length: 10 }, (_, position) => item(position, `验收商品 ${position + 1}`, "first_pass_success", [attempt(200 + position, 1, "first_pass", observed)], { offer_id: String(200 + position) }));
+  const manualDetail = { ...detail, ...manualSummary, summary: manualSummary, items: manualItems, total: 51, page: 1, page_size: 10 };
+  const mock = await installApiMock(page, { competitors: [], collectionBatches: { items: [manualSummary], total: 1, page: 1, page_size: 20 }, batchDetails: { "task-a": manualDetail } });
+  await openRecords(page);
+  await page.getByRole("button", { name: "查看详情", exact: true }).click();
+  await expect(page.getByRole("region", { name: "批次汇总" }).locator(".record-metric")).toHaveCount(7);
+  await expect(page.getByRole("region", { name: "批次汇总" }).locator(".record-metric strong")).toHaveText(["51", "51", "0", "51", "0", "5分10秒", "成功"]);
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.screenshot({ path: acceptanceScreenshot(testInfo, "manual-batch-51-of-51.png"), fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});
+
 test("detail stale responses cannot overwrite automatic filters and IME search", async ({ page }) => {
   const mock = await installApiMock(page, { competitors: [], collectionBatches: batchPage });
   const requests: URL[] = [];
@@ -139,6 +153,98 @@ test("one task table opens final product results and authentic attempt history",
   await pagination.scrollIntoViewIfNeeded();
   await expect(pagination).toBeInViewport();
   await page.screenshot({ path: acceptanceScreenshot(testInfo, "batch-responsive-pagination.png"), fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});
+
+test("add-links batch uses the compact product table, seven summary cards, and full-width expandable history", async ({ page }, testInfo) => {
+  const addSummary = {
+    ...batch, task_id: "add-task", task_kind: "add_links", trigger_kind: "add_links", outcome_code: "partial_failure", planned_products: 6,
+    counts: { first_pass_success: 6 }, page_visits: 6, retry_visits: 0, anomaly_products: 0, technical_exception_products: 0,
+    input_summary: { total: 9, candidate_total: 6, processed: 9, remaining: 0, pending: 0, added: 6, business_rejected: 3, technical_failed: 0, verification_required: 0, interrupted: 0, not_executed: 0, anomaly_inputs: 0 },
+  };
+  const metricValues = ["2024-01", "100+", "<10", "500+", "200+", "95", "95%", "98%"];
+  const successful = item(0, "这是一款用于测试两行省略与完整标题 tooltip 的长标题商品", "first_pass_success", [attempt(101, 1, "first_pass", observed)], {
+    source_line: 1, input_text: "https://detail.1688.com/offer/101.html?spm=very-long-query-parameter-value",
+    offer_id: "101", title: "这是一款用于测试两行省略与完整标题 tooltip 的长标题商品", shop_name: "测试店铺名称以及较长来源信息", main_image_url: "http://127.0.0.1:5201/product-thumb.svg",
+    result_code: "added", operating_metrics_status: "success",
+    attempts: [{ ...attempt(101, 1, "first_pass", observed), observations: metricKeys.map((metric_key, index) => ({ metric_key, status: "observed", raw_value: metricValues[index], reason: null, source: "官方采购助手来源说明较长", observed_at: "2026-10-15T03:45:47Z" })) }],
+  });
+  const addItems = [
+    ...Array.from({ length: 6 }, (_, index) => ({ ...successful, position: index, source_line: index + 1, offer_id: String(101 + index), input_text: `https://detail.1688.com/offer/${101 + index}.html?query=${"x".repeat(140)}`, title: index ? `成功商品 ${index + 1}` : successful.title, main_image_url: index ? null : successful.main_image_url })),
+    { ...item(6, "已存在商品", "first_pass_success", []), source_line: 7, input_text: "https://detail.1688.com/offer/107.html", offer_id: "107", result_code: "already_exists", sanitized_reason: "商品已存在" },
+    { ...item(7, null, "not_executed", []), source_line: 8, input_text: "invalid", offer_id: null, title: null, shop_name: null, main_image_url: null, result_code: "invalid_url", sanitized_reason: "链接格式无效" },
+    { ...item(8, "归组冲突商品", "not_executed", []), source_line: 9, input_text: "https://detail.1688.com/offer/109.html", offer_id: "109", result_code: "identity_rejected", sanitized_reason: "归组冲突" },
+  ];
+  const addDetail = { ...detail, ...addSummary, summary: addSummary, items: addItems, total: addItems.length, page: 1, page_size: 10 };
+  const addBatchPage = { items: [addSummary], total: 1, page: 1, page_size: 20 };
+  const mock = await installApiMock(page, { competitors: [], collectionBatches: addBatchPage, batchDetails: { "add-task": addDetail } });
+  await page.route("http://127.0.0.1:5201/product-thumb.svg", route => route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60"><rect width="60" height="60" fill="#d8e6fa"/></svg>' }));
+  await openRecords(page);
+  await page.getByRole("button", { name: "查看详情", exact: true }).click();
+  const summaryCards = page.getByRole("region", { name: "批次汇总" }).locator(".record-metric");
+  await expect(summaryCards).toHaveCount(7);
+  await expect(summaryCards.locator("strong")).toHaveText(["9", "6", "3", "0", "6", "5分10秒", "部分新增成功"]);
+  await expect(page.locator(".record-add-table thead th")).toHaveText(["商品信息", "新增结果", "页面访问", "耗时", "经营指标", "操作"]);
+  await expect(page.locator(".record-add-table > tbody > tr")).toHaveCount(9);
+  const productRow = page.locator(".record-add-table > tbody > tr").nth(0);
+  await expect(productRow.locator("img.product-image")).toHaveAttribute("src", /product-thumb\.svg/);
+  await expect(productRow).toContainText("Offer ID：101");
+  await expect(productRow).toContainText("测试店铺名称以及较长来源信息");
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  const beforeExpand = await page.locator(".record-add-table").boundingBox();
+  await page.screenshot({ path: acceptanceScreenshot(testInfo, "add-links-batch-1600.png"), fullPage: true });
+  await productRow.getByRole("button", { name: /展开/ }).click();
+  const expandedRow = page.locator(".record-add-detail-row").first();
+  await expect(expandedRow.locator('td[colspan="6"]')).toHaveCount(1);
+  await expect(expandedRow).toContainText("第 1 行 · 原始输入");
+  await expect(expandedRow).toContainText("100+");
+  await expect(expandedRow).toContainText("<10");
+  const fieldSummary = expandedRow.getByText(/查看 8 项字段明细/);
+  await fieldSummary.click();
+  const fields = expandedRow.locator(".record-fields");
+  await expect(fields.locator("thead th")).toHaveText(["字段名称", "原始页面值", "字段状态", "缺失 / 失败原因"]);
+  await expect(fields.locator("tbody tr").first().locator("td").nth(2)).toHaveAttribute("title", /官方采购助手来源说明较长.*观察时间/);
+  const afterExpand = await page.locator(".record-add-table").boundingBox();
+  expect(afterExpand!.width).toBeCloseTo(beforeExpand!.width, 0);
+  const secondRow = page.locator(".record-add-table > tbody > tr").nth(2);
+  await expect(secondRow).toContainText("成功商品 2");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 1200 });
+  await page.screenshot({ path: acceptanceScreenshot(testInfo, "add-links-batch-expanded-1440.png"), fullPage: true });
+  await page.setViewportSize({ width: 1100, height: 1200 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(await page.locator(".record-add-table").evaluate(table => table.closest(".table-scroll")!.scrollWidth > table.closest(".table-scroll")!.clientWidth)).toBe(true);
+  await page.screenshot({ path: acceptanceScreenshot(testInfo, "add-links-batch-expanded-1100.png"), fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});
+
+test("add-links rejected inputs never render invented product photos or store details", async ({ page }) => {
+  const addSummary = {
+    ...batch, task_id: "add-errors", task_kind: "add_links", trigger_kind: "add_links", outcome_code: "partial_failure", planned_products: 1,
+    counts: { final_failed: 1 }, page_visits: 1, anomaly_products: 1, technical_exception_products: 0,
+    input_summary: { total: 4, candidate_total: 1, processed: 4, remaining: 0, pending: 0, added: 0, business_rejected: 3, technical_failed: 1, verification_required: 0, interrupted: 0, not_executed: 0, anomaly_inputs: 0 },
+  };
+  const rejectedItems = [
+    { ...item(0, "真实的已存在商品", "not_executed", []), source_line: 1, input_text: "https://detail.1688.com/offer/201.html", offer_id: "201", result_code: "already_exists", sanitized_reason: "商品已存在" },
+    { ...item(1, null, "not_executed", []), source_line: 2, input_text: "invalid", offer_id: null, title: null, shop_name: null, main_image_url: null, result_code: "invalid_url", sanitized_reason: "链接格式无效" },
+    { ...item(2, null, "final_failed", []), source_line: 3, input_text: "https://detail.1688.com/offer/203.html", offer_id: "203", title: null, shop_name: null, main_image_url: null, result_code: "technical_failed", sanitized_reason: "页面读取失败：" + "原因".repeat(50), has_anomaly: true, attempts: [attempt(203, 1, "first_pass", [], "failed")] },
+    { ...item(3, null, "not_executed", []), source_line: 4, input_text: "https://detail.1688.com/offer/204.html", offer_id: null, title: null, shop_name: null, main_image_url: null, identity_removed: true, result_code: "already_exists", sanitized_reason: "商品身份已移除" },
+  ];
+  const addDetail = { ...detail, ...addSummary, summary: addSummary, items: rejectedItems, total: 3, page: 1, page_size: 10 };
+  const mock = await installApiMock(page, { competitors: [], collectionBatches: { items: [addSummary], total: 1, page: 1, page_size: 20 }, batchDetails: { "add-errors": addDetail } });
+  await openRecords(page);
+  await page.getByRole("button", { name: "查看详情", exact: true }).click();
+  const rows = page.locator(".record-add-table > tbody > tr");
+  await expect(rows).toHaveCount(4);
+  await expect(rows.nth(0)).toContainText("真实的已存在商品");
+  await expect(rows.nth(0)).toContainText("商品已存在");
+  await expect(rows.nth(1)).toContainText("invalid");
+  await expect(rows.nth(2)).toContainText("Offer ID 203");
+  await expect(rows.nth(3)).toContainText("身份已移除");
+  await expect(rows.nth(3)).not.toContainText("204");
+  await expect(rows.locator("img.product-image")).toHaveCount(0);
+  await expect(rows.locator(".product-image-placeholder")).toHaveCount(0);
+  await expect(rows.nth(2).locator(".record-add-reason")).toHaveCSS("overflow-wrap", "anywhere");
   await mock.expectNoUnexpectedApi();
 });
 
