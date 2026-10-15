@@ -1,10 +1,8 @@
 # 添加链接首轮经营指标与输入去重 V1.4
 
-状态：**Draft / 待 ChatGPT Review**（2026-10-15）。
+状态：**Frozen / 已冻结**（2026-10-15；ChatGPT Final Spec Review PASS；P0/P1/P2 = 0/0/0；审核基线 `d4ea68dbe7ebf3b15c3d7718aee0f89b33070153`）。
 
-基线：`0cff99870a2feb4e6d852e977bc0f2d6aab470ef`。本 Spec 只定义实现合同，不授权实施、Freeze、迁移或真实采集。
-
-本轮定向修订基线：`aeb748c9fb00d2e4e717fdbb804c6a1e488e35a7`（P0=0、P1=2、P2=2，NOT FROZEN）。
+基线：`0cff99870a2feb4e6d852e977bc0f2d6aab470ef`。本 Spec 定义 V1.4 实现合同；已通过独立 Final Spec Review 并批准 Freeze。
 
 ## 1. 问题与目标
 
@@ -39,9 +37,9 @@ V1.4 仅修正这两处：首次添加沿用同一次页面结果保存商品与
 
 - 对 Collector 实际返回的字段逐条保存 Observation；保留 `observed`、`placeholder`、`loading`、`source_unavailable`、`read_failed` 的现有语义及原值规则。
 - 没有经营读取结果/证据时，不生成八条虚构 Observation，Run 和 Item 的经营状态为 `not_attempted`。
-- 添加模式按下表从真实 Observation 派生状态；复用现有六种枚举，不修改 V1.2 普通手动/定时采集的 `operating_metrics_status()` 合同。Run 与 Item 记录同一经营状态。经营字段缺失、占位或读取异常只影响经营状态，不单独把基础商品成功改成失败。
+- 添加模式使用本 Spec 下表定义的专用映射，从真实 Observation 派生状态；复用现有六种枚举。该映射仅适用于添加链接的首轮 Run，不调用或改变普通手动/定时采集所用的 `operating_metrics_status()` 聚合合同。Run 与 Item 记录同一经营状态。经营字段缺失、占位或读取异常只影响经营状态，不单独把基础商品成功改成失败。
 - 指标身份校验必须覆盖八个已知键、同次无重复键、每条 Observation 的 Offer ID 等于目标 Offer，来源为 V1.2 准入的 1688 官方采购助手顶部区域（`1688_official_procurement_assistant_top`），状态及原值组合符合 Observation 约束。身份或来源不匹配、未知/重复键等无法安全关联的结果不得写入，并按添加候选失败处理；不得静默跳过疑似串商品的数据。
-- 返回值没有指标列表表示没有读取证据，按 `not_attempted` 保存。Collector 提供了可安全关联的部分真实 Observation 时只保存这些实际项，不补齐不存在的字段；状态仍使用既有聚合函数。不得将缺字段推断为 `source_unavailable`。
+- 返回值没有指标列表表示没有读取证据，按 `not_attempted` 保存。Collector 提供了可安全关联的部分真实 Observation 时只保存这些实际项，不补齐不存在的字段；状态按本节添加专用映射计算。不得将缺字段推断为 `source_unavailable`。
 - 指标异常不覆盖既有有效 Observation，不改写历史 Run。历史添加批次中的 `not_attempted` 及空 Observation 保持原事实，不回填、不追采。
 
 添加模式经营状态映射（仅针对该次添加 Run）：
@@ -54,7 +52,7 @@ V1.4 仅修正这两处：首次添加沿用同一次页面结果保存商品与
 | 1–8 条且全部为 `placeholder`（包括不足 8 条） | `no_values` | 否 |
 | 至少一条技术状态且没有 `observed` | `failed` | 是 |
 
-键、来源、身份、状态或原值组合不合法仍按前述校验拒绝，不套用此映射。实际 Observation 必须逐条保留，不能因状态映射补齐缺失字段。此添加专用兼容映射不改变普通手动/定时采集：它们继续调用现有 `operating_metrics_status()` 并遵循 V1.2 合同。
+键、来源、身份、状态或原值组合不合法仍按前述校验拒绝，不套用此映射。实际 Observation 必须逐条保留，不能因状态映射补齐缺失字段。普通手动/定时采集继续调用现有 `operating_metrics_status()` 并遵循 V1.2 合同；不得为复用实现而将添加专用映射并入或改变该普通采集聚合函数。
 
 基础新增结果与指标结果分开：只要基础商品及身份/店铺/组校验成功，输入仍为 `added`、Batch Item 的 `base_result` 为 `success`、Run 的基础 `status` 为 `success`；经营字段技术异常不把它们改成失败，也不改变添加任务按输入结果派生的 `outcome_code`。Batch Item 的经营状态、`placeholder_count`、`source_unavailable_count`、`loading_count`、`read_failed_count` 和 `technical_exception_count` 必须由该候选已提交的真实 Observation 派生；后者等于三种技术状态 Observation 数之和。无 Observation 时这些计数为 0。缓存可由 Observation 幂等重建。
 
@@ -113,7 +111,7 @@ V1.4 仅修正这两处：首次添加沿用同一次页面结果保存商品与
 | 八项真实值 | 单次 Collector/导航；商品、SKU、快照、一个成功 Run、八条原始 Observation 和输入/Item 关联均存在；状态、source、Offer ID、observed_at 正确。 | API + 隔离 SQLite + Collector spy |
 | 添加模式状态映射 | 六个新增候选分别返回：①8 observed→`success`；②2 observed+1 placeholder→`partial`；③8 placeholder→`no_values`；④3 placeholder 且其余无证据→`no_values`；⑤1 source_unavailable+2 placeholder、无 observed→`failed`；⑥0 Observation→`not_attempted`。六者各自只保存实际返回 Observation；③④不计技术异常，⑤技术字段数/Item `technical_exception_count`=1。普通手动/定时的部分 placeholder 映射仍按 V1.2，不随本版改变。 | 添加 API + 隔离 SQLite |
 | 来源和身份校验 | 正确官方来源及目标 Offer 可保存；任一 Observation Offer/source 错误或不能安全关联时拒绝，零错配商品/Observation。 | API + Collector 注入 |
-| 经营异常映射及筛选 | 前述⑥个候选全为输入 `added`、Run `status=success`、`input_summary.anomaly_inputs=0`；仅候选⑤有技术 Observation，因此 `technical_exception_products=1`、`anomaly_products=1`。`current` 返回⑤，`none` 返回其余五个，`base_failed` 返回0，`placeholder` 命中②③④⑤但不增加技术异常计数。具体四类状态在 add_links 详情及 `trigger_kind=all` 查询命中真实关联 Observation；`recovered` 不匹配添加任务。 | API 列表/详情 + React/Playwright |
+| 经营异常映射及筛选 | 前述六个候选全为输入 `added`、Run `status=success`、`input_summary.anomaly_inputs=0`；仅候选⑤有技术 Observation，因此首页批次汇总为 `technical_exception_products=1`、`anomaly_products=1`。首页 `current` 将该批次作为一个结果返回，`none` 不返回该批次（首页筛选粒度为批次，只要有一个输入异常即命中 `current`）；详情 `current` 只返回候选⑤，`none` 返回①②③④⑥，`base_failed` 返回0，`placeholder` 详情命中②③④⑤但不增加技术异常计数。`trigger_kind=all` 的首页仍按批次粒度，详情仍按 Run/输入粒度；具体状态筛选按真实关联 Observation 命中；`recovered` 不匹配添加任务。 | API 列表/详情 + React/Playwright |
 | 候选保存事务失败 | 商品、SKU、Snapshot、Run、Observation、linked 状态无半成品；只发生一次页面访问；按 V1.3 收口真实失败/导航事实。 | 隔离 SQLite commit fault + spy |
 | 幂等重放 | 同一 submission 重放不新增 Batch/Run/Observation、不重新访问页面；异 fingerprint 冲突规则不变。 | API + Collector spy |
 | 收口后崩溃恢复 | 新增成功并保存指标后收口，再模拟进程重启恢复、重复收口及再次查询：Run 状态、所有 Observation、Item 经营状态与四类状态计数/`technical_exception_count` 完全不变，页面访问次数不增加；允许删除派生 Item 缓存后从保存记录幂等重建。旧 `not_attempted` Run/空 Observation 查询前后不变。 | 隔离 SQLite + add_links recovery/finalize + API |
@@ -126,4 +124,4 @@ V1.4 仅修正这两处：首次添加沿用同一次页面结果保存商品与
 
 ## 7. Review 与交付门槛
 
-本文件和必要索引状态保持 Draft / 待 ChatGPT Review。ChatGPT 从远端读取本次提交的 Spec 做独立 Spec Review；通过后才可 Freeze。Review 未通过时只按 Review 修订 Spec 并单独提交。未经 Review 不实施业务代码，不迁移数据库，不访问真实 1688。
+本文件已通过 ChatGPT 独立 Final Spec Review（P0/P1/P2 = 0/0/0）并冻结。实施须遵守本 Spec 的数据、API、UI、历史和测试合同；本 Spec 不授权数据库迁移、真实 1688 采集或扩大范围。
