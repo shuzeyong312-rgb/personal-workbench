@@ -1119,7 +1119,7 @@ export function BatchLifecycleDialog({ action, selectedCount, eligibleCount, own
 
 type OwnProductAction = "bind" | "replace" | "unbind";
 
-function GroupMoreMenu({ ownProduct, onRename, onDelete, onOwnProduct }: { ownProduct: OwnProductSummary | null; onRename: () => void; onDelete: () => void; onOwnProduct: (action: OwnProductAction) => void }) {
+function GroupMoreMenu({ onRename, onDelete }: { onRename: () => void; onDelete: () => void }) {
   const [open, setOpen] = useState(false);
   return <div className="group-more-menu">
     <button type="button" className="detail-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((current) => !current)}>更多</button>
@@ -1130,31 +1130,39 @@ function GroupMoreMenu({ ownProduct, onRename, onDelete, onOwnProduct }: { ownPr
   </div>;
 }
 
-function GroupMetrics({ metrics }: { metrics: CompetitorGroupMetrics }) {
-  return <div className="group-card-metrics">
-    <div><span>竞品数量</span><strong>{metrics.competitor_count}</strong></div>
-    <div><span>监控中</span><strong>{metrics.active_count}</strong></div>
-    <div className="group-card-price"><span>竞品价格区间</span><strong>{formatGroupPriceRange(metrics)}</strong></div>
-    <div><span>今日变化</span><strong>{metrics.changed_competitors_today} 个竞品</strong></div>
-    <div><span>最近变化</span><strong>{formatGroupLatestChange(metrics.last_change_at)}</strong></div>
-  </div>;
+type GroupDirectoryFilter = "all" | "changed" | "incomplete";
+type GroupDirectorySort = "recent" | "count" | "name";
+
+export function filterAndSortCompetitorGroups(groups: readonly CompetitorGroupSummary[], query: string, filter: GroupDirectoryFilter, sort: GroupDirectorySort): CompetitorGroupSummary[] {
+  const needle = query.trim().toLocaleLowerCase();
+  return groups.map((group, index) => ({ group, index })).filter(({ group }) => {
+    const matchesQuery = !needle || `${group.name} ${group.own_product?.title || ""}`.toLocaleLowerCase().includes(needle);
+    return matchesQuery && (filter === "all" || (filter === "changed" ? group.changed_competitors_today > 0 : group.active_count < group.competitor_count));
+  }).sort((a, b) => {
+    if (sort === "count") return b.group.competitor_count - a.group.competitor_count || a.index - b.index;
+    if (sort === "name") return a.group.name.localeCompare(b.group.name, "zh-CN") || a.index - b.index;
+    const parsedA = a.group.last_change_at ? Date.parse(a.group.last_change_at) : Number.NEGATIVE_INFINITY;
+    const parsedB = b.group.last_change_at ? Date.parse(b.group.last_change_at) : Number.NEGATIVE_INFINITY;
+    const aTime = Number.isNaN(parsedA) ? Number.NEGATIVE_INFINITY : parsedA;
+    const bTime = Number.isNaN(parsedB) ? Number.NEGATIVE_INFINITY : parsedB;
+    return bTime - aTime || a.index - b.index;
+  }).map(({ group }) => group);
 }
 
-function CompetitorGroupCard({ group, onViewCompetitors, onViewAnalysis, onRename, onDelete, onOwnProduct }: { group: CompetitorGroupSummary; onViewCompetitors: () => void; onViewAnalysis: () => void; onRename: () => void; onDelete: () => void; onOwnProduct: (action: OwnProductAction) => void }) {
-  return <article className="group-card">
-    <div className="group-card-header"><div><h2>{group.name}</h2><span>{group.competitor_count} 个竞品</span></div><GroupMoreMenu ownProduct={group.own_product} onRename={onRename} onDelete={onDelete} onOwnProduct={onOwnProduct} /></div>
-    <div className="group-own-product"><span>我方商品</span><strong>{group.own_product ? group.own_product.title || `Offer ${group.own_product.offer_id}` : "尚未绑定"}</strong></div>
-    <GroupMetrics metrics={group} />
-    <div className="group-card-actions"><button type="button" className="secondary-button" onClick={onViewCompetitors}>查看竞品</button><button type="button" className="primary-button" onClick={onViewAnalysis}>组分析</button></div>
-  </article>;
+function CompetitorGroupRow({ group, onViewCompetitors, onViewAnalysis, onRename, onDelete }: { group: CompetitorGroupSummary; onViewCompetitors: () => void; onViewAnalysis: () => void; onRename: () => void; onDelete: () => void }) {
+  const stoppedCount = group.competitor_count - group.active_count;
+  return <tr data-group-id={group.id}>
+    <td className="group-directory-product"><button type="button" className="group-directory-name" title={group.name} onClick={onViewAnalysis}>{group.name}</button><span title={group.own_product?.title || undefined}>{group.own_product?.title || "尚未绑定"}</span></td>
+    <td className="group-directory-monitor"><strong>{group.active_count}/{group.competitor_count}</strong>{stoppedCount > 0 && <span>已停止 {stoppedCount} 个</span>}</td>
+    <td className="group-directory-price" title="链接展示价范围，不代表同规格竞品比较价">{formatGroupPriceRange(group)}</td>
+    <td className={group.changed_competitors_today > 0 ? "group-directory-changed" : "group-directory-muted"}>{group.changed_competitors_today || "—"}</td>
+    <td className="group-directory-latest">{formatGroupLatestChange(group.last_change_at)}</td>
+    <td><div className="group-directory-actions"><button type="button" className="detail-button" onClick={onViewCompetitors}>查看竞品</button><button type="button" className="detail-button group-analysis-action" onClick={onViewAnalysis}>组分析</button><GroupMoreMenu onRename={onRename} onDelete={onDelete} /></div></td>
+  </tr>;
 }
 
 function UnassignedGroupCard({ metrics, onViewCompetitors }: { metrics: CompetitorGroupMetrics; onViewCompetitors: () => void }) {
-  return <article className="group-card group-card-unassigned">
-    <div className="group-card-header"><div><h2>未分组</h2><span>尚未归入竞品组</span></div></div>
-    <GroupMetrics metrics={metrics} />
-    <div className="group-card-actions"><button type="button" className="secondary-button" onClick={onViewCompetitors}>查看竞品</button></div>
-  </article>;
+  return <div className="group-unassigned-row"><div><strong>未分组</strong><span>{metrics.competitor_count} 个商品尚未归入竞品组</span></div><button type="button" className="detail-button" onClick={onViewCompetitors}>查看竞品</button></div>;
 }
 
 type GroupPageProps = {
@@ -1172,17 +1180,34 @@ type GroupPageProps = {
 };
 
 export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCompetitors, onViewAnalysis = noop, onRename, onDelete, onOwnProduct, onNavigate }: GroupPageProps) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<GroupDirectoryFilter>("all");
+  const [sort, setSort] = useState<GroupDirectorySort>("recent");
   const hasUnassigned = summary?.unassigned.competitor_count ? summary.unassigned.competitor_count > 0 : false;
   const isEmpty = status === "ready" && summary !== null && summary.groups.length === 0 && !hasUnassigned;
+  const groups = summary ? filterAndSortCompetitorGroups(summary.groups, query, filter, sort) : [];
+  const hasFilters = !!query.trim() || filter !== "all";
+  const totalCompetitors = summary ? summary.groups.reduce((total, group) => total + group.competitor_count, summary.unassigned.competitor_count) : 0;
+  const totalActive = summary ? summary.groups.reduce((total, group) => total + group.active_count, summary.unassigned.active_count) : 0;
+  const clearFilters = () => { setQuery(""); setFilter("all"); };
   return <AppShell page="groups" onNavigate={onNavigate} breadcrumb="竞品分组">
-    <header className="page-header"><div><h1>竞品分组</h1><p className="page-description">以我方商品型号命名竞品组，管理对应竞品。</p></div><button type="button" className="primary-button" onClick={onCreate}>新增竞品组</button></header>
+    <header className="page-header"><div><h1>竞品分组</h1><p className="page-description">按我方商品组织直接竞品，快速进入组内分析。</p></div><button type="button" className="primary-button" onClick={onCreate}>新增竞品组</button></header>
     {status === "loading" && <section className="table-card group-state-card state-panel"><div className="spinner" /><strong>正在加载竞品组…</strong></section>}
     {status === "error" && <section className="table-card group-state-card state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品组。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></section>}
     {isEmpty && <section className="table-card group-state-card state-panel"><div className="empty-icon">＋</div><strong>还没有竞品组</strong><span>新增竞品组后，可按我方商品型号归集对应竞品进行对比监控。</span><button type="button" className="primary-button" onClick={onCreate}>新增竞品组</button></section>}
-    {status === "ready" && summary && !isEmpty && <div className="group-card-grid">
-      {summary.groups.map((group) => <CompetitorGroupCard key={group.id} group={group} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} onOwnProduct={(action) => onOwnProduct(group, action)} />)}
+    {status === "ready" && summary && !isEmpty && <>
+      <div className="group-directory-summary">{summary.groups.length} 个商品组 · {totalCompetitors} 个竞品 · {totalActive} 个监控中</div>
+      {summary.groups.length > 0 && <>
+        <div className="group-directory-toolbar">
+          <label className="group-directory-search"><span>搜索</span><input aria-label="搜索竞品组" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="组名或我方商品标题" /></label>
+          <label><span>筛选</span><select aria-label="分组筛选" value={filter} onChange={(event) => setFilter(event.target.value as GroupDirectoryFilter)}><option value="all">全部分组</option><option value="changed">今日有变化</option><option value="incomplete">监控不全</option></select></label>
+          <label><span>排序</span><select aria-label="分组排序" value={sort} onChange={(event) => setSort(event.target.value as GroupDirectorySort)}><option value="recent">最近变化优先</option><option value="count">竞品数量最多</option><option value="name">组名排序</option></select></label>
+          {hasFilters && <button type="button" className="text-button group-directory-clear" onClick={clearFilters}>清除筛选</button>}
+        </div>
+        {groups.length > 0 ? <div className="group-directory-table-wrap"><table className="group-directory-table"><thead><tr><th>商品组 / 我方商品</th><th>监控情况</th><th>竞品价格范围</th><th>今日变化</th><th>最近变化</th><th>操作</th></tr></thead><tbody>{groups.map(group => <CompetitorGroupRow key={group.id} group={group} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} />)}</tbody></table></div> : <section className="group-directory-no-results"><strong>没有符合条件的竞品组</strong><span>调整搜索或筛选条件后重试。</span></section>}
+      </>}
       {hasUnassigned && <UnassignedGroupCard metrics={summary.unassigned} onViewCompetitors={() => onViewCompetitors("unassigned")} />}
-    </div>}
+    </>}
   </AppShell>;
 }
 

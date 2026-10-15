@@ -8,7 +8,7 @@ import { expect, test, vi } from "vitest";
 
 import { competitorPageSize, competitorOfferId, dedupeCompetitorInputs, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
 
-import { submitAddLinks, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { submitAddLinks, AddDialog, applyInitialGroupFilter, filterAndSortCompetitorGroups, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -1237,6 +1237,22 @@ test.each([
 test("formats missing group latest change as an explicit empty value", () => {
   expect(formatGroupLatestChange(null)).toBe("暂无变化");
   expect(formatGroupLatestChange("2026-09-21T10:35:00Z")).not.toBe("暂无变化");
+});
+
+test("filters and stably sorts competitor groups by search, change, monitoring and directory order", () => {
+  const groups: CompetitorGroupSummary[] = [
+    { ...groupSummary, id: 1, name: "Z 暖手宝", last_change_at: "2026-09-21T10:35:00Z", changed_competitors_today: 0, own_product: { id: 1, offer_id: "1", title: "桌面暖手商品", shop_name: null, main_image_url: null, status: "active", is_active: true } },
+    { ...groupSummary, id: 2, name: "A 暖手宝", competitor_count: 8, active_count: 8, last_change_at: "2026-09-22T10:35:00Z", changed_competitors_today: 1 },
+    { ...groupSummary, id: 3, name: "B 暖手宝", competitor_count: 8, active_count: 1, last_change_at: null, changed_competitors_today: 0 },
+    { ...groupSummary, id: 4, name: "C 暖手宝", competitor_count: 3, active_count: 2, last_change_at: null, changed_competitors_today: 1 },
+  ];
+  expect(filterAndSortCompetitorGroups(groups, "桌面暖手", "all", "recent").map(item => item.id)).toEqual([1]);
+  expect(filterAndSortCompetitorGroups(groups, "a 暖手", "all", "name").map(item => item.id)).toEqual([2]);
+  expect(filterAndSortCompetitorGroups(groups, "", "changed", "recent").map(item => item.id)).toEqual([2, 4]);
+  expect(filterAndSortCompetitorGroups(groups, "", "incomplete", "recent").map(item => item.id)).toEqual([1, 3, 4]);
+  expect(filterAndSortCompetitorGroups(groups, "", "all", "recent").map(item => item.id)).toEqual([2, 1, 3, 4]);
+  expect(filterAndSortCompetitorGroups(groups, "", "all", "count").map(item => item.id)).toEqual([2, 3, 1, 4]);
+  expect(filterAndSortCompetitorGroups(groups, "", "all", "name").map(item => item.id)).toEqual([2, 3, 4, 1]);
 });
 
 test("applies group navigation intent and clears it for normal list navigation", () => {
