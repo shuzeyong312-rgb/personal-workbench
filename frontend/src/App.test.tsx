@@ -1279,6 +1279,11 @@ test("renders group page loading, error, full empty, unassigned and normal state
   expect(normal).toContain("¥34.00 ~ ¥40.00");
   expect(normal).toContain("更多");
   expect(normal).toContain("组分析");
+  expect(normal).toContain('class="filter-card group-directory-toolbar"');
+  expect(normal).toContain('class="filter-field filter-search"');
+  expect(normal).toContain("清除筛选");
+  expect(normal).toContain("共 1 个竞品组");
+  expect(normal).toContain("第 1 / 1 页");
   const bound = renderToStaticMarkup(<GroupPage summary={{ groups: [{ ...groupSummary, own_product: { id: 7, offer_id: "700", title: "我的基准商品", shop_name: "我的店铺", main_image_url: null, status: "active", is_active: true } }], unassigned: { ...groupMetrics, competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
   expect(bound).toContain("我的基准商品");
 });

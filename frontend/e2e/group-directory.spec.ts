@@ -11,20 +11,28 @@ const groups = [
   { id: 6, name: "Group F", created_at: "2026-10-01T00:00:00Z", competitor_count: 4, active_count: 2, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null, own_product: null },
 ];
 
-async function openDirectory(page: Page) {
-  const mock = await installApiMock(page, { competitors: [], groups: groups.map(({ id, name, created_at }) => ({ id, name, created_at })) });
-  await page.route("**/api/competitor-groups/summary", route => route.fulfill({ json: { groups, unassigned: { competitor_count: 2, active_count: 1, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } } }));
+function makeGroups(total: number) {
+  return Array.from({ length: total }, (_, index) => {
+    const source = groups[index % groups.length];
+    return { ...source, id: index + 1, name: `Group ${String.fromCharCode(65 + index)}`, competitor_count: total - index, active_count: Math.min(source.active_count, total - index), last_change_at: new Date(Date.UTC(2026, 9, 15 - index)).toISOString() };
+  });
+}
+
+async function openDirectory(page: Page, dataGroups = groups) {
+  let currentGroups = dataGroups;
+  const mock = await installApiMock(page, { competitors: [], groups: dataGroups.map(({ id, name, created_at }) => ({ id, name, created_at })) });
+  await page.route("**/api/competitor-groups/summary", route => route.fulfill({ json: { groups: currentGroups, unassigned: { competitor_count: 2, active_count: 1, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } } }));
   await page.route("**/api/competitor-groups/*/detail?*", route => {
     const id = Number(new URL(route.request().url()).pathname.split("/").at(-2));
-    return route.fulfill({ json: { ...detail, group: { ...detail.group, id, name: groups.find(group => group.id === id)!.name } } });
+    return route.fulfill({ json: { ...detail, group: { ...detail.group, id, name: dataGroups.find(group => group.id === id)!.name } } });
   });
   await page.goto("/");
   await page.getByRole("button", { name: "竞品分组", exact: true }).click();
-  return mock;
+  return { mock, setGroups: (next: typeof dataGroups) => { currentGroups = next; } };
 }
 
 test("directory search, filters, stable sorting, actions, and empty state work", async ({ page }) => {
-  const mock = await openDirectory(page);
+  const { mock } = await openDirectory(page);
   const ids = () => page.locator(".group-directory-table tbody tr").evaluateAll(rows => rows.map(row => Number(row.getAttribute("data-group-id"))));
   await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(6);
   await expect(page.locator(".group-directory-summary")).toHaveText("6 个商品组 · 28 个竞品 · 22 个监控中");
@@ -65,7 +73,7 @@ test("directory search, filters, stable sorting, actions, and empty state work",
 });
 
 test("group analysis, rename and delete prompts remain available", async ({ page }) => {
-  const mock = await openDirectory(page);
+  const { mock } = await openDirectory(page);
   const detailRequests: number[] = [];
   page.on("request", request => {
     const match = new URL(request.url()).pathname.match(/\/api\/competitor-groups\/(\d+)\/detail$/);
@@ -94,10 +102,11 @@ test("group analysis, rename and delete prompts remain available", async ({ page
 });
 
 test("wide desktop screenshots and narrow layout keep the directory usable", async ({ page }, testInfo) => {
-  await openDirectory(page);
+  await openDirectory(page, makeGroups(8));
   for (const width of [1440, 1600]) {
     await page.setViewportSize({ width, height: 1000 });
-    await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(6);
+    await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(8);
+    await expect(page.getByRole("button", { name: "清除筛选" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`competitor-groups-${width}.png`), fullPage: true });
   }
@@ -107,4 +116,63 @@ test("wide desktop screenshots and narrow layout keep the directory usable", asy
   await expect(page.locator('[data-group-id="1"]').getByRole("button", { name: "查看竞品" })).toBeVisible();
   await expect(page.locator('[data-group-id="1"]').getByRole("button", { name: "组分析" })).toBeHidden();
   await expect(page.locator(".group-unassigned-row")).toContainText("2 个商品尚未归入竞品组");
+});
+
+test("pagination follows filtered sorting, clears to page one, and excludes unassigned", async ({ page }) => {
+  const { mock } = await openDirectory(page, makeGroups(8));
+  await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(8);
+  await expect(page.locator(".pagination-bar")).toContainText("共 8 个竞品组");
+  await expect(page.locator(".pagination-bar")).toContainText("第 1 / 1 页");
+  await expect(page.getByRole("button", { name: "上一页" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
+  await mock.expectNoUnexpectedApi();
+});
+
+test("twelve groups page after sort, filter changes and clear reset page and controls", async ({ page }) => {
+  const { mock } = await openDirectory(page, makeGroups(12));
+  const ids = () => page.locator(".group-directory-table tbody tr").evaluateAll(rows => rows.map(row => Number(row.getAttribute("data-group-id"))));
+  await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(10);
+  await expect(page.locator(".pagination-bar")).toContainText("共 12 个竞品组");
+  await page.getByLabel("分组排序").selectOption("count");
+  await page.getByRole("button", { name: "下一页" }).click();
+  expect(await ids()).toEqual([11, 12]);
+  await expect(page.locator(".pagination-bar")).toContainText("第 2 / 2 页");
+  await page.getByRole("textbox", { name: "搜索竞品组" }).fill("Group A");
+  await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(1);
+  await expect(page.locator(".pagination-bar")).toContainText("共 1 个竞品组");
+  await expect(page.locator(".pagination-bar")).toContainText("第 1 / 1 页");
+  await page.getByRole("textbox", { name: "搜索竞品组" }).fill("Group B");
+  await page.getByLabel("分组筛选").selectOption("changed");
+  await expect(page.locator(".pagination-bar")).toContainText("共 0 个竞品组");
+  await expect(page.getByRole("button", { name: "清除筛选" })).toBeVisible();
+  await page.getByLabel("分组排序").selectOption("name");
+  await page.getByRole("button", { name: "清除筛选" }).click();
+  await expect(page.getByRole("textbox", { name: "搜索竞品组" })).toHaveValue("");
+  await expect(page.getByLabel("分组筛选")).toHaveValue("all");
+  await expect(page.getByLabel("分组排序")).toHaveValue("recent");
+  await expect(page.locator(".pagination-bar")).toContainText("第 1 / 2 页");
+  await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(10);
+  await mock.expectNoUnexpectedApi();
+});
+
+test("deleting the last group on page two reduces total pages and returns to page one", async ({ page }) => {
+  const dataGroups = makeGroups(11);
+  const { mock, setGroups } = await openDirectory(page, dataGroups);
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.locator("[data-group-id='11']")).toBeVisible();
+  await page.route("**/api/competitor-groups/11", async route => {
+    if (route.request().method() === "DELETE") {
+      setGroups(dataGroups.slice(0, 10));
+      await route.fulfill({ status: 200, json: { id: 11 } });
+    } else await route.continue();
+  });
+  const row = page.locator("[data-group-id='11']");
+  await row.getByRole("button", { name: "更多" }).click();
+  await page.getByRole("menuitem", { name: "删除竞品组" }).click();
+  await page.getByRole("button", { name: "删除竞品组" }).click();
+  await expect(page.locator(".pagination-bar")).toContainText("共 10 个竞品组");
+  await expect(page.locator(".pagination-bar")).toContainText("第 1 / 1 页");
+  await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(10);
+  await expect(page.locator(".group-unassigned-row")).toContainText("2 个商品尚未归入竞品组");
+  await mock.expectNoUnexpectedApi();
 });
