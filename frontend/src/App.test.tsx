@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { expect, test, vi } from "vitest";
 
-import { competitorPageSize, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
+import { competitorPageSize, competitorOfferId, dedupeCompetitorInputs, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
 
 import { submitAddLinks, AddDialog, applyInitialGroupFilter, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
@@ -698,16 +698,28 @@ test.each([
   expect(getCollectionFailureMessage(failure)).toBe(expected);
 });
 
-test("appends raw clipboard lines and retains duplicates for task classification", () => {
+test("clipboard merge filters Offer duplicates, keeps invalid lines, and preserves existing text", () => {
   expect(mergeCompetitorUrlText(
     "https://detail.1688.com/offer/111.html",
     "https://detail.1688.com/offer/222.html",
-  )).toBe("https://detail.1688.com/offer/111.html\nhttps://detail.1688.com/offer/222.html");
+  )).toEqual({ value: "https://detail.1688.com/offer/111.html\nhttps://detail.1688.com/offer/222.html", addedCount: 1, duplicateCount: 0 });
 
   expect(mergeCompetitorUrlText(
     "https://detail.1688.com/offer/111.html",
-    "https://detail.1688.com/offer/111.html\n\nhttps://detail.1688.com/offer/333.html",
-  )).toBe("https://detail.1688.com/offer/111.html\nhttps://detail.1688.com/offer/111.html\n\nhttps://detail.1688.com/offer/333.html");
+    "https://detail.1688.com/offer/111.html?from=a\nhttps://detail.1688.com/offer/222.html?from=b\ninvalid",
+  )).toEqual({ value: "https://detail.1688.com/offer/111.html\nhttps://detail.1688.com/offer/222.html?from=b\ninvalid", addedCount: 2, duplicateCount: 1 });
+
+  expect(mergeCompetitorUrlText("https://detail.1688.com/offer/111.html", "https://detail.1688.com/offer/111.html?again=1")).toEqual({ value: "https://detail.1688.com/offer/111.html", addedCount: 0, duplicateCount: 1 });
+});
+
+test("submission dedupe follows backend Offer parsing and retains original physical source lines", () => {
+  expect(competitorOfferId("https://detail.1688.com:443/offer/123.html?x=1#fragment")).toBe("123");
+  expect(competitorOfferId("http://detail.1688.com/offer/123.html")).toBeNull();
+  expect(dedupeCompetitorInputs("https://detail.1688.com/offer/123.html?x=1\n\nhttps://detail.1688.com/offer/123.html?x=2\ninvalid\nhttps://detail.1688.com/offer/456.html")).toEqual([
+    { text: "https://detail.1688.com/offer/123.html?x=1", source_line: 1 },
+    { text: "invalid", source_line: 4 },
+    { text: "https://detail.1688.com/offer/456.html", source_line: 5 },
+  ]);
 });
 
 test("renders a clipboard add action beside the competitor link field", () => {

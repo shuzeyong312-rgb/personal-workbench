@@ -677,7 +677,8 @@ def collect_product(
     browser_context: object | None = None,
     on_navigation_claim: Callable[[], None] | None = None,
     on_navigation_confirmed: Callable[[], None] | None = None,
-) -> ProductData:
+    include_page_result: bool = False,
+) -> ProductData | CollectionPageResult:
     """Collect and validate a product before any new monitoring row exists."""
     try:
         kwargs = {}
@@ -687,6 +688,7 @@ def collect_product(
             kwargs["on_navigation_claim"] = on_navigation_claim
             kwargs["on_navigation_confirmed"] = on_navigation_confirmed
         result = collect_1688_product(url, offer_id, **kwargs)
+        page_result = result if isinstance(result, CollectionPageResult) else None
         if isinstance(result, CollectionPageResult):
             if result.offer_id != offer_id:
                 raise OfferIdMismatchError(
@@ -702,7 +704,10 @@ def collect_product(
                 "shop_name_unavailable",
                 "无法确认店铺名称，未添加监控商品，请重试",
             )
-        return _normalize_product(product, offer_id)
+        normalized = _normalize_product(product, offer_id)
+        if include_page_result:
+            return CollectionPageResult(offer_id, normalized, None, page_result.operating_metrics if page_result else [])
+        return normalized
     except OfflineProductDetected as exc:
         raise CollectionError(
             "shop_name_unavailable",

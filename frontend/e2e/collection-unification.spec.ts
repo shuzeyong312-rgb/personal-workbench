@@ -24,8 +24,8 @@ test('four home filters and add input detail preserve real API rejection facts',
   await expect(page.locator('.record-table tbody tr')).toContainText('业务拒绝 2');
   await page.getByRole('combobox', { name: '异常情况', exact: true }).selectOption('placeholder');
   await page.getByRole('combobox', { name: '触发方式', exact: true }).selectOption('add_links');
-  await expect(page.getByRole('combobox', { name: '异常情况', exact: true })).toHaveValue('all');
-  await expect(page.getByRole('combobox', { name: '异常情况', exact: true }).locator('option[value="placeholder"]')).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: '异常情况', exact: true })).toHaveValue('placeholder');
+  await expect(page.getByRole('combobox', { name: '异常情况', exact: true }).locator('option[value="placeholder"]')).toHaveCount(1);
   await expect(page.getByRole('combobox', { name: '异常情况', exact: true }).locator('option[value="base_failed"]')).toHaveCount(1);
   await page.screenshot({ path: path.join(screenshotDir, 'collection-records-home.png'), fullPage: true });
   await page.getByRole('button', { name: '查看详情', exact: true }).click();
@@ -39,6 +39,72 @@ test('four home filters and add input detail preserve real API rejection facts',
   await expect(page.getByText('本轮没有经营字段观测记录', { exact: true }).first()).toBeVisible();
   await page.screenshot({ path: path.join(screenshotDir, 'multi-link-partial-results.png'), fullPage: true });
   expect(errors).toEqual([]);
+  await mock.expectNoUnexpectedApi();
+});
+
+test('clipboard and manual submission dedupe by Offer while preserving source lines', async ({ page }) => {
+  const mock = await installApiMock(page, { competitors: [] });
+  await page.addInitScript(() => {
+    const state = window as Window & { testClipboardText: string };
+    state.testClipboardText = '';
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { readText: async () => state.testClipboardText } });
+  });
+  let posted: { submission_id: string; group_id: number | null; inputs: { text: string; source_line: number }[] } | null = null;
+  await page.route('**/api/competitors/add-batch', async route => {
+    posted = route.request().postDataJSON();
+    const taskId = posted!.submission_id;
+    await route.fulfill({ status: 202, json: { accepted: true, task_id: taskId, task: { task_id: taskId, task_kind: 'add_links', trigger_kind: 'add_links', lifecycle_status: 'running', outcome_code: null, planned_products: posted!.inputs.length, items: [], input_summary: { total: posted!.inputs.length, processed: 0 } } } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '添加监控商品', exact: true }).click();
+  const textarea = page.getByLabel('1688 商品链接');
+  const original = 'https://detail.1688.com/offer/101.html';
+  await textarea.fill(original);
+  await page.evaluate(() => { (window as Window & { testClipboardText: string }).testClipboardText = 'https://detail.1688.com/offer/101.html?from=clip\nhttps://detail.1688.com/offer/102.html?from=clip\ninvalid'; });
+  await page.getByRole('button', { name: '从剪贴板添加' }).click();
+  await expect(textarea).toHaveValue(`${original}\nhttps://detail.1688.com/offer/102.html?from=clip\ninvalid`);
+  await expect(page.getByRole('status').filter({ hasText: '已添加 2 条，过滤重复 1 条' })).toBeVisible();
+
+  await page.evaluate(() => { (window as Window & { testClipboardText: string }).testClipboardText = 'https://detail.1688.com/offer/101.html?again=1\nhttps://detail.1688.com/offer/102.html?again=2'; });
+  const beforeRepeatPaste = await textarea.inputValue();
+  await page.getByRole('button', { name: '从剪贴板添加' }).click();
+  await expect(textarea).toHaveValue(beforeRepeatPaste);
+  await expect(page.getByRole('status').filter({ hasText: '链接已存在，无需重复添加' })).toBeVisible();
+
+  await textarea.fill('https://detail.1688.com/offer/303.html?first=1\n\nhttps://detail.1688.com/offer/303.html?second=2\ninvalid\nhttps://detail.1688.com/offer/404.html');
+  await page.getByRole('dialog').getByRole('button', { name: /添加.*监控商品/ }).click();
+  await expect.poll(() => posted).not.toBeNull();
+  expect(posted!.inputs).toEqual([
+    { text: 'https://detail.1688.com/offer/303.html?first=1', source_line: 1 },
+    { text: 'invalid', source_line: 4 },
+    { text: 'https://detail.1688.com/offer/404.html', source_line: 5 },
+  ]);
+  expect(posted!.inputs).toHaveLength(3);
+  await mock.expectNoUnexpectedApi();
+});
+
+test('100-item limit uses the final deduplicated submission list', async ({ page }) => {
+  const mock = await installApiMock(page, { competitors: [] });
+  let posted: { inputs: { text: string; source_line: number }[] } | null = null;
+  await page.route('**/api/competitors/add-batch', async route => {
+    posted = route.request().postDataJSON();
+    const taskId = crypto.randomUUID();
+    await route.fulfill({ status: 202, json: { accepted: true, task_id: taskId, task: { task_id: taskId, task_kind: 'add_links', trigger_kind: 'add_links', lifecycle_status: 'running', outcome_code: null, planned_products: posted!.inputs.length, items: [], input_summary: { total: posted!.inputs.length, processed: 0 } } } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '添加监控商品', exact: true }).click();
+  const textarea = page.getByLabel('1688 商品链接');
+  const link = (id: number) => `https://detail.1688.com/offer/${id}.html`;
+  await textarea.fill(Array.from({ length: 101 }, (_, index) => link(index + 1000)).join('\n'));
+  await page.getByRole('dialog').getByRole('button', { name: /添加.*监控商品/ }).click();
+  await expect(page.locator('.toast')).toContainText('最多提交100条');
+  expect(posted).toBeNull();
+
+  await textarea.fill([...Array.from({ length: 100 }, (_, index) => link(index + 1000)), link(1000) + '?duplicate=1'].join('\n'));
+  await page.getByRole('dialog').getByRole('button', { name: /添加.*监控商品/ }).click();
+  await expect.poll(() => posted).not.toBeNull();
+  expect(posted!.inputs).toHaveLength(100);
+  expect(posted!.inputs.at(-1)).toEqual({ text: link(1099), source_line: 100 });
   await mock.expectNoUnexpectedApi();
 });
 
@@ -76,11 +142,12 @@ test('network uncertainty survives refresh and queries the same submission witho
   });
   await page.goto('/');
   await page.getByRole('button', { name: '添加监控商品', exact: true }).click();
-  const originalText = evidence.submission.inputs.map((input: { text: string }) => input.text).join('\n');
+  const originalText = [...evidence.submission.inputs.map((input: { text: string }) => input.text), 'https://detail.1688.com/offer/101.html?duplicate=1'].join('\n');
   await page.getByLabel('1688 商品链接').fill(originalText);
   await page.getByRole('dialog').getByRole('button', { name: /添加.*监控商品/ }).click();
   await expect(page.locator('.toast')).toContainText('受理结果尚未确认');
   expect(original!.inputs).toHaveLength(5);
+  expect(original!.inputs.map(input => input.source_line)).toEqual([1, 2, 3, 4, 5]);
   const id = original!.submission_id;
   await page.reload();
   await page.getByRole('button', { name: '添加监控商品', exact: true }).click();

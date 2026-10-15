@@ -14,12 +14,16 @@ from sqlalchemy.orm import Session
 
 from app.collection import service
 from app.collection.parser_1688 import parse_1688_url
-from app.models import CollectionAddInput, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, CompetitorGroup, ProductSnapshot, SkuSnapshot
+from app.collection.types import CollectionPageResult, OperatingMetricData
+from app.models import CollectionAddInput, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
 from app.ownership import get_own_shop_name, identify_ownership
 from app.settings import batch_config_values, get_competitor_monitoring_settings
 
 REJECTED = {'invalid_url', 'duplicate_input', 'already_exists', 'identity_rejected'}
 ERRORS = {'invalid_url': 'invalid_competitor_url', 'duplicate_input': 'duplicate_input', 'already_exists': 'competitor_already_exists'}
+METRIC_KEYS = {'listing_time', 'monthly_deal', 'monthly_dropship', 'annual_units', 'annual_orders', 'review_count', 'positive_rate', 'pickup_rate'}
+METRIC_SOURCE = '1688_official_procurement_assistant_top'
+METRIC_TECHNICAL_STATUSES = {'source_unavailable', 'loading', 'read_failed'}
 
 
 def now():
@@ -50,7 +54,8 @@ def set_input_result(db, row, result, code=None, reason=None):
         item.base_result = 'success' if result == 'added' else 'failed' if result == 'technical_failed' else 'not_attempted'
         item.execution_status = 'not_executed' if result == 'not_executed' else 'failed' if result in {'technical_failed', 'interrupted'} else 'completed'
         item.stop_reason = code
-        item.operating_metrics_status = 'not_attempted'
+        if result != 'added':
+            item.operating_metrics_status = 'not_attempted'
         item.page_visits = int(row.navigation_confirmed_at is not None)
         item.page_visits_unknown = int(row.navigation_claimed_at is not None and row.navigation_confirmed_at is None)
 
@@ -61,11 +66,6 @@ def finalize_add_batch(db, batch, cause=None):
         if row.result_code is None:
             result = 'interrupted' if row.started_at is not None else 'not_executed'
             set_input_result(db, row, result, cause or 'not_executed')
-        else:
-            # Rebuild candidate caches without reclassifying a rejection that has no Run.
-            finished = row.finished_at
-            set_input_result(db, row, row.result_code, row.error_code, row.sanitized_reason)
-            row.finished_at = finished
     summary = input_summary(rows, batch.planned_products)
     outcome = cause or ('success' if summary['added'] == summary['total'] else 'partial_failure' if summary['added'] else 'collect_failed')
     batch.lifecycle_status, batch.outcome_code, batch.finished_at = 'terminal', outcome, now()
@@ -285,7 +285,48 @@ def dispatch_add(session_factory, batch_id, runtime, config, *, synchronous=Fals
                 runtime.admissions.pop(task_id, None)
 
 
-def persist_added_product(db, batch, row, product):
+def add_metrics_status(observations):
+    if not observations:
+        return 'not_attempted'
+    statuses = [item.status for item in observations]
+    observed = statuses.count('observed')
+    if len(statuses) == 8 and observed == 8:
+        return 'success'
+    if observed:
+        return 'partial'
+    if all(status == 'placeholder' for status in statuses):
+        return 'no_values'
+    return 'failed'
+
+
+def validate_add_metrics(observations, offer_id):
+    if not isinstance(observations, list) or len(observations) > 8:
+        raise service.CollectionError('offer_id_mismatch', '经营指标无法安全关联到目标商品')
+    keys = set()
+    for item in observations:
+        if not isinstance(item, OperatingMetricData) or not isinstance(item.metric_key, str) or item.metric_key not in METRIC_KEYS or item.metric_key in keys:
+            raise service.CollectionError('offer_id_mismatch', '经营指标无法安全关联到目标商品')
+        if item.offer_id != offer_id or item.source != METRIC_SOURCE:
+            raise service.CollectionError('offer_id_mismatch', '经营指标身份或来源校验失败')
+        if not isinstance(item.status, str) or item.status not in {'observed', 'placeholder', *METRIC_TECHNICAL_STATUSES}:
+            raise service.CollectionError('offer_id_mismatch', '经营指标状态无效')
+        if item.status in {'observed', 'placeholder'}:
+            if not isinstance(item.raw_value, str) or not item.raw_value or len(item.raw_value) > 512:
+                raise service.CollectionError('offer_id_mismatch', '经营指标原始值无效')
+        elif item.raw_value is not None:
+            raise service.CollectionError('offer_id_mismatch', '经营指标原始值无效')
+        if not isinstance(item.observed_at, datetime) or (item.reason is not None and (not isinstance(item.reason, str) or len(item.reason) > 512)):
+            raise service.CollectionError('offer_id_mismatch', '经营指标观察记录无效')
+        keys.add(item.metric_key)
+    return observations
+
+
+def persist_added_product(db, batch, row, page_result):
+    if not isinstance(page_result, CollectionPageResult) or page_result.offer_id != row.offer_id or page_result.product is None:
+        raise service.CollectionError('offer_id_mismatch', '页面结果与目标商品不一致')
+    product = page_result.product
+    observations = validate_add_metrics(page_result.operating_metrics, row.offer_id)
+    metrics_status = add_metrics_status(observations)
     shop = get_own_shop_name(db)
     group_id = batch.settings_snapshot['add_group_id']
     if shop is None:
@@ -313,8 +354,21 @@ def persist_added_product(db, batch, row, product):
                            skus=[SkuSnapshot(sku_id=sku.sku_id, sku_name=sku.sku_name, stock=sku.stock, price=sku.price) for sku in product.skus]))
     item = db.get(CollectionBatchItem, row.batch_item_id)
     item.competitor_id, item.identity_state, item.attempts_started = competitor.id, 'linked', 1
-    db.add(CollectionRun(competitor_id=competitor.id, collection_batch_item_id=item.id, attempt_number=1,
-                         attempt_kind='first_pass', started_at=row.started_at, finished_at=at, status='success', operating_metrics_status='not_attempted'))
+    run = CollectionRun(competitor_id=competitor.id, collection_batch_item_id=item.id, attempt_number=1,
+                         attempt_kind='first_pass', started_at=row.started_at, finished_at=at, status='success', operating_metrics_status=metrics_status)
+    db.add(run)
+    db.flush()
+    db.add_all([OperatingMetricObservation(
+        competitor_id=competitor.id, collection_run_id=run.id, platform='1688', offer_id=row.offer_id,
+        metric_key=metric.metric_key, status=metric.status, raw_value=metric.raw_value,
+        source=metric.source, observed_at=metric.observed_at, reason=metric.reason,
+    ) for metric in observations])
+    item.operating_metrics_status = metrics_status
+    item.placeholder_count = sum(metric.status == 'placeholder' for metric in observations)
+    item.source_unavailable_count = sum(metric.status == 'source_unavailable' for metric in observations)
+    item.loading_count = sum(metric.status == 'loading' for metric in observations)
+    item.read_failed_count = sum(metric.status == 'read_failed' for metric in observations)
+    item.technical_exception_count = sum(metric.status in METRIC_TECHNICAL_STATUSES for metric in observations)
     row.related_competitor_id = competitor.id
     set_input_result(db, row, 'added')
     db.commit()
@@ -396,9 +450,10 @@ def execute_add_batch(session_factory, batch_id, runtime, reservation, config):
                         runtime.record_external_access()
                 try:
                     kwargs = {'browser_context': context, 'on_navigation_claim': navigation, 'on_navigation_confirmed': lambda: navigation(True)}
-                    product = service.collect_product(url, offer_id, **kwargs)
+                    kwargs['include_page_result'] = True
+                    page_result = service.collect_product(url, offer_id, **kwargs)
                     with session_factory() as db:
-                        persist_added_product(db, db.get(CollectionBatch, batch_id), db.get(CollectionAddInput, input_id), product)
+                        persist_added_product(db, db.get(CollectionBatch, batch_id), db.get(CollectionAddInput, input_id), page_result)
                 except Exception as exc:
                     if isinstance(exc, service.CollectionError):
                         code, reason = exc.code, exc.message
@@ -466,7 +521,8 @@ def execute_add_batch(session_factory, batch_id, runtime, reservation, config):
 
 def add_task_detail(db, batch, *, search=None, final_result='all', anomaly='all', input_result='all', attempt_kind='all', reason='all', anomalies_first=False, page=1, page_size=None):
     from app.collection.batch_records import duration_seconds
-    if attempt_kind != 'all' or reason != 'all' or final_result not in {'all', 'success', 'exception', 'pending', 'not_executed', 'business_rejected'} or anomaly not in {'all', 'current', 'none', 'rejected', 'verification_required', 'base_failed'}:
+    allowed_reasons = {'all', 'base_failed', 'placeholder', *METRIC_TECHNICAL_STATUSES}
+    if attempt_kind != 'all' or reason not in allowed_reasons or final_result not in {'all', 'success', 'exception', 'pending', 'not_executed', 'business_rejected'} or anomaly not in {'all', 'current', 'none', 'rejected', 'verification_required', 'base_failed', 'placeholder', *METRIC_TECHNICAL_STATUSES}:
         raise HTTPException(422, {'code': 'incompatible_filter'})
     rows = db.execute(select(CollectionAddInput, CollectionBatchItem, Competitor)
                       .outerjoin(CollectionBatchItem, CollectionBatchItem.id == CollectionAddInput.batch_item_id)
@@ -476,8 +532,20 @@ def add_task_detail(db, batch, *, search=None, final_result='all', anomaly='all'
     item_ids = [item.id for _, item, _ in rows if item is not None]
     runs = db.scalars(select(CollectionRun).where(CollectionRun.collection_batch_item_id.in_(item_ids)).order_by(CollectionRun.id)).all() if item_ids else []
     runs_by_item = {}
+    run_ids = []
     for run in runs:
         runs_by_item.setdefault(run.collection_batch_item_id, []).append(run)
+        run_ids.append(run.id)
+    observations_by_run = {}
+    if run_ids:
+        observations = db.scalars(select(OperatingMetricObservation).where(OperatingMetricObservation.collection_run_id.in_(run_ids)).order_by(OperatingMetricObservation.metric_key)).all()
+        for observation in observations:
+            observations_by_run.setdefault(observation.collection_run_id, []).append(observation)
+    observations_by_item = {
+        item_id: [observation for run in item_runs for observation in observations_by_run.get(run.id, [])]
+        for item_id, item_runs in runs_by_item.items()
+    }
+    technical_items = {item_id for item_id, values in observations_by_item.items() if any(value.status in METRIC_TECHNICAL_STATUSES for value in values)}
     counts = Counter(item.final_result or 'pending' for _, item, _ in rows if item is not None)
     visits = sum(row.navigation_confirmed_at is not None for row, _, _ in rows)
     unknown = sum(row.navigation_claimed_at is not None and row.navigation_confirmed_at is None for row, _, _ in rows)
@@ -488,25 +556,38 @@ def add_task_detail(db, batch, *, search=None, final_result='all', anomaly='all'
             'planned_products': batch.planned_products, 'counts': dict(counts), 'completed': completed,
             'remaining': batch.planned_products - completed, 'succeeded': summary['added'],
             'final_failed': counts['final_failed'], 'base_failed_products': summary['technical_failed'],
-            'technical_exception_products': 0, 'anomaly_products': summary['anomaly_inputs'],
+            'technical_exception_products': len(technical_items), 'anomaly_products': 0,
             'page_visits': visits, 'page_visits_unknown': unknown, 'retry_visits': 0, 'verification_resume_visits': 0,
             'attempts_started': len(runs), 'input_summary': summary,
             'duration_seconds': duration_seconds(batch.started_at, batch.finished_at)}
     items = []
+    anomaly_rows = set()
     for row, item, competitor in rows:
-        current = row.result_code in {'technical_failed', 'verification_required', 'interrupted'}
+        input_current = row.result_code in {'technical_failed', 'verification_required', 'interrupted'}
+        metric_observations = observations_by_item.get(item.id, []) if item is not None else []
+        metric_current = any(value.status in METRIC_TECHNICAL_STATUSES for value in metric_observations)
+        current = input_current or metric_current
+        if current:
+            anomaly_rows.add(row.id)
         rejected = row.result_code in REJECTED
         if input_result != 'all' and row.result_code != input_result:
             continue
         if final_result == 'success' and row.result_code != 'added' or final_result == 'exception' and not current or final_result == 'business_rejected' and not rejected or final_result == 'pending' and row.result_code is not None or final_result == 'not_executed' and row.result_code != 'not_executed':
             continue
-        if anomaly == 'base_failed' and row.result_code != 'technical_failed' or anomaly == 'current' and not current or anomaly == 'none' and not (row.result_code == 'added' or rejected) or anomaly == 'rejected' and not rejected or anomaly == 'verification_required' and row.result_code != 'verification_required':
+        if anomaly == 'base_failed' and row.result_code != 'technical_failed' or anomaly == 'current' and not current or anomaly == 'none' and (row.result_code not in ({'added'} | REJECTED) or current) or anomaly == 'rejected' and not rejected or anomaly == 'verification_required' and row.result_code != 'verification_required' or anomaly in METRIC_TECHNICAL_STATUSES | {'placeholder'} and not any(value.status == anomaly for value in metric_observations):
+            continue
+        if reason in METRIC_TECHNICAL_STATUSES | {'placeholder'} and not any(value.status == reason for value in metric_observations):
+            continue
+        if reason == 'base_failed' and row.result_code != 'technical_failed':
             continue
         if search and not any(search.strip().lower() in str(value or '').lower() for value in (row.input_text, row.offer_id, competitor.title if competitor else None, competitor.shop_name if competitor else None)):
             continue
         attempts = [{'id': run.id, 'attempt_number': run.attempt_number, 'attempt_kind': run.attempt_kind,
                      'started_at': run.started_at, 'finished_at': run.finished_at, 'status': run.status,
-                     'operating_metrics_status': 'not_attempted', 'error_message': run.error_message, 'observations': [],
+                     'operating_metrics_status': run.operating_metrics_status, 'error_message': run.error_message,
+                     'observations': [{'metric_key': value.metric_key, 'status': value.status, 'raw_value': value.raw_value,
+                                       'source': value.source, 'observed_at': value.observed_at, 'reason': value.reason}
+                                      for value in observations_by_run.get(run.id, [])],
                      'navigation_claimed_at': row.navigation_claimed_at, 'navigation_confirmed_at': row.navigation_confirmed_at,
                      'navigation_evidence_source': 'add_input'} for run in runs_by_item.get(row.batch_item_id, [])]
         items.append({'position': row.position, 'source_line': row.source_line, 'input_text': row.input_text,
@@ -515,14 +596,19 @@ def add_task_detail(db, batch, *, search=None, final_result='all', anomaly='all'
                       'competitor_id': row.related_competitor_id, 'identity_state': item.identity_state if item else 'removed' if row.identity_removed else 'pending',
                       'identity_removed': row.identity_removed, 'result_code': row.result_code, 'error_code': row.error_code,
                       'sanitized_reason': row.sanitized_reason, 'final_result': item.final_result if item else None,
-                      'base_result': item.base_result if item else 'not_attempted', 'has_anomaly': current, 'had_anomaly': current,
+                      'base_result': item.base_result if item else 'not_attempted', 'operating_metrics_status': item.operating_metrics_status if item else 'not_attempted', 'has_anomaly': current, 'had_anomaly': current,
                       'started_at': row.started_at, 'finished_at': row.finished_at,
                       'duration_seconds': duration_seconds(row.started_at, row.finished_at),
                       'page_visits': int(row.navigation_confirmed_at is not None),
                       'page_visits_unknown': int(row.navigation_claimed_at is not None and row.navigation_confirmed_at is None),
                       'navigation_claimed_at': row.navigation_claimed_at, 'navigation_confirmed_at': row.navigation_confirmed_at,
                       'navigation_evidence_source': 'add_input', 'attempts_started': len(attempts), 'attempts': attempts,
-                      'retry_visits': 0, 'technical_exception_count': 0})
+                      'retry_visits': 0, 'technical_exception_count': sum(value.status in METRIC_TECHNICAL_STATUSES for value in metric_observations),
+                      'placeholder_count': sum(value.status == 'placeholder' for value in metric_observations),
+                      'source_unavailable_count': sum(value.status == 'source_unavailable' for value in metric_observations),
+                      'loading_count': sum(value.status == 'loading' for value in metric_observations),
+                      'read_failed_count': sum(value.status == 'read_failed' for value in metric_observations)})
+    base['anomaly_products'] = len(anomaly_rows)
     if anomalies_first:
         items.sort(key=lambda value: (not value['has_anomaly'], value['position']))
     size = page_size or max(1, len(items))

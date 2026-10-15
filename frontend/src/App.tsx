@@ -557,8 +557,42 @@ export function parseCompetitorUrls(value: string): string[] {
   return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
-export function mergeCompetitorUrlText(currentValue: string, clipboardValue: string): string {
-  return [currentValue, clipboardValue].filter(Boolean).join("\n");
+export function competitorOfferId(value: string): string | null {
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "https:" || parsed.hostname !== "detail.1688.com" || parsed.username || parsed.password || (parsed.port && parsed.port !== "443")) return null;
+    return parsed.pathname.match(/^\/offer\/(\d+)\.html$/)?.[1] ?? null;
+  } catch { return null; }
+}
+
+export function dedupeCompetitorInputs(value: string): { text: string; source_line: number }[] {
+  const seen = new Set<string>();
+  return value.split(/\r?\n/).flatMap((line, index) => {
+    const text = line.trim();
+    if (!text) return [];
+    const offerId = competitorOfferId(text);
+    if (offerId && seen.has(offerId)) return [];
+    if (offerId) seen.add(offerId);
+    return [{ text, source_line: index + 1 }];
+  });
+}
+
+export function mergeCompetitorUrlText(currentValue: string, clipboardValue: string): { value: string; addedCount: number; duplicateCount: number } {
+  const seen = new Set(parseCompetitorUrls(currentValue).map(competitorOfferId).filter((id): id is string => id !== null));
+  const additions: string[] = [];
+  let duplicateCount = 0;
+  for (const line of clipboardValue.split(/\r?\n/)) {
+    const text = line.trim();
+    if (!text) continue;
+    const offerId = competitorOfferId(text);
+    if (offerId && seen.has(offerId)) { duplicateCount++; continue; }
+    if (offerId) seen.add(offerId);
+    additions.push(text);
+  }
+  const value = additions.length
+    ? `${currentValue}${currentValue && !currentValue.endsWith("\n") ? "\n" : ""}${additions.join("\n")}`
+    : currentValue;
+  return { value, addedCount: additions.length, duplicateCount };
 }
 
 export type AddFailureCode = "invalid_competitor_url" | "competitor_already_exists" | "competitor_group_not_found" | "own_shop_name_not_configured" | "shop_name_unavailable" | "own_product_already_bound" | "collection_in_progress" | "1688_login_required" | "1688_verification_required" | "collection_timeout" | "collection_parse_failed" | "collection_partial_data" | "offer_id_mismatch" | "collection_save_failed" | "collection_failed" | "validation-error" | "http-error" | "network-error" | "timeout" | "server-error";
@@ -588,6 +622,7 @@ export function getAddFailureReason(code?: string): string {
 type CompetitorRequest = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export type AddEnvelope = { submission_id: string; inputs: { text: string; source_line: number }[]; group_id: number | null };
+type PendingAddEnvelope = AddEnvelope & { draft_text?: string };
 const pendingAddKey = "workbench.add-submission.v1";
 export async function submitAddLinks(envelope: AddEnvelope, request: CompetitorRequest = fetch, recover = false) {
   let response = recover ? await request(`/api/competitors/add-batch/${envelope.submission_id}`) : null;
@@ -1890,7 +1925,7 @@ type AddDialogProps = { url: string; status: AddStatus; onUrlChange: (url: strin
 
 export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups, groupId, onGroupChange, newGroupName, onNewGroupNameChange, onCreateGroup, groupCreateStatus, failures = [], succeededCount = 0, progress = { completed: 0, total: 0 } }: AddDialogProps) {
   const busy = status === "submitting";
-  const urlCount = url.split(/\r?\n/).filter(line => line.trim()).length;
+  const urlCount = dedupeCompetitorInputs(url).length;
   const [clipboardFeedback, setClipboardFeedback] = useState<{ kind: "success" | "info" | "error"; message: string } | null>(null);
 
   async function handleClipboardAdd() {
@@ -1901,20 +1936,21 @@ export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups,
         return;
       }
       const clipboardValue = await navigator.clipboard.readText();
-      const clipboardUrls = parseCompetitorUrls(clipboardValue);
-      if (clipboardUrls.length === 0) {
+      if (parseCompetitorUrls(clipboardValue).length === 0) {
         setClipboardFeedback({ kind: "info", message: "剪贴板中没有可添加的内容" });
         return;
       }
-      const currentCount = parseCompetitorUrls(url).length;
-      const nextValue = mergeCompetitorUrlText(url, clipboardValue);
-      const addedCount = parseCompetitorUrls(nextValue).length - currentCount;
-      if (addedCount <= 0) {
-        setClipboardFeedback({ kind: "info", message: "剪贴板中的链接已存在" });
+      const merged = mergeCompetitorUrlText(url, clipboardValue);
+      if (merged.addedCount === 0 && merged.duplicateCount > 0) {
+        setClipboardFeedback({ kind: "info", message: "链接已存在，无需重复添加" });
         return;
       }
-      onUrlChange(nextValue);
-      setClipboardFeedback({ kind: "success", message: `已从剪贴板添加 ${addedCount} 条链接` });
+      if (merged.addedCount === 0) {
+        setClipboardFeedback({ kind: "info", message: "剪贴板中没有可添加的内容" });
+        return;
+      }
+      onUrlChange(merged.value);
+      setClipboardFeedback({ kind: "success", message: `已添加 ${merged.addedCount} 条，过滤重复 ${merged.duplicateCount} 条` });
     } catch {
       setClipboardFeedback({ kind: "error", message: "无法读取剪贴板，请检查浏览器剪贴板权限" });
     }
@@ -1971,10 +2007,10 @@ export function PaginationBar({ total, itemLabel, pageSize, page, totalPages, on
 }
 
 type AddInputSummary = { total: number; candidate_total: number | null; processed: number; remaining: number; pending: number; added: number; business_rejected: number; technical_failed: number; verification_required: number; interrupted: number; not_executed: number; anomaly_inputs: number };
-type BatchObservation = { metric_key: string; status: string; raw_value: string | null; reason: string | null };
+type BatchObservation = { metric_key: string; status: string; raw_value: string | null; reason: string | null; source?: string; observed_at?: string };
 type BatchAttempt = { id: number; attempt_number: number | null; attempt_kind: string | null; started_at: string | null; finished_at: string | null; status: string; operating_metrics_status: string; error_message: string | null; navigation_claimed_at?: string | null; navigation_confirmed_at?: string | null; duration_seconds?: number | null; observations: BatchObservation[] };
-type BatchRecord = { task_kind?: "add_links" | "collect_products"; input_summary?: AddInputSummary; task_id: string; trigger_kind: string; started_at: string | null; finished_at: string | null; lifecycle_status: string; outcome_code: string | null; planned_products: number; completed: number; remaining: number; counts: Record<string, number>; page_visits: number; page_visits_unknown: number; verification_resume_visits: number; retry_visits: number };
-type BatchRecordItem = { input_text?: string | null; source_line?: number; result_code?: string | null; sanitized_reason?: string | null; navigation_claimed_at?: string | null; navigation_confirmed_at?: string | null; identity_state?: string; position: number; competitor_id: number | null; offer_id: string | null; main_image_url: string | null; title: string | null; shop_name: string | null; final_result: string | null; base_result: string | null; attempts_started: number; page_visits: number; page_visits_unknown: number; retry_visits: number; technical_exception_count: number; attempts: BatchAttempt[]; identity_removed: boolean; had_anomaly: boolean; has_anomaly: boolean; duration_seconds: number | null };
+type BatchRecord = { task_kind?: "add_links" | "collect_products"; input_summary?: AddInputSummary; anomaly_products?: number; technical_exception_products?: number; task_id: string; trigger_kind: string; started_at: string | null; finished_at: string | null; lifecycle_status: string; outcome_code: string | null; planned_products: number; completed: number; remaining: number; counts: Record<string, number>; page_visits: number; page_visits_unknown: number; verification_resume_visits: number; retry_visits: number };
+type BatchRecordItem = { input_text?: string | null; source_line?: number; result_code?: string | null; sanitized_reason?: string | null; navigation_claimed_at?: string | null; navigation_confirmed_at?: string | null; identity_state?: string; operating_metrics_status?: string; position: number; competitor_id: number | null; offer_id: string | null; main_image_url: string | null; title: string | null; shop_name: string | null; final_result: string | null; base_result: string | null; attempts_started: number; page_visits: number; page_visits_unknown: number; retry_visits: number; technical_exception_count: number; attempts: BatchAttempt[]; identity_removed: boolean; had_anomaly: boolean; has_anomaly: boolean; duration_seconds: number | null };
 type BatchRecordPage = { items: BatchRecord[]; total: number; page: number; page_size: number };
 type BatchRecordDetail = BatchRecord & { summary: BatchRecord; items: BatchRecordItem[]; total: number; page: number; page_size: number; protection_details: string | null; circuit_breaker_cancelled: number };
 type CollectionTaskProps = { onNavigate: (page: Page) => void; batchState?: BatchState; batchStatus?: ListStatus; batchError?: string | null; onRefreshBatch?: () => Promise<boolean> };
@@ -1989,7 +2025,7 @@ const recordOperatingLabels: Record<string, string> = { not_attempted: "尚未�
 const technicalStatuses = new Set(["source_unavailable", "loading", "read_failed"]);
 const batchTitle = (batch: Pick<BatchRecord, "outcome_code" | "lifecycle_status" | "input_summary">) => batch.input_summary && batch.lifecycle_status === "terminal" && !["infrastructure_error", "interrupted", "verification_required", "user_ended"].includes(batch.outcome_code || "") ? batch.input_summary.added === batch.input_summary.total ? "全部新增" : batch.input_summary.added ? "部分新增成功" : batch.input_summary.technical_failed ? "添加失败" : "未新增" : batch.outcome_code ? batchOutcomeLabels[batch.outcome_code] || "终态未知" : ["running", "created"].includes(batch.lifecycle_status) ? "进行中" : "状态未知";
 const successfulProducts = (batch: BatchRecord) => batch.input_summary ? batch.input_summary.added : ["first_pass_success", "verification_resume_success", "retry_success"].reduce((n, key) => n + (batch.counts[key] || 0), 0);
-const exceptionProducts = (batch: BatchRecord) => batch.input_summary ? batch.input_summary.anomaly_inputs : (batch.counts.final_failed || 0) + (batch.counts.verification_required || 0);
+const exceptionProducts = (batch: BatchRecord) => batch.input_summary ? batch.anomaly_products ?? batch.input_summary.anomaly_inputs : (batch.counts.final_failed || 0) + (batch.counts.verification_required || 0);
 export function collectionDuration(start: string | null, finish: string | null, running = false): string {
   if (!start) return "开始时间缺失";
   if (!finish) return running ? "进行中" : "结束时间缺失";
@@ -2015,7 +2051,7 @@ function AttemptHistory({ attempts }: { attempts: BatchAttempt[] }) {
     const placeholder = attempt.observations.filter(field => field.status === "placeholder").length;
     return <Fragment key={attempt.id}>
       <tr><td>第 {attempt.attempt_number ?? 1} 轮</td><td>{batchAttemptKindLabels[attempt.attempt_kind || ""] || "单次采集"}</td><td className="record-attempt-time">{formatDate(attempt.started_at)}</td><td>{attempt.navigation_confirmed_at ? "已确认 1 次" : attempt.navigation_claimed_at ? "已发起，次数未知" : "无已确认访问证据"}</td><td>{attempt.finished_at && attempt.started_at ? collectionDuration(attempt.started_at, attempt.finished_at) : "—"}</td><td>{attempt.status === "success" ? "基础采集成功" : attempt.status === "failed" ? "基础采集失败" : "进行中"}</td><td><span>{recordOperatingLabels[attempt.operating_metrics_status] || "经营状态未知"}</span>{attempt.observations.length > 0 && <small>{observed} 项已读取 · {placeholder} 项页面占位</small>}<small>{attemptSummary(attempt)}</small>{attempt.observations.length === 0 && <small>本轮没有经营字段观测记录</small>}</td></tr>
-      {attempt.observations.length > 0 && <tr className="record-field-row"><td colSpan={7}><details><summary>查看 {attempt.observations.length} 项字段明细</summary><table className="record-fields"><thead><tr><th>字段名称</th><th>原始页面值</th><th>字段状态</th><th>缺失 / 失败原因</th></tr></thead><tbody>{attempt.observations.map(field => <tr key={field.metric_key}><td>{collectionFieldLabels[field.metric_key] || "经营字段"}</td><td>{field.raw_value ?? "未采集"}</td><td>{observationStatusLabels[field.status] || "未知"}</td><td>{field.status === "placeholder" ? "页面显示 -，无需补采" : field.reason || "—"}</td></tr>)}</tbody></table></details></td></tr>}
+      {attempt.observations.length > 0 && <tr className="record-field-row"><td colSpan={7}><details><summary>查看 {attempt.observations.length} 项字段明细</summary><table className="record-fields"><thead><tr><th>字段名称</th><th>原始页面值</th><th>字段状态</th><th>来源</th><th>观察时间</th><th>缺失 / 失败原因</th></tr></thead><tbody>{attempt.observations.map(field => <tr key={field.metric_key}><td>{collectionFieldLabels[field.metric_key] || "经营字段"}</td><td>{field.raw_value ?? "未采集"}</td><td>{observationStatusLabels[field.status] || "未知"}</td><td>{field.source || "—"}</td><td>{field.observed_at ? formatDate(field.observed_at) : "—"}</td><td>{field.status === "placeholder" ? "页面显示 -，无需补采" : field.reason || "—"}</td></tr>)}</tbody></table></details></td></tr>}
     </Fragment>;
   })}</tbody></table></div>;
 }
@@ -2032,7 +2068,7 @@ function RecordSummary({ detail }: { detail: BatchRecordDetail }) {
   const summary = detail.summary;
   if (detail.input_summary) {
     const input = detail.input_summary;
-    return <section className="table-card record-summary" aria-label="批次汇总">{[["提交链接", input.total], ["候选商品", detail.planned_products], ["新增商品", input.added], ["业务拒绝", input.business_rejected], ["技术失败", input.technical_failed], ["需要验证", input.verification_required], ["中断", input.interrupted], ["未执行", input.not_executed], ["页面访问", summary.page_visits], ["未知访问", summary.page_visits_unknown], ["耗时", collectionDuration(detail.started_at, detail.finished_at, detail.lifecycle_status !== "terminal")], ["任务状态", batchTitle(detail)]].map(([label, value]) => <div className="record-metric record-metric-neutral" key={label}><span className="record-metric-icon" aria-hidden="true"><svg viewBox="0 0 24 24">{recordMetricIcons.state}</svg></span><div className="record-metric-value"><span>{label}</span><strong>{value}</strong></div></div>)}</section>;
+    return <section className="table-card record-summary" aria-label="批次汇总">{[["提交链接", input.total], ["候选商品", detail.planned_products], ["新增商品", input.added], ["异常商品", detail.anomaly_products ?? input.anomaly_inputs], ["经营异常商品", detail.technical_exception_products ?? 0], ["业务拒绝", input.business_rejected], ["技术失败", input.technical_failed], ["需要验证", input.verification_required], ["中断", input.interrupted], ["未执行", input.not_executed], ["页面访问", summary.page_visits], ["未知访问", summary.page_visits_unknown], ["耗时", collectionDuration(detail.started_at, detail.finished_at, detail.lifecycle_status !== "terminal")], ["任务状态", batchTitle(detail)]].map(([label, value]) => <div className="record-metric record-metric-neutral" key={label}><span className="record-metric-icon" aria-hidden="true"><svg viewBox="0 0 24 24">{recordMetricIcons.state}</svg></span><div className="record-metric-value"><span>{label}</span><strong>{value}</strong></div></div>)}</section>;
   }
   const anomalies = exceptionProducts(summary);
   const active = ["created", "running"].includes(detail.lifecycle_status);
@@ -2062,13 +2098,13 @@ function RecordState({ status, error, retry }: { status: ListStatus; error: stri
   return status === "loading" ? <div className="state-panel"><div className="spinner" /><strong role="status" aria-live="polite">正在加载采集记录…</strong></div> : status === "error" ? <div className="state-panel state-error" role="alert"><strong>采集记录加载失败</strong><span>{error}</span><button className="secondary-button" onClick={retry}>重试</button></div> : null;
 }
 function RecordBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: string }) { return <span className={`record-badge record-badge-${tone}`}>{children}</span>; }
-const inputResultLabels: Record<string, string> = { added: "新增成功", invalid_url: "链接无效", duplicate_input: "提交内重复", already_exists: "商品已存在", identity_rejected: "身份或归组拒绝", technical_failed: "技术失败", verification_required: "需要验证", not_executed: "未执行", interrupted: "中断，结果未知" };
+const inputResultLabels: Record<string, string> = { added: "新增成功", invalid_url: "链接无效", duplicate_input: "提交内重复（历史）", already_exists: "商品已存在", identity_rejected: "身份或归组拒绝", technical_failed: "技术失败", verification_required: "需要验证", not_executed: "未执行", interrupted: "中断，结果未知" };
 const anomalyOptions: [string, string][] = [["all", "全部"], ["current", "当前有异常"], ["none", "无当前异常"], ["recovered", "曾异常但已恢复"], ["placeholder", "页面占位"], ["source_unavailable", "官方助手来源不可用"], ["loading", "加载未完成"], ["read_failed", "字段读取失败"], ["base_failed", "基础采集失败"], ["rejected", "业务拒绝"], ["verification_required", "需要验证"]];
 export function allowedRecordAnomalies(trigger: string) {
-  return anomalyOptions.filter(([key]) => trigger === "add_links" ? ["all", "current", "none", "base_failed", "rejected", "verification_required"].includes(key) : trigger === "all" || key !== "rejected");
+  return anomalyOptions.filter(([key]) => trigger === "add_links" ? ["all", "current", "none", "base_failed", "rejected", "verification_required", "placeholder", "source_unavailable", "loading", "read_failed"].includes(key) : trigger === "all" || key !== "rejected");
 }
 function AddInputTable({ detail }: { detail: BatchRecordDetail }) {
-  return <div className="table-scroll"><table className="record-table"><thead><tr><th>输入</th><th>处理结果</th><th>页面访问</th><th>耗时</th><th>原因与真实历史</th></tr></thead><tbody>{detail.items.map(item => <tr key={item.position}><td><strong>第 {item.source_line ?? item.position + 1} 行</strong><small>{item.identity_removed ? "身份已移除" : item.input_text}</small></td><td><RecordBadge tone={item.has_anomaly ? "danger" : item.result_code === "added" ? "success" : "neutral"}>{inputResultLabels[item.result_code || ""] || "待处理"}</RecordBadge></td><td>确认 {item.page_visits} 次{item.page_visits_unknown > 0 && <small>未知 {item.page_visits_unknown} 次</small>}</td><td>{formatCollectionDuration(item.duration_seconds)}</td><td>{item.sanitized_reason || (item.identity_removed ? "商品身份已移除，匿名汇总保留" : "—")}<small>经营指标未采集</small>{item.attempts.length > 0 ? <details><summary>真实采集历史（{item.attempts.length}）</summary><AttemptHistory attempts={item.attempts} /></details> : <small>无商品采集 Run；保留输入处理事实</small>}</td></tr>)}</tbody></table></div>;
+  return <div className="table-scroll"><table className="record-table"><thead><tr><th>输入</th><th>处理结果</th><th>页面访问</th><th>耗时</th><th>原因与真实历史</th></tr></thead><tbody>{detail.items.map(item => <tr key={item.position}><td><strong>第 {item.source_line ?? item.position + 1} 行</strong><small>{item.identity_removed ? "身份已移除" : item.input_text}</small></td><td><RecordBadge tone={item.has_anomaly ? "danger" : item.result_code === "added" ? "success" : "neutral"}>{inputResultLabels[item.result_code || ""] || "待处理"}</RecordBadge></td><td>确认 {item.page_visits} 次{item.page_visits_unknown > 0 && <small>未知 {item.page_visits_unknown} 次</small>}</td><td>{formatCollectionDuration(item.duration_seconds)}</td><td>{item.sanitized_reason || (item.identity_removed ? "商品身份已移除，匿名汇总保留" : "—")}<small>{recordOperatingLabels[item.operating_metrics_status || "not_attempted"] || "经营状态未知"}</small>{item.attempts.length > 0 ? <details><summary>真实采集历史（{item.attempts.length}）</summary><AttemptHistory attempts={item.attempts} /></details> : <small>无商品采集 Run；保留输入处理事实</small>}</td></tr>)}</tbody></table></div>;
 }
 export function CollectionTasksPage({ onNavigate }: CollectionTaskProps) {
   const [filters, setFilters] = useState(initialRecordFilters);
@@ -2142,7 +2178,7 @@ export function CollectionTasksPage({ onNavigate }: CollectionTaskProps) {
     {selected && detail && <RecordSummary detail={detail} />}
     {selected && <div className="table-card record-filters record-item-filters"><label className="record-search">关键词<input value={itemSearchText} onChange={event => setItemSearchText(event.target.value)} onCompositionStart={() => setItemSearchComposing(true)} onCompositionEnd={event => { setItemSearchText(event.currentTarget.value); setItemSearchComposing(false); }} placeholder="搜索商品 / Offer / 店铺" /></label>
       <RecordSelect label="最终结果" value={itemFilters.final_result} onChange={final_result => changeItemFilters({ final_result })} options={[["all", "全部"], ["success", "成功"], ["exception", "异常"], ["not_executed", "未执行"], ...(adding ? [["business_rejected", "业务拒绝"]] as [string, string][] : [["verification_required", "需要人工验证"]] as [string, string][]), ["pending", "进行中"]]} />
-      <RecordSelect label="是否异常" value={itemFilters.anomaly} onChange={anomaly => changeItemFilters({ anomaly })} options={[["all", "全部"], ["current", "当前有异常"], ...(adding ? [["rejected", "业务拒绝"], ["verification_required", "需要验证"]] as [string, string][] : [["recovered", "曾异常但已恢复"]] as [string, string][]), ["none", "无技术异常"]]} />
+      <RecordSelect label={adding ? "异常 / 经营状态" : "是否异常"} value={itemFilters.anomaly} onChange={anomaly => changeItemFilters({ anomaly })} options={adding ? [["all", "全部"], ["current", "当前有异常"], ["none", "无当前异常"], ["base_failed", "基础商品失败"], ["placeholder", "页面占位"], ["source_unavailable", "来源不可用"], ["loading", "加载未完成"], ["read_failed", "字段读取失败"], ["rejected", "业务拒绝"], ["verification_required", "需要验证"]] : [["all", "全部"], ["current", "当前有异常"], ["recovered", "曾异常但已恢复"], ["none", "无技术异常"]]} />
       {!adding && <><RecordSelect label="尝试类型" value={itemFilters.attempt_kind} onChange={attempt_kind => changeItemFilters({ attempt_kind })} options={[["all", "全部"], ...Object.entries(batchAttemptKindLabels)]} /><RecordSelect label="异常原因" value={itemFilters.reason} onChange={reason => changeItemFilters({ reason })} options={[["all", "全部"], ["placeholder", "页面占位（非技术异常）"], ["source_unavailable", "官方助手来源不可用"], ["loading", "加载未完成"], ["read_failed", "字段读取失败"], ["base_failed", "基础商品读取失败"]]} /></>}
       <button className="secondary-button" onClick={() => { setItemFilters(emptyItemFilters); setItemSearchText(""); setItemSearchComposing(false); setItemPage(1); setExpanded(new Set()); }}>重置</button><label className="record-sort"><input type="checkbox" checked={itemFilters.anomalies_first === "true"} onChange={event => changeItemFilters({ anomalies_first: String(event.target.checked) })} />异常优先</label>
     </div>}
@@ -2489,7 +2525,7 @@ function App() {
     setDetailRangeLoading(false);
   }
   function openDialog() { setNotice(null); setUrl(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true);
-    try { const stored = localStorage.getItem(pendingAddKey); if (stored) { const pending = JSON.parse(stored) as AddEnvelope; setUrl(Array.from({ length: Math.max(...pending.inputs.map(input => input.source_line)) }, (_, index) => pending.inputs.find(input => input.source_line === index + 1)?.text || "").join("\n")); setGroupId(pending.group_id); setNotice({ message: "有待确认的添加提交，点击添加将先查询原任务，不会重复采集。", type: "error" }); } } catch { setNotice({ message: "无法读取提交恢复信息，请检查浏览器存储。", type: "error" }); }
+    try { const stored = localStorage.getItem(pendingAddKey); if (stored) { const pending = JSON.parse(stored) as PendingAddEnvelope; setUrl(pending.draft_text ?? Array.from({ length: Math.max(...pending.inputs.map(input => input.source_line)) }, (_, index) => pending.inputs.find(input => input.source_line === index + 1)?.text || "").join("\n")); setGroupId(pending.group_id); setNotice({ message: "有待确认的添加提交，点击添加将先查询原任务，不会重复采集。", type: "error" }); } } catch { setNotice({ message: "无法读取提交恢复信息，请检查浏览器存储。", type: "error" }); }
   }
   function openDashboardAddDialog() {
     if (!ownShopName) { navigate("settings"); return; }
@@ -2671,14 +2707,18 @@ function App() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (addStatus === "submitting") return;
-    const inputs = url.split(/\r?\n/).map((text, index) => ({ text, source_line: index + 1 })).filter(input => input.text.trim());
-    if (!inputs.length) return;
-    if (inputs.length > 100 || inputs.some(input => input.text.length > 2048)) { setNotice({ message: "最多提交100条非空链接，每条最长2048字符。", type: "error" }); return; }
     setAddStatus("submitting"); setAddFailures([]); setAddSucceededCount(0);
     try {
       const stored = localStorage.getItem(pendingAddKey);
-      let previous: AddEnvelope | null = stored ? JSON.parse(stored) : null;
-      if (previous && (JSON.stringify(previous.inputs) !== JSON.stringify(inputs) || previous.group_id !== groupId)) {
+      let previous: PendingAddEnvelope | null = stored ? JSON.parse(stored) : null;
+      const rawInputs = url.split(/\r?\n/).map((text, index) => ({ text: text.trim(), source_line: index + 1 })).filter(input => input.text);
+      const draftUnchanged = !!previous && previous.group_id === groupId && (previous.draft_text !== undefined
+        ? previous.draft_text === url
+        : JSON.stringify(previous.inputs) === JSON.stringify(rawInputs));
+      const inputs = draftUnchanged ? previous!.inputs : dedupeCompetitorInputs(url);
+      if (!inputs.length) { setAddStatus("initial"); return; }
+      if (inputs.length > 100 || inputs.some(input => input.text.length > 2048)) { setNotice({ message: "最多提交100条非空链接，每条最长2048字符。", type: "error" }); setAddStatus("initial"); return; }
+      if (previous && !draftUnchanged) {
         const response = await fetch(`/api/competitors/add-batch/${previous.submission_id}`);
         if (response.status !== 404) {
           const body = await response.json();
@@ -2687,9 +2727,11 @@ function App() {
         }
         previous = null;
       }
-      const envelope: AddEnvelope = previous || { submission_id: crypto.randomUUID(), inputs, group_id: groupId };
+      const envelope: AddEnvelope = draftUnchanged && previous
+        ? { submission_id: previous.submission_id, inputs: previous.inputs, group_id: previous.group_id }
+        : { submission_id: crypto.randomUUID(), inputs, group_id: groupId };
       // Save before sending. Storage failures must not send an unresumable request.
-      localStorage.setItem(pendingAddKey, JSON.stringify(envelope));
+      localStorage.setItem(pendingAddKey, JSON.stringify({ ...envelope, draft_text: url }));
       const result = await submitAddLinks(envelope, fetch, !!previous);
       localStorage.setItem("workbench.add-task.v1", result.task_id);
       localStorage.removeItem(pendingAddKey);

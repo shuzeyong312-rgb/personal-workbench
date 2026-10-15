@@ -74,7 +74,8 @@ def list_collection_runs(
         technical = select(OperatingMetricObservation.id).where(OperatingMetricObservation.collection_run_id == CollectionRun.id, OperatingMetricObservation.status.in_(TECHNICAL_STATUSES)).exists()
         current = or_(CollectionRun.status == "failed", technical)
         known = select(OperatingMetricObservation.id).where(OperatingMetricObservation.collection_run_id == CollectionRun.id).exists()
-        filters.append(current if anomaly == "current" else (~current & known) if anomaly == "none" else CollectionRun.id < 0)
+        add_run_without_anomaly = and_(CollectionBatch.trigger_kind == "add_links", CollectionRun.status == "success", ~current)
+        filters.append(current if anomaly == "current" else or_(and_(~current, known), add_run_without_anomaly) if anomaly == "none" else CollectionRun.id < 0)
     elif anomaly != "all":
         filters.append(OperatingMetricObservation.status == anomaly)
     base = (select(CollectionRun, Competitor, CollectionBatch)
@@ -132,10 +133,13 @@ def list_batches(
     add_mode = CollectionBatch.trigger_kind == "add_links"
     def add_has(codes):
         return select(CollectionAddInput.id).where(CollectionAddInput.batch_id == CollectionBatch.id, CollectionAddInput.result_code.in_(codes)).exists()
-    add_current = or_(add_has(["technical_failed", "verification_required", "interrupted"]), CollectionBatch.outcome_code.in_(["infrastructure_error", "interrupted"]))
+    add_metric_current = select(CollectionBatchItem.id).join(CollectionRun, CollectionRun.collection_batch_item_id == CollectionBatchItem.id).join(
+        OperatingMetricObservation, OperatingMetricObservation.collection_run_id == CollectionRun.id
+    ).where(CollectionBatchItem.batch_id == CollectionBatch.id, OperatingMetricObservation.status.in_(TECHNICAL_STATUSES)).exists()
+    add_current = or_(add_has(["technical_failed", "verification_required", "interrupted"]), add_metric_current, CollectionBatch.outcome_code.in_(["infrastructure_error", "interrupted"]))
     add_none = and_(CollectionBatch.lifecycle_status == "terminal", ~add_current, ~add_has(["not_executed"]), ~select(CollectionAddInput.id).where(CollectionAddInput.batch_id == CollectionBatch.id, CollectionAddInput.result_code.is_(None)).exists())
-    if trigger_kind != "unknown" and ((trigger_kind == "add_links" and anomaly in {"recovered", "placeholder", "source_unavailable", "loading", "read_failed"}) or (trigger_kind not in {"all", "add_links"} and anomaly == "rejected")):
-        raise HTTPException(422, {"code": "incompatible_filter", "allowed_anomalies": ["all", "current", "none", "base_failed", "rejected", "verification_required"] if trigger_kind == "add_links" else ["all", "current", "none", "recovered", "placeholder", "source_unavailable", "loading", "read_failed", "base_failed", "verification_required"]})
+    if trigger_kind != "unknown" and ((trigger_kind == "add_links" and anomaly == "recovered") or (trigger_kind not in {"all", "add_links"} and anomaly == "rejected")):
+        raise HTTPException(422, {"code": "incompatible_filter", "allowed_anomalies": ["all", "current", "none", "base_failed", "rejected", "verification_required", "placeholder", "source_unavailable", "loading", "read_failed"] if trigger_kind == "add_links" else ["all", "current", "none", "recovered", "placeholder", "source_unavailable", "loading", "read_failed", "base_failed", "verification_required"]})
     if anomaly in {"current", "none", "recovered"}:
         current = select(CollectionBatchItem.id).where(CollectionBatchItem.batch_id == CollectionBatch.id, current_anomaly()).exists()
         recovered = select(CollectionBatchItem.id).where(CollectionBatchItem.batch_id == CollectionBatch.id, CollectionBatchItem.final_result.in_(SUCCESS_RESULTS), historical_anomaly()).exists()
@@ -239,6 +243,14 @@ def list_batches(
     if batch_ids:
         for row in db.scalars(select(CollectionAddInput).where(CollectionAddInput.batch_id.in_(batch_ids))):
             add_inputs.setdefault(row.batch_id, []).append(row)
+    add_metric_items: dict[int, set[int]] = {}
+    if batch_ids:
+        for batch_id, item_id in db.execute(select(CollectionBatchItem.batch_id, CollectionBatchItem.id).join(
+            CollectionRun, CollectionRun.collection_batch_item_id == CollectionBatchItem.id
+        ).join(OperatingMetricObservation, OperatingMetricObservation.collection_run_id == CollectionRun.id).where(
+            CollectionBatchItem.batch_id.in_(batch_ids), OperatingMetricObservation.status.in_(TECHNICAL_STATUSES)
+        ).distinct()):
+            add_metric_items.setdefault(batch_id, set()).add(item_id)
     items = []
     for batch in batches:
         summary = summaries[batch.id]
@@ -284,7 +296,10 @@ def list_batches(
         if batch.trigger_kind == "add_links":
             summary = input_summary(add_inputs.get(batch.id, []), batch.planned_products)
             value["input_summary"] = summary
-            value["anomaly_products"] = summary["anomaly_inputs"]
+            metric_item_ids = add_metric_items.get(batch.id, set())
+            anomalous_rows = {row.id for row in add_inputs.get(batch.id, []) if row.result_code in {"technical_failed", "verification_required", "interrupted"} or row.batch_item_id in metric_item_ids}
+            value["technical_exception_products"] = len(metric_item_ids)
+            value["anomaly_products"] = len(anomalous_rows)
             value["base_failed_products"] = summary["technical_failed"]
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 

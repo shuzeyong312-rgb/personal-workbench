@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from threading import Event, Thread
 from uuid import uuid4
 
@@ -10,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app import competitors as api_module
 from app.collection import service
 from app.collection.parser_1688 import CollectionParseError
-from app.collection.types import CollectionPageResult
+from app.collection.types import CollectionPageResult, OperatingMetricData
 from app.database import get_db
 from app.main import app
 from app.models import Base, CollectionAddInput, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, OperatingMetricObservation, ProductSnapshot
@@ -80,12 +81,145 @@ def test_add_links_accepts_real_page_result_and_persists_one_run(client, offline
         assert db.scalar(select(OperatingMetricObservation)) is None
     assert len(api.get('/api/competitors').json()) == 1
     assert api.get('/api/collection-runs').json()['total'] == 1
+    detail = api.get(f"/api/collection-batches/{data['submission_id']}").json()
+    assert detail['items'][0]['attempts'][0]['operating_metrics_status'] == 'not_attempted'
+    assert detail['items'][0]['attempts'][0]['observations'] == []
 
     replay = api.post('/api/competitors/add-batch', json=data)
     assert replay.json()['task_id'] == data['submission_id']
     assert calls == ['101']
     assert api.get('/api/collection-runs').json()['total'] == 1
 
+
+def metric(offer_id, key, status='observed', raw_value='100+', *, source='1688_official_procurement_assistant_top'):
+    return OperatingMetricData(key, status, raw_value if status in {'observed', 'placeholder'} else None,
+                               source, offer_id, datetime.now(timezone.utc), None)
+
+
+METRIC_KEYS = ('listing_time', 'monthly_deal', 'monthly_dropship', 'annual_units', 'annual_orders', 'review_count', 'positive_rate', 'pickup_rate')
+
+
+def test_add_links_persists_six_metric_state_combinations_and_filters(client, offline_worker, monkeypatch):
+    api, factory = client
+    calls = []
+    def collector(_url, offer_id, **callbacks):
+        callbacks['on_navigation_claim'](); callbacks['on_navigation_confirmed']()
+        calls.append(offer_id)
+        metrics = {
+            '101': [metric(offer_id, key) for key in METRIC_KEYS],
+            '102': [metric(offer_id, key) for key in METRIC_KEYS[:2]] + [metric(offer_id, METRIC_KEYS[2], 'placeholder', '-')],
+            '103': [metric(offer_id, key, 'placeholder', '-') for key in METRIC_KEYS],
+            '104': [metric(offer_id, key, 'placeholder', '-') for key in METRIC_KEYS[:3]],
+            '105': [metric(offer_id, METRIC_KEYS[0], 'source_unavailable'), metric(offer_id, METRIC_KEYS[1], 'placeholder', '-'), metric(offer_id, METRIC_KEYS[2], 'placeholder', '-')],
+            '106': [],
+        }[offer_id]
+        return CollectionPageResult(offer_id, product(offer_id), None, metrics)
+    monkeypatch.setattr(service, 'collect_1688_product', collector)
+    task = api.post('/api/competitors/add-batch', json=payload(*[f'https://detail.1688.com/offer/{i}.html' for i in range(101, 107)])).json()['task']
+    expected = {'101': 'success', '102': 'partial', '103': 'no_values', '104': 'no_values', '105': 'failed', '106': 'not_attempted'}
+    assert calls == list(expected)
+    assert all(row['result_code'] == 'added' for row in task['items'])
+    assert task['input_summary']['anomaly_inputs'] == 0
+    assert task['technical_exception_products'] == task['anomaly_products'] == 1
+    assert [row['attempts'][0]['operating_metrics_status'] for row in task['items']] == list(expected.values())
+    assert [row['operating_metrics_status'] for row in task['items']] == list(expected.values())
+    assert task['items'][4]['technical_exception_count'] == 1
+    assert task['items'][2]['technical_exception_count'] == task['items'][3]['technical_exception_count'] == 0
+    assert len(task['items'][0]['attempts'][0]['observations']) == 8
+    assert task['items'][0]['attempts'][0]['observations'][0]['raw_value'] == '100+'
+    assert task['items'][0]['attempts'][0]['observations'][0]['source'] == '1688_official_procurement_assistant_top'
+    assert task['items'][0]['attempts'][0]['observations'][0]['observed_at']
+    product_detail = api.get(f"/api/competitors/{task['items'][0]['competitor_id']}/detail").json()
+    assert product_detail['latest_collection_run']['operating_metrics_status'] == 'success'
+    monthly_deal = next(value for value in product_detail['operating_metrics'] if value['metric_key'] == 'monthly_deal')
+    assert monthly_deal['latest_attempt']['raw_value'] == '100+'
+    assert monthly_deal['latest_attempt']['source'] == '1688_official_procurement_assistant_top'
+    with factory() as db:
+        runs = db.scalars(select(CollectionRun).order_by(CollectionRun.id)).all()
+        observations = db.scalars(select(OperatingMetricObservation)).all()
+        assert len(runs) == 6 and len(observations) == 25
+        assert all(run.status == 'success' for run in runs)
+    home = api.get('/api/collection-batches?trigger_kind=add_links&anomaly=current').json()
+    assert home['total'] == 1
+    assert home['items'][0]['technical_exception_products'] == home['items'][0]['anomaly_products'] == 1
+    assert api.get('/api/collection-batches?trigger_kind=add_links&anomaly=none').json()['total'] == 0
+    assert api.get('/api/collection-batches?trigger_kind=all&anomaly=current').json()['total'] == 1
+    assert api.get('/api/collection-batches?anomaly=placeholder').json()['total'] == 1
+    detail_url = f"/api/collection-batches/{task['task_id']}"
+    assert [row['offer_id'] for row in api.get(detail_url + '?anomaly=current').json()['items']] == ['105']
+    assert [row['offer_id'] for row in api.get(detail_url + '?anomaly=none').json()['items']] == ['101', '102', '103', '104', '106']
+    assert [row['offer_id'] for row in api.get(detail_url + '?anomaly=placeholder').json()['items']] == ['102', '103', '104', '105']
+    assert api.get(detail_url + '?anomaly=base_failed').json()['total'] == 0
+    assert api.get('/api/collection-runs?trigger_kind=all&anomaly=none').status_code == 200
+
+
+@pytest.mark.parametrize('bad_metrics', [
+    lambda offer: [metric(offer, 'monthly_deal', source='wrong-source')],
+    lambda offer: [metric('999', 'monthly_deal')],
+    lambda offer: [metric(offer, 'monthly_deal'), metric(offer, 'monthly_deal')],
+    lambda offer: [metric(offer, 'unknown_metric')],
+    lambda offer: [metric(offer, 'monthly_deal', 'observed', '')],
+])
+def test_add_links_rejects_unsafe_metric_observation_identity(client, offline_worker, monkeypatch, bad_metrics):
+    api, factory = client
+    def collector(_url, offer_id, **callbacks):
+        callbacks['on_navigation_claim'](); callbacks['on_navigation_confirmed']()
+        return CollectionPageResult(offer_id, product(offer_id), None, bad_metrics(offer_id))
+    monkeypatch.setattr(service, 'collect_1688_product', collector)
+    task = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/101.html')).json()['task']
+    assert task['items'][0]['result_code'] == 'technical_failed'
+    assert task['items'][0]['error_code'] == 'offer_id_mismatch'
+    assert task['page_visits'] == 1
+    with factory() as db:
+        assert db.scalar(select(Competitor)) is None
+        assert db.scalar(select(ProductSnapshot)) is None
+        assert db.scalar(select(CollectionRun)) is None
+        assert db.scalar(select(OperatingMetricObservation)) is None
+
+
+def test_add_observation_transaction_rolls_back_and_recovery_preserves_saved_metrics(client, offline_worker, monkeypatch):
+    api, factory = client
+    calls = []
+    def collector(_url, offer_id, **callbacks):
+        calls.append(offer_id); callbacks['on_navigation_claim'](); callbacks['on_navigation_confirmed']()
+        metrics = [metric(offer_id, key) for key in METRIC_KEYS]
+        if offer_id == '202':
+            metrics[-1] = metric(offer_id, METRIC_KEYS[-1], 'source_unavailable')
+        return CollectionPageResult(offer_id, product(offer_id), None, metrics)
+    monkeypatch.setattr(service, 'collect_1688_product', collector)
+    def fail_observation(*_args, **_kwargs):
+        raise RuntimeError('isolated observation insert failure')
+    event.listen(OperatingMetricObservation, 'before_insert', fail_observation)
+    try:
+        failed = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/201.html')).json()['task']
+    finally:
+        event.remove(OperatingMetricObservation, 'before_insert', fail_observation)
+    assert failed['items'][0]['result_code'] == 'technical_failed'
+    assert failed['page_visits'] == 1 and calls == ['201']
+    with factory() as db:
+        assert db.scalar(select(Competitor)) is None
+        assert db.scalar(select(ProductSnapshot)) is None
+        assert db.scalar(select(CollectionRun)) is None
+        assert db.scalar(select(OperatingMetricObservation)) is None
+
+    saved = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/202.html')).json()['task']
+    state_before = (saved['items'][0]['operating_metrics_status'], saved['items'][0]['technical_exception_count'], saved['items'][0]['attempts'][0]['observations'])
+    with factory() as db:
+        batch = db.get(CollectionBatch, saved['batch_id'])
+        batch.lifecycle_status = 'running'
+        db.commit()
+    assert service.recover_interrupted_batches(factory) == 1
+    with factory() as db:
+        batch = db.get(CollectionBatch, saved['batch_id'])
+        from app.collection.add_links import finalize_add_batch
+        finalize_add_batch(db, batch)
+        db.commit()
+    assert service.recover_interrupted_batches(factory) == 0
+    detail = api.get(f"/api/collection-batches/{saved['task_id']}").json()
+    state_after = (detail['items'][0]['operating_metrics_status'], detail['items'][0]['technical_exception_count'], detail['items'][0]['attempts'][0]['observations'])
+    assert state_after == state_before
+    assert detail['items'][0]['result_code'] == 'added'
+    assert detail['page_visits'] == 1 and calls == ['201', '202']
 
 def test_add_links_maps_page_result_parse_error(client, offline_worker, monkeypatch):
     api, _ = client
@@ -340,7 +474,7 @@ def test_legacy_key_replays_success_and_deleted_identity_without_navigation(clie
     assert detail['input_summary']['added'] == 1 and detail['page_visits'] == 1
 
 
-@pytest.mark.parametrize('trigger,anomaly,status', [('add_links','placeholder',422), ('manual','rejected',422), ('scheduled','rejected',422), ('unknown','rejected',200), ('unknown','current',200), ('all','rejected',200), ('add_links','base_failed',200)])
+@pytest.mark.parametrize('trigger,anomaly,status', [('add_links','placeholder',200), ('add_links','source_unavailable',200), ('manual','rejected',422), ('scheduled','rejected',422), ('unknown','rejected',200), ('unknown','current',200), ('all','rejected',200), ('add_links','base_failed',200)])
 def test_filter_capabilities_and_unknown_compatibility(client, trigger, anomaly, status):
     response = client[0].get(f'/api/collection-batches?trigger_kind={trigger}&anomaly={anomaly}')
     assert response.status_code == status

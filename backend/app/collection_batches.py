@@ -43,7 +43,7 @@ def list_collection_batches(
 def get_collection_batch(
     task_id: str, search: str | None = None,
     final_result: Literal["all", "success", "exception", "pending", "not_executed", "verification_required", "first_pass_success", "verification_resume_success", "retry_success", "final_failed", "business_rejected"] = "all",
-    anomaly: Literal["all", "current", "recovered", "none", "rejected", "verification_required", "base_failed"] = "all",
+    anomaly: Literal["all", "current", "recovered", "none", "rejected", "verification_required", "base_failed", "placeholder", "source_unavailable", "loading", "read_failed"] = "all",
     attempt_kind: Literal["all", "first_pass", "operating_metrics_retry", "verification_resume"] = "all",
     input_result: Literal["all", "added", "invalid_url", "duplicate_input", "already_exists", "identity_rejected", "technical_failed", "verification_required", "not_executed", "interrupted"] = "all",
     reason: str = "all", anomalies_first: bool = False,
