@@ -2,6 +2,8 @@
 
 状态：**Draft / 待 ChatGPT Review**。日期：2026-10-15。不得据此进入 Implement 或自行 Freeze。
 
+集中修订依据：ChatGPT 对 `178a58cc08b969f925b872b7d20e760658ef096e` 的 Final Spec Review（P0=0、P1=3、P2=1）；本次处理业务拒绝统计、添加 Runtime、并发受理和 unknown 查询兼容，等待再次独立 Review。
+
 调查基线：`c967005ba39bae926fa27f93ab40fdb890f73557`。V1.2 已交付及正式数据库 revision `20261012_14` 由本轮任务给定；仓库 ORM / 迁移链与其一致，本轮未连接正式数据库核验。下文“现状”是静态代码证据，“合同”是待 Review 的 V1.3 设计，不宣称已经实现。
 
 ## 1. Problem Statement 与范围
@@ -65,23 +67,72 @@ V1.3 将手动采集、定时采集、添加链接统一显示为真实 Collecti
 
 添加模式复用现有 worker、单一 Runtime reservation、互斥、Context/Profile、串行节奏、安全检查点、暂停/结束与浏览器清理。仅增加在同一循环选择“已有商品采集”或“添加并保存”执行操作；候选不得使用虚构 competitor_id，Runtime 在添加时以输入位置表示当前项，current_competitor_id 可为 NULL，并新增 current_input_position / work_kind；旧基础商品 succeeded/failed 字段不偷换成输入数。Dashboard 添加模式显示独立的输入进度，持久详情仍是历史查询，不增加第二轮询。调用已有 status 请求路径；弹窗关闭不会终止任务。
 
+### 4.1 添加 Runtime 与响应兼容合同（P1-2）
+
+扩展既有 BatchRuntime 的预约协议为两种明确工作类型：原 reserve(competitor_ids, config) 默认 work_kind=collect_products，行为不变；添加预约使用同一 Runtime 的 add_links 分支，接收 submission_id、不可变有序输入位置及 config，绝不调用 reserve([]) 假装预约成功，也不把输入位置/Offer ID 填入 competitor_ids。两种分支在同一 Runtime 锁内检查并设置 runner_active、递增同一 reservation token、初始化同一 stop_event/resume_event；acquire_collection_slot/COLLECTION_LOCK 及 token 校验仍是唯一采集互斥。输入位置只是工作索引，不是商品 ID；持久化后绑定同一 Batch/输入行 ID，候选数由受理事务确定。
+
+BatchStatusResponse 保留所有现有必填字段及枚举；仅增加 work_kind（缺省 collect_products）、current_input_position（可 NULL）、input_progress（非添加为 NULL，添加为下表对象），旧请求 fixture 可省略这些新增字段。现有 phase 在添加为 NULL，不扩张旧 phase 枚举。添加时 current_competitor_id/title 为 NULL，旧 items 商品数组为空；旧 total/completed/remaining/succeeded/failed/verification_required、经营字段商品计数均为 0，表示“商品采集进度不适用”，不能填输入数、候选拒绝或添加失败。它们在 collect_products 模式保持 V1.2 含义与等式。添加访问数/真实 Run 数仍使用既有 page_visits/unknown/attempts_started，含义不变。
+
+| input_progress 字段 | 精确定义 |
+| --- | --- |
+| total | 原始非空输入数 N，预约即已知；1～100，整个任务不变 |
+| candidate_total | 预检完成前 NULL，事务提交后为固定 planned_products，可为 0 |
+| added / business_rejected / technical_failed / verification_required / interrupted / not_executed | 与第 6 节同名互斥输入计数，不是商品计数；仅由已提交输入事实更新 |
+| processed | added + business_rejected + technical_failed + verification_required + interrupted；已处理并有结论（含中断未知）的输入数，不含未执行 |
+| pending | result_code 尚为 NULL 的输入数，包括正在处理的一个输入 |
+| remaining | total - processed = pending + not_executed；终态可能大于 0，必须显示为“未执行”，不能伪称仍在排队 |
+
+预约初始 input_progress.total=N、pending=remaining=N，其余为 0；预检提交后一次绑定持久拒绝/候选计数，再由既有 worker 串行执行候选。输入结果提交后才更新 Runtime；事务失败不提前加成功，缓存可从输入行重建。current_input_position 使用与详情一致的零起 position，UI 显示第 position+1 条/原 source_line；预检、休息、暂停、终态无当前输入时为 NULL。候选 Item 的 completed/remaining 由第 6 节另算，不与 input_progress.processed 混用。预检全部拒绝时仍有一次真实添加预约和完整 N 条结果，立即完成收口、释放 reservation，不启动浏览器。
+
+添加分支的循环终止、has_failures/结果派生和零工作判断必须读取 input_progress/真实输入结果，不得沿用 total==0 的商品空批次快捷成功，或因旧 failed==0 把添加失败报为 success。旧商品 record(BatchItemResult) 不用于添加拒绝/技术失败；添加结果走同一 Runtime 内的输入事实更新，最终调用既有 finish/资源释放机制，终态 counts 保留到下一次预约。
+
+沿用同一 pause/resume/end API、事件与安全点：暂停请求使状态 pausing，当前短事务/页面处理安全结束后 paused；未开始的候选不访问。继续只消费尚未执行输入，不重访已终态输入；暂停时保留工作索引和剩余等待，继续恢复原等待。结束在安全点收口剩余候选为 not_executed，status=stopped、batch_outcome_code=user_ended；已提交成功/拒绝/失败不改写。验证终止为 verification_required；基础设施异常终止保留已提交结果并标未执行，持久 outcome= infrastructure_error；进程中断按第 8 节。普通批量的暂停/休息/验证恢复不变。
+
+Dashboard 必须按 work_kind 分支：添加显示“添加链接：已处理 X/N”、新增/拒绝/技术失败/验证/中断/未执行数量及真实访问，不能显示商品字段的 0/0；running/pausing/paused/resting/stopping 显示既有运行状态，完成显示按第 6 节派生的“全部新增/部分新增成功/未新增/添加失败”，中止同时显示真实原因与已完成结果。基础设施异常不伪造 Runtime 旧 outcome，使用已有 batch_outcome_code/错误说明。恢复启动后 Runtime 可 idle，历史以终态 Batch 为准；不重建运行任务。Frontend 必须先支持此判别再切换添加入口；旧客户端仍可调用原商品批量/Scheduler/单商品 API，不能用新增模式的商品零计数作为添加结果。只使用原 Dashboard status 请求路径，不增加 Runner、控制器或第二个持久化状态机。
+
 添加每候选最多一次导航；不启用经营补采，也不引入添加失败自动重访。遇平台验证/登录限制按现有检测、可见人工处理和清理规则停止本次添加任务，当前项记录验证或登录失败，其余未执行；不消费验证自动恢复访问，不新开绕过窗口。原批量采集的冷却、恢复次数及 V1.2 熔断机制完全保留。这是避免添加批次化扩大访问的推荐取舍。
 
 ## 5. 添加链接任务身份、API 与幂等
 
 ### 5.1 新提交与刷新
 
-新增 POST `/api/competitors/add-batch`，body 为 `submission_id`（客户端 UUID）、有序 `inputs`（非空原始行，含原始行号）、`group_id`（可 NULL）。单/多链接都使用它。请求体结构错误、空数组、缺我方店铺配置、组不存在、容量/长度非法返回现有风格 4xx，不创建任务；逐 URL 合法性在受理后分类。沿用已有 URL 长度约束；为完整请求固定最多 100 条非空输入，每行最多 2048 字符，超过返回 422 且不截断。此边界是推荐合同，待 Review 确认。
+新增 POST `/api/competitors/add-batch`，body 为 `submission_id`（客户端 UUID）、有序 `inputs`（非空原始行，含原始行号）、`group_id`（可 NULL）。单/多链接都使用它。请求体结构错误、空数组、容量/长度非法返回现有风格 4xx，不创建任务；新受理者确认无既存任务后再检查我方店铺配置/组，失败返回原 4xx，不创建任务；重放不得因设置/组已变化被当作新请求拒绝。逐 URL 合法性在受理后分类。每次提交上限 100 条非空输入、每行最多 2048 字符，超过返回 422 且不截断，已由产品确认。
 
 客户端在点击前冻结有序输入/组并生成 submission_id，先存本地 pending envelope，再发送。重复点击共享同一 in-flight envelope；刷新读取该 envelope 查询任务，网络超时不生成新 UUID、不判定服务器失败。用户修改输入或明确“重新提交失败链接”生成新 UUID、新任务。确认旧任务存在后可清除本地原文，仅保留 task_id；本地恢复信息不含浏览器凭证。持久化本地 envelope 失败则不发请求并提示无法保障恢复。
 
-服务端以 submission_id 作为 add_links 的 task_id（全表现有唯一约束），并保存规范 JSON 请求的 SHA-256 request_fingerprint（有序原始非空输入、行号、group_id；不按商品集合合并）。新增 GET `/api/competitors/add-batch/{submission_id}` 返回同一任务摘要/结果或 404，用于不确定受理状态恢复。已知 ID 的查询/重放必须先于忙检查：同 ID 同 fingerprint 返回原任务，活动 202 / 终态 200；同 ID 不同 payload 返回 409 idempotency_conflict。并发同 ID 由唯一约束决胜，败者回读，不启动第二次执行。数据库可用时 404 才允许以原 ID 重发；请求结果未知时不能自动换 ID。
+服务端以 submission_id 作为 add_links 的 task_id（全表现有唯一约束），并保存规范 JSON 请求的 SHA-256 request_fingerprint（有序原始非空输入、行号、group_id；不按商品集合合并）。GET `/api/competitors/add-batch/{submission_id}` 用于查找任务或正在受理的提交；其状态码见下节，不能把查不到已提交 Batch 等同于无人正在受理。
 
-新任务在 acquire_collection_slot / reserve 成功后，在一个事务中插入 Batch、所有输入事实及候选 Item；提交成功后才派发。Batch.settings_snapshot 保存原有节奏配置及 add_group_id，供刷新后的服务端执行读取；每条最终提交仍重查该组与当前我方店铺设置，不以快照身份替代事实。忙返回 409 不留空任务。派发失败尽力收口 infrastructure_error；数据库不可写时报告结果未知，恢复后收口，不伪报无任务。不存在为每条链接创建独立 Batch 的中间阶段。
+### 5.1.1 确定性并发受理协议（P1-3）
+
+本协议沿用现有单 Backend 进程、唯一进程内 Runtime/采集锁的部署边界，不宣称支持多个独立采集进程。在既有 Runtime 内增加仅覆盖“受理未决窗口”的 admission 标记：submission_id、fingerprint、owner token、pending/unknown；由短临界区原子查找/占有，不另建持久表、后台框架或第二套任务状态机。标记不是 Batch、不是已受理任务，不进入记录首页；持久事实仍只有 Batch/输入/Item。互斥锁不得跨 DB IO/浏览器操作持有；本版选择立即回应 pending，不做服务端等待。实现顺序固定如下：
+
+1. 校验请求体并生成 fingerprint；在 Runtime 短临界区检查同 ID admission。若存在且 fingerprint 不同，立即 409 idempotency_conflict；同 fingerprint 且 pending 则在锁外查一次 DB，已有任务按持久事实重放，尚无任务返回下表 pending，不再尝试采集锁，也不按其他任务忙拒绝；标记为 unknown 时 POST/GET 必须先走步骤 5 的核对/收口，不能只返回 created Batch 而永远遗留预约。数据库查询失败返回 unknown，不能回退成未受理。同 ID 无标记时原子登记唯一 owner，随后才读数据库；因此 A 尚未提交 Batch 时 B 仍能识别 A。不同 ID 只登记自己的临时标记，不能接管 A。
+2. owner 用新的 DB session 查 task_id。已存在且 fingerprint 相同则直接重放；不同/碰撞到非添加任务为 409 idempotency_conflict；均不预约、不派发。只有权威查无记录、无未决写事务时才检查业务前提并尝试 acquire_collection_slot 和第 4.1 节添加预约。被另一任务占用则 409 collection_in_progress、清理本 owner 标记，不创建 Batch。整个预约 token 唯一，旧 token 不得操作新任务。
+3. 唯一 owner 在一个短事务插入 Batch、全部输入/候选 Item；Batch.settings_snapshot 保存原有节奏配置及 add_group_id，最终保存仍重查组/店铺。task_id 唯一约束是持久化兜底：若冲突，先 rollback，再读胜者校验 fingerprint，绝不派发败者，仅按 token 释放败者自身预约，不得清除胜者 Runtime。正常路径由同 ID admission 避免走到第二次插入；唯一约束不代替受理协议。
+4. commit 已确认后才绑定 Runtime 和派发；只有创建并确认本次事务的 owner 可用该 token 在同一临界区领取一次 dispatch 权（包括零候选的即时终结权）。把任务交给既有 start/worker 机制一次；重放、GET、唯一键败者绝不派发。派发异常按既有 fail_created_batch 收口 infrastructure_error，不能靠下一次重放再次派发。Batch 已可见且正常派发/零候选终结或失败收口已确定后移除 pending 标记；健康 pending 与 DB 行短暂同时存在时请求优先返回 DB 任务，unknown 则按步骤 5 核对。进程崩溃后不能重建派发权，启动恢复先收口旧 Batch，后接受新请求/Scheduler。
+5. commit 抛错且是否成功未知时 owner 不派发、不再次 insert，不提前释放其 reservation；标记 unknown。先终止/关闭旧事务连接，确认原事务已结束，再用新 session 核对：有 Batch 则保留事实，未派发者收口 infrastructure_error（进程重启则 interrupted），只返回该任务；明确 rollback 且无 Batch 才释放预约/移除标记，允许下一次原 ID 重试重新受理。不能结束旧事务或数据库不可读时保持 unknown/互斥占用，返回 503，不假报 404/忙或成功；待后续同 ID 查询/重试触发同一核对，不启动后台重试框架。原 owner 活着时重放只读，不转移 owner；owner 已退出时在同一 Runtime 临界区只允许一个请求取得核对权，核对者只可收口/释放，不能派发旧任务。已确认派发过的任务仅查结果，不能因后续 HTTP/DB 故障重发 worker。
+
+| 情形 | POST / GET 回应与客户端行为 |
+| --- | --- |
+| 同 ID 同 payload，A 尚在预约/提交，B 先到达 | POST B 返回 202 admission_pending；GET 同 ID 无 DB 行但有 pending 标记亦同。body: submission_id、admission_state=pending、accepted=false、task_id=NULL，Retry-After=1；这仅确认正在受理，不表示已有真实任务。B 不创建/派发，可按 Retry-After 使用原 ID 查状态或重发原 payload |
+| 同 ID 不同 payload | POST 409 idempotency_conflict，无论命中 pending 标记还是持久 Batch；不等待、不改原任务 |
+| Batch 已提交，仍活动 | 202，accepted=true、task_id、admission_state=accepted、任务摘要；包括 HTTP 响应丢失后的同 ID 重试 |
+| Batch 已终态 | 新批量 POST 重放/GET 返回 200，accepted=true 与原 task_id/结果；不重放采集 |
+| 不同 ID、Runtime/采集锁忙 | 权威查无该 ID 后 POST 返回 409 collection_in_progress；不建任务，可稍后用原 ID 重试 |
+| DB 短暂不可用、commit 结果未证实、无法核对原事务 | 503 admission_unknown，accepted=NULL、submission_id、task_id 仅在已知时提供、Retry-After=1；不声称未受理，不生成新 ID。客户端保留 envelope，用原 ID 查询/重试；服务器先核对，再决定返回既存任务或重新受理 |
+| DB 权威查无 Batch、无同 ID 标记、无未决事务（包括启动恢复完成后） | GET 404 admission_not_found；允许原 ID/原 payload POST。404 不授权生成新 ID |
+
+所有 admission_pending/unknown 都不是任务终态，不显示添加失败，也不清除本地原始 envelope。客户端收到这些状态只恢复受理结果，不启动另一条实时进度 polling；已 accepted 后仍沿既有 Dashboard status 路径。进程在 commit 前崩溃：未提交事务回滚，重启后可原 ID重试；commit 后崩溃：启动恢复将真实任务标 interrupted，原 ID 返回同一终态。数据库未恢复前两种情况均保持未知，禁止推断重建。这里只保证每个已提交任务最多一次派发；明确回滚且无任务时可重新受理，同一次未决提交绝不能自动换 ID。
+
+已知任务重放完成、明确未受理的前提校验失败/忙/事务 rollback 后，owner 只清理自己的 admission 标记及其取得的预约；历史幂等以 DB 为准，不无限缓存已完成 ID。只有实际取得 reservation 且事务仍未决时才持续占用采集互斥；纯查询读失败不会凭空预约或撤销仍正常工作的 owner。无持久写入但 owner 异常退出也必须先证明旧事务结束，再允许同 ID 重新受理。
+
+owner 必须有 finally 收口：异常退出时，若既未证明未受理，也未证明正常派发/终结，就把仍属本 owner 的 pending 标记改为 unknown 并保留核对所需 token/事务结束信息；不能留下永久 pending，也不能直接删标记释放后重做。commit 已确认但派发前的线程异常按未派发基础设施失败收口，收口 DB 失败则进入 unknown。关闭 HTTP 连接本身不作为派发或事务是否成功的证据。
 
 ### 5.2 旧 POST 兼容
 
 保留 POST `/api/competitors` 的同步 201 商品响应及原错误码；内部作为单输入添加任务调用同一添加执行操作，受理后先持久任务再访问，成功时写同一任务内的 Run。允许 `Idempotency-Key` UUID header；提供时与 task_id 一致、同 payload 可重放原响应，响应 header 返回 task ID；未提供时每个请求是新的任务，不能保证客户端网络重试合并，明确列为旧客户端兼容例外。新 UI 不再逐条调用此 API。删除后重放不重建商品，返回任务仍存在且商品已删除的 410，不重复访问。错误重放使用保存的稳定错误码/HTTP 映射，不保存任意页面内容。
+
+携带 key 的旧同步 POST 也先执行第 5.1.1 节协议；URL/group_id 规范成单输入 envelope（position=0、source_line=1）后计算相同 fingerprint，不按 endpoint 另造命名空间。首个 owner 仍同步执行并返回 201/原错误；并发重放在 pending 或既存活动任务期间返回 202（accepted=false/true 分别按表），不额外等待另一个同步采集，不作为 409 collection_in_progress；完成后再次用相同 key/payload 返回 201 商品响应或保存的稳定错误映射。503 admission_unknown、不同 payload 409、不同 key 忙 409 也按同表。202/503 是选择 Idempotency-Key 的客户端必须处理的并发/不确定受理扩展，不改变未带 key 的原同步响应合同；同步 owner 的 HTTP 断开不转移执行所有权。旧接口成功重放与新批量接口的终态 200 不混用；异常终止而无商品时按稳定失败/中断映射返回并带 task ID，不再次执行。
 
 ## 6. 输入、计划项与成功/失败事实
 
@@ -115,9 +166,22 @@ Item 新增 identity_state = pending / linked / removed：旧非 NULL 回填 lin
 
 终态互斥输入计数：`submitted_inputs = added + business_rejected + technical_failed + verification_required + not_executed + interrupted`；活动时右侧加 pending_inputs。business_rejected 包含 invalid_url、duplicate_input、already_exists、identity_rejected。`planned_products = 候选 Item 数`；added ≤ planned_products ≤ submitted_inputs。`visited_inputs` 是有 confirmed 的不同输入数；page_visits 是确认导航次数，unknown 通过既有 page_visits_unknown 单列，不等于输入/成功/Run 数。attempts_started 仍仅为真实 Run 数，添加失败可能 page_visits > attempts_started，不沿用“访问必有 Run”推断。
 
-添加候选 Item 的现有 final_result 使用：added→first_pass_success；已处理拒绝/技术失败/中断→final_failed；验证→verification_required；从未开始→not_executed。未访问的业务拒绝 base_result=not_attempted，读取/保存失败 base_result=failed，added=success；不得仅靠 final_failed 推断技术异常。输入 result_code 是添加分类权威来源，Item 是关联商品尝试及通用计划终结事实，二者同事务更新，不能各自驱动任务。通用 `completed + remaining = planned_products` 保持 V1.2 口径，not_executed 仍在 remaining；添加 UI 另展示输入处理进度，不挪用这个式子。
+添加候选 Item.final_result 扩展一个 **business_rejected** 终态（P1-1），映射完整如下。CollectionAddInput.result_code 仍为添加输入结果权威，Item 为同事务维护的候选计划/Run 关联，不独立驱动任务；非候选业务拒绝无 Item，但必须计入输入拒绝总数。
 
-自然结束的任务 outcome：全部输入 added 为 success；至少一条 added 且其余有拒绝/失败为 partial_failure（UI“部分成功”）；零 added 为 collect_failed（UI“未新增/全部失败”，按明细解释业务拒绝或技术故障）。不把“已存在”当成功新增。实际中止按 V1.2 优先级 interrupted > infrastructure_error > verification_required > user_ended > 自然结果；用户结束但全部已完成不覆盖既定自然结果。partial_success 原有经营语义不复用为添加部分成功。
+| 候选输入结果 | Item.final_result / execution_status / base_result | 统计含义 |
+| --- | --- | --- |
+| added | first_pass_success / completed / success | 新增成功；有实际 Run |
+| already_exists（最终复核）或 identity_rejected | business_rejected / completed / not_attempted | 业务拒绝，已处理；即使已导航也不是基础采集技术失败，无伪 Run。not_attempted 表示未形成可提交的商品基础结果，不表示零访问 |
+| technical_failed | final_failed / failed / failed | 真实技术失败；与业务拒绝分离 |
+| verification_required | verification_required / completed / not_attempted | 验证/登录阻断独立计数，不塞入 failed |
+| interrupted | final_failed / failed / not_attempted | 结果未知；按输入码独立计 interrupted，不当已证实技术失败，current 仍需处理 |
+| not_executed | not_executed / not_executed / not_attempted | 未执行；无 Run/导航 |
+
+已处理候选包含 business_rejected，因此候选 `completed = first_pass_success + business_rejected + final_failed + verification_required`，`remaining = planned_products - completed`，终态 remaining=候选 not_executed。各结果互斥；活动时 remaining 还含 queued/running。候选 business_rejected 是输入 business_rejected 的子集，二者不相加；没有 Item 的 invalid/duplicate/预检已存在不能增加候选 completed。普通 V1.2 批次不产生 business_rejected，原 final_failed、成功集合、经营技术失败、completed/remaining 和 Runtime 商品统计原义不变；不扩展 SUCCESS_RESULTS 吞入拒绝。
+
+所有添加汇总（首页列表、完整详情 summary、Runtime.input_progress、恢复后摘要、匿名删除后摘要）必须用同一输入分类映射：added=成功新增；business_rejected=四种业务拒绝之和；technical_failed=仅 result_code 同名；verification_required、not_executed、interrupted 分列。`anomaly_inputs = technical_failed + verification_required + interrupted`；task_has_current_anomaly 还包括真实任务级 infrastructure_error/interrupted，不能用 outcome_code=collect_failed/partial_failure 或所有 Item.final_failed 推导添加技术失败。添加响应中的 counts 商品结果键保留候选原义并增加 business_rejected；succeeded（候选成功）=added，final_failed=候选该终态数（含 interrupted），base_failed_products=实际技术失败候选数，technical_exception_products 保留经营字段异常语义为 0；新增添加专用 input_summary 承载输入计数，anomaly_inputs/technical_failed 的业务标签不可误用原 anomaly_products。按 task_kind 分支聚合，不修改普通批次聚合；添加详情旧 anomaly_products 仅作候选技术失败/验证/中断数，与 input_summary.anomaly_inputs 一致，不能加 business_rejected。所有数字基于全任务，详情筛选/分页不改变摘要。
+
+自然结束的添加任务 outcome：全部输入 added 为 success（UI“全部新增”）；至少一条 added 且其余有拒绝/技术失败为 partial_failure（UI“部分新增成功”，并列拒绝/技术失败数量）；零 added 且全部输入为业务拒绝时 collect_failed（UI **“未新增”**、技术异常 0）；零 added 且有真实 technical_failed 时 collect_failed（UI“添加失败”，另示拒绝/失败数）。复用旧 outcome 枚举仅作为任务终结汇总，不由枚举猜异常或成功新增数。不把“已存在”当成功新增。实际中止按 V1.2 优先级 interrupted > infrastructure_error > verification_required > user_ended > 自然结果；用户结束但全部已完成不覆盖既定自然结果。partial_success 原有经营语义不复用为添加部分成功。
 
 ### 6.3 成功保存与导航单一事实来源
 
@@ -143,11 +207,13 @@ Batch 仍只有 created/running/terminal 与既有 outcome_code。任务 started
 
 启动时扩展现有 recover_interrupted_batches，在 Scheduler 启动前处理包括 add_links/manual_single 的所有活动 Batch，且 Scheduler 被禁用时仍恢复：
 
-- 已终态输入、成功商品/Run/快照原样保留；已提交 Run 但 Item 缓存未更新时从事实幂等补齐，不能重访问。
+- 已终态输入（包括全部业务拒绝）、成功商品/Run/快照原样保留；按第 6.2 节输入码幂等补齐关联 Item/汇总，business_rejected 保持 completed/not_attempted，不能被通用恢复函数重分类为 final_failed 或因为无 Run 而改成 not_executed。已提交 Run 但 Item 缓存未更新时从事实幂等补齐，不能重访问。普通 Batch 恢复逻辑不变。
 - 未开始候选标 not_executed；已开始且无最终提交标 interrupted；Batch=interrupted，不自动续跑旧任务。
 - 添加输入无 claim=0 访问；claim 无 confirmed=1 unknown；有 confirmed=1 confirmed。进程崩溃时 unknown 不能自动升级为 confirmed/0。无商品和 Run 仍可正确恢复。
 - 创建任务成功但 worker/浏览器尚未启动：保留同 task_id，中断收口，全部未执行候选访问为 0；同 ID 重放返回旧任务，不启动它。用户明确重新提交未执行/失败链接才建新任务。
 - 不对已明确提交成功的商品按未知失败回滚。对于未提交商品，即使浏览器读取成功但落库未证实，也不显示 added。
+
+受理阶段无持久 Batch 的 pending/unknown 不由 recover_interrupted_batches 伪造任务；进程活着时按第 5.1.1 节确认事务，进程重启则先完成 DB rollback/已有 Batch 恢复，再开放请求。恢复后的 input_summary 从输入结果重建，技术失败与业务拒绝仍分离；无自动重派发。
 
 删除扩展既有事务性 _delete_competitor_history：先冻结匿名计数，再清除所有相关输入的 input_text、normalized_url、offer_id、related_competitor_id、可识别原因/时间外的页面内容及关联 fingerprint 中的可识别材料（只保留不可逆 hash），Item identity_state=removed，然后沿既有 Observation/Run/SKU/Snapshot/事件/商品顺序删除并断开 FK。原始未带商品 ID 的失败及重复行也必须按规范 offer_id 匹配同一商品一起清除；不能只按成功 FK 清理。无效原文不包含可可靠识别商品时保留受限输入文本供定位，显示无关联商品，不误称删除。
 
@@ -157,7 +223,7 @@ Batch 仍只有 created/running/terminal 与既有 outcome_code。任务 started
 
 取消 record_type、legacy/single 页面及仅服务它的 search/selected-single 状态、控件、帮助文案、组件和专用 UI 用例。首页固定四个控件：开始日期、结束日期、触发方式、异常情况；只调用 GET `/api/collection-batches`。不新增关键词或 outcome 控件。手动内部枚举统一显示“手动采集”，scheduled“定时采集”，add_links“添加链接”；删除历史未知选项。
 
-异常下拉保持 all/current/none/recovered/placeholder/source_unavailable/loading/read_failed/base_failed，增加 rejected（业务拒绝）、verification_required（需验证）。其中“无当前异常”明确指已终态且无未解决技术失败/验证的任务，允许业务拒绝但列表必须另示拒绝数量；不把运行中/未执行/中断且结论未知归为健康成功。current 包含未解决基础/经营技术失败、添加技术失败、验证和无法确认结果的 interrupted；recovered 必须有本任务真实历史技术失败及后续成功恢复证据，不用旧 latest_valid。
+异常下拉保持 all/current/none/recovered/placeholder/source_unavailable/loading/read_failed/base_failed，增加 rejected（业务拒绝）、verification_required（需验证）。其中“无当前异常”明确指已终态且无未解决技术失败/验证的任务，允许业务拒绝但列表必须另示拒绝数量；不把运行中/未执行/中断且结论未知归为健康成功。current 包含未解决基础/经营技术失败、添加技术失败、验证和无法确认结果的 interrupted，以及添加任务真实的任务级 infrastructure_error；recovered 必须有本任务真实历史技术失败及后续成功恢复证据，不用旧 latest_valid。
 
 | 触发方式 | 可选异常 | 真正不适用的类别 |
 | --- | --- | --- |
@@ -166,11 +232,11 @@ Batch 仍只有 created/running/terminal 与既有 outcome_code。任务 started
 | 定时采集 | 除 rejected 外全部 | rejected 同上 |
 | 添加链接 | all/current/none/base_failed/rejected/verification_required | recovered、placeholder、source_unavailable、loading、read_failed：本版添加不补采、不保存经营 Observation，不能成立 |
 
-base_failed 在添加仅匹配实际页面读取/基础解析/保存技术失败，不匹配 invalid/duplicate/existing/identity_rejected；verification_required 独立定位验证/登录，详情显示准确原因。经营具体类别基于本任务任意真实 Observation 或匿名保留计数，recovered 基于最终恢复，不能过滤掉历史 attempt。rejected 包括业务拒绝但不是 current 技术异常。
+base_failed 在添加仅匹配 technical_failed 的真实基础技术失败，不匹配 invalid_url/duplicate_input/already_exists/identity_rejected 或 interrupted；verification_required 独立定位验证/登录，详情显示准确原因。经营具体类别基于本任务任意真实 Observation 或匿名保留计数，recovered 基于最终恢复，不能过滤掉历史 attempt。添加 current 使用第 6.2 节 task_has_current_anomaly，none 要求任务终态、pending/not_executed/interrupted 为 0 且无当前技术/验证/任务级异常，允许纯业务拒绝；rejected 匹配任意输入的四种业务拒绝，不要求有 Item。rejected 与 none 可在同一任务上分别命中，rejected 不属于 current；列表与详情不得沿用 business_rejected→final_failed 的旧假设。
 
-组合能力是代码/合同常量，不按当前数据库计数 disable。切触发方式导致现有异常不适用时，在同一次受控状态更新中重置 anomaly=all，并给出简短原因，page=1；不可先发无效组合请求。直接 API 无效组合返回 422 incompatible_filter（包含 allowed_anomalies），禁止静默返回空表。全部+rejected 和全部+经营异常有效；当前零数据仅显示真实空状态。Batch API 的 unknown trigger 返回 422；旧 Run 查询 API 的 unknown 兼容参数保留，区别 UI 移除与公共 API 删除。
+组合能力是代码/合同常量，不按当前数据库计数 disable。切触发方式导致现有异常不适用时，在同一次受控状态更新中重置 anomaly=all，并给出简短原因，page=1；不可先发无效组合请求。新的真正不适用组合返回 422 incompatible_filter（包含 allowed_anomalies），禁止静默返回空表。全部+rejected 和全部+经营异常有效；当前零数据仅显示真实空状态。**兼容例外（P2-1）**：GET `/api/collection-batches?trigger_kind=unknown` 继续接受，按原“无匹配真实批次”返回 200、items=[]、total=0、正常分页元数据；与合法日期/异常参数组合仍为空，不纳入新 UI 能力矩阵/不适用 422 判定，不把任何已知 Batch 改成 unknown。非法参数格式仍按原参数校验处理。旧 Run 查询 API 的 unknown 参数同样保留；只删除 UI 选项，不改变已有调用方查询行为。
 
-手动映射增加 manual_single，已有精确 trigger query 保留兼容。服务端先过滤后排序分页，排序仍 started_at DESC、batch id DESC；同一空 started_at 组内按 batch id 倒序，不制造时间。添加列表/详情返回 task_kind、输入汇总、候选数、真实访问数及来源；添加详情 items 为输入行，使用 task_kind 区分响应解释，分页单位 inputs；普通任务维持商品 items 与原字段。响应不得让客户端把输入当商品。全任务摘要独立于详情过滤/分页；添加详情 search 匹配未去身份化的输入文本/规范 Offer 和当前关联商品标题/店铺；复用 final_result=all/success/exception/pending/not_executed：success 仅 added，exception 为技术失败/验证/中断，pending 为 result_code NULL，not_executed 同名；新增 input_result 支持第 6 节精确 result_code（all 为默认），两者取交集。输入业务拒绝可由 input_result 或 anomaly=rejected 定位。添加详情 anomaly 支持 all/current/none/rejected/verification_required，none 仅已处理且无技术异常的输入（业务拒绝仍显示拒绝标识）；anomalies_first 按技术异常优先、再 position，不改变原始位置。其余精细商品 final_result 和非 all 的 attempt_kind/reason 返回 422，不默默空列表；普通详情保留原合同，input_result 非 all 对它不适用。
+手动映射增加 manual_single，已有精确 trigger query 保留兼容。服务端先过滤后排序分页，排序仍 started_at DESC、batch id DESC；同一空 started_at 组内按 batch id 倒序，不制造时间。添加列表/详情返回 task_kind、input_summary、候选数、真实访问数及来源；添加详情 items 为输入行，使用 task_kind 区分响应解释，分页单位 inputs；普通任务维持商品 items 与原字段。响应不得让客户端把输入当商品。全任务摘要独立于详情过滤/分页；添加详情 search 匹配未去身份化的输入文本/规范 Offer 和当前关联商品标题/店铺；复用 final_result=all/success/exception/pending/not_executed 并增加 business_rejected：success 仅 added，exception 为 technical_failed/verification_required/interrupted，business_rejected 为四类业务拒绝（含无 Item 输入），pending 为 result_code NULL，not_executed 同名；新增 input_result 支持第 6 节精确 result_code（all 为默认），两者取交集。输入业务拒绝可由 input_result、final_result=business_rejected 或 anomaly=rejected 定位。添加详情 anomaly 支持 all/current/none/rejected/verification_required，current=technical_failed/verification_required/interrupted，none=added 或四类业务拒绝（not_executed/pending/interrupted 不进入）；任务级基础设施错误在完整摘要显示，不能伪造错误输入。anomalies_first 按技术失败/验证/中断优先、再 position，不改变原始位置。其余精细商品 final_result 和非 all 的 attempt_kind/reason 返回 422，不默默空列表；普通详情保留原合同，input_result 非 all 对它不适用，final_result=business_rejected 查询普通批次为空且不改变其原有结果分类。
 
 日期继承最近 30 天默认起日、结束不限，浏览器本地日转 UTC；清除恢复默认，可清空日期访问全历史；允许单侧，逆序/非法日期本地报错不发请求。日期和合法下拉变化自动服务端查询、回第一页；保留 AbortController + loadedQuery/request URL 绑定和迟到响应拒绝。总数缩减回有效页后重新查询；错误可重试，不显示旧 payload 冒充新结果，不新建轮询。首页 20 条，详情 10 条输入或商品。
 
@@ -191,17 +257,17 @@ base_failed 在添加仅匹配实际页面读取/基础解析/保存技术失败
 | 对象 | 必要变更 / CHECK 与兼容 |
 | --- | --- |
 | CollectionBatch | trigger CHECK 增 manual_single/add_links；增加 nullable request_fingerprint CHAR(64)，旧行 NULL；add_links 要求非 NULL。task_id 和 scheduler_occurrence_key 唯一性保留；生命周期和 outcome 枚举不扩张 |
-| CollectionBatchItem | 增 identity_state，回填规则见第 6 节；CHECK pending/linked/removed，linked 当且仅当 competitor_id 非 NULL，pending/removed 必须 NULL。原 position/competitor 唯一、结果及非负 CHECK 保留 |
+| CollectionBatchItem | 增 identity_state，回填规则见第 6 节；CHECK pending/linked/removed，linked 当且仅当 competitor_id 非 NULL，pending/removed 必须 NULL。final_result CHECK 在原枚举上增加 business_rejected，execution_status/base_result 枚举不变；新增 CHECK：business_rejected 必须 execution_status=completed 且 base_result 非 NULL、等于 not_attempted，不能因 SQL NULL 语义漏过约束。原 position/competitor 唯一、其他结果及非负 CHECK 保留 |
 | CollectionAddInput | batch FK、可空 Item/competitor/duplicate FK；UNIQUE(batch_id,position)，UNIQUE(batch_item_id)；position/source_line 非负（source_line 从 1 起），result_code 受第 6 节有限枚举约束；finished_at 非空需 result_code 非空；confirmed 要有 claim；identity_removed=true 时所有身份文本/FK 为 NULL；输入文本长度上限 2048；日期允许尚未完成 NULL，不能填伪时间 |
 | Run / Observation / Snapshot | 不改 Run.competitor_id 非空，不改历史 NULL batch 关系，不改 Observation CHECK/事实；成功添加 Run 关联已有 Item，原 attempt 唯一约束适用 |
 
-跨表合同由创建/最终提交事务与集成测试保证：输入只能属 add_links；duplicate 指同批较前输入；Item 同批且一候选一项；成功 Run.competitor_id=Item 的真实商品；计划数等于候选 Item 数。不得仅用 ORM 声称 SQLite CHECK 能验证跨表不变量。
+跨表合同由创建/最终提交事务与集成测试保证：输入只能属 add_links；duplicate 指同批较前输入；Item 同批且一候选一项；business_rejected 只能用于 add_links 候选，必须有对应业务拒绝输入；普通 Batch 不产生此终态；成功 Run.competitor_id=Item 的真实商品；计划数等于候选 Item 数。不得仅用 ORM 声称 SQLite CHECK 能验证跨表不变量。
 
 添加导航权威在输入行，普通采集在 Run；Item/Batch 展示汇总可由各自事实重建，既有删除匿名缓存作为删除后事实保留。新增输入行无任务状态；所有派生结果只由 Batch 收口，不增加独立 add job 状态机。数据库写失败时不能发送页面导航。提交输入/计划、每次导航 claim/confirm、每商品保存、最终收口是分离短事务；未知提交先查原 task，不重新访问。启动恢复为幂等 DB 操作。
 
 升级用 SQLite batch_alter_table 处理 CHECK，保证现有 Run→Item→Batch、Observation→Run、SKU→Snapshot 外键及索引不丢失；执行 integrity_check / foreign_key_check、旧行数量和关键值对比。不能因为本地 schema 不符就 stamp，发现 drift 停止。正式库升级只在未来另获授权并备份后做。
 
-downgrade：只有不存在 V1.3 add_links/manual_single 任务、输入事实及 pending 身份等旧模型不可表达数据时才允许降至 _14；存在时应在 DDL 前明确拒绝，不删除事实、不改写 trigger 伪装旧数据、不静默脱关联。无 V1.3 数据时删除增量结构/列、还原 CHECK，旧 Batch/Run 保持。生产回退优先恢复经核验备份，不能把有损降级当兼容。空库升级/回滚与含 V1.2 数据升级/回滚、含 V1.3 数据拒绝回滚均为验收项。
+downgrade：只有不存在 V1.3 add_links/manual_single 任务、输入事实、business_rejected 终态及 pending 身份等旧模型不可表达数据时才允许降至 _14；存在时应在 DDL 前明确拒绝，不删除事实、不改写 trigger 伪装旧数据、不静默脱关联。无 V1.3 数据时删除增量结构/列、还原 CHECK，旧 Batch/Run 保持。生产回退优先恢复经核验备份，不能把有损降级当兼容。空库升级/回滚与含 V1.2 数据升级/回滚、含 V1.3 数据拒绝回滚均为验收项。
 
 ## 12. Testing Decisions 与验收矩阵
 
@@ -215,12 +281,26 @@ downgrade：只有不存在 V1.3 add_links/manual_single 任务、输入事实�
 | 三成功/一已存在/一无效 | 一任务五结果、三候选/成功/访问，部分成功；两个拒绝零访问 | 添加 API + records |
 | 同提交重复/不同 URL 同 Offer | 保留原始输入与行号，duplicate 指首条；无额外访问/Run | App.test + API |
 | 全无效/全已存在 | 有真实添加任务、零候选/访问、无浏览器；全部拒绝不标技术故障 | API + records |
+| 一个新增/一个最终复核已存在 | 两候选 completed=2、remaining=0；added=1、business_rejected=1、technical_failed=0、anomaly_inputs=0；拒绝 Item=business_rejected/completed/not_attempted；部分新增成功，首页 none/rejected 均命中、current 不命中 | 添加 API fault seam + records |
+| 五输入全部已存在 | total=processed=5、remaining=0、candidate_total=0；added=0、business_rejected=5、technical_failed/anomaly_inputs=0，UI“未新增”；无浏览器/Run，不能因 collect_failed 枚举标技术异常 | API + Runtime + Dashboard |
+| 一个新增/一个页面技术失败 | added=1、technical_failed=1、business_rejected=0、anomaly_inputs=1；失败 Item=final_failed/failed/failed；current/base_failed 命中，none 不命中；摘要与详情一致 | 添加 API + records |
+| 无效 URL/重复输入零访问 | 每条输入仍有独立拒绝结果，无导航 claim/confirmed、无 Item/Run；不影响候选失败数 | API + Collector callback spy |
+| 业务拒绝恢复/删除后查询 | 最终已存在或身份拒绝保持 business_rejected；重复恢复不改终态，删除匿名后输入/候选计数与 current/none/rejected 筛选不变；普通批次既有 final_failed/成功统计不变 | startup/deletion + records |
 | self/competitor/组冲突 | 最终事务识别身份；店铺未知/组被删/已有 own 拒绝，快照无半写入 | own_product_management 既有并发 seam |
 | 无商品 ID 失败 | 输入 error + 导航证据存在，nullable Item pending 身份，无伪 Run；不显示已删除 | API + detail |
 | 添加保存失败/后条失败 | 前面成功保留；失败候选原子回滚，错误收口且无额外访问 | commit fault injection |
 | 同 ID 并发/超时/刷新/重复点击 | 同 payload 一任务一次派发；异 payload 409；刷新查原 ID；失败重提新任务且成功项不重交 | API concurrency + own-product-entry E2E |
+| A 未获预约/未提交时同 ID B | 用事件阻塞 A 在 admission 登记后、预约前以及 commit 前；B 同 payload 返回 202 pending/accepted=false、task_id=NULL，不能返回 busy；异 payload 即 409 conflict；A 最终只建一 Batch/只派发一次 | 原 Runtime/线程事件 + TestClient |
+| 不同 ID 忙/提交成功响应丢失 | 不同 ID 返回 409 busy 且无任务；相同 ID 重试已提交任务返回 202 accepted 或终态 200，唯一约束胜者外无人派发 | API/dispatch spy |
+| commit 结果未知/数据库短暂不可用 | 返回 503 unknown、不释放未决预约、不产生第二次写/导航；结束原事务后查到任务则收口不重派，确知 rollback+无 Batch 才允许原 ID 新受理；断库 GET 不得伪装 404 | commit/read fault injection + startup |
+| 进程崩溃受理两窗口 | commit 前 rollback 后原 ID可安全受理；commit 后启动先 interrupted、原 ID 返回旧任务；两种都禁止自动新 ID、禁止恢复派发 | migration-safe SQLite fixture + startup |
+| 旧同步 Idempotency-Key 并发 | A 同步执行；B 同 payload 在提交前/执行中 202，完成重放 201/原错误；异 payload 409、不同 key 忙409、未知503；Collector/dispatch 仅一次，未带 key 原响应不变 | own_product_management API concurrency |
 | 客户端断网/关弹窗 | 不以网络错误回滚或取消任务，记录可重新查询 | controlled requests / E2E |
 | 验证/登录/用户结束 | 添加当前真实验证结果，后续未执行；不重访、不启用补采；普通批量原恢复规则不变 | Collector/Runner seam |
+| 添加 20 条运行进度 | 20 个输入预约不依赖商品 ID，初始 input_progress=0/20、候选未知后固定；例如预检拒绝2、候选18、先新增3/技术失败1后，processed=6、pending=remaining=14；商品字段仍0且 Dashboard 显示6/20，不显示0/0 | Runtime + API response + Dashboard E2E |
+| 零候选 Runtime | N>0 全拒绝仍真实预约/绑定/收口；input_progress=N/N，候选0且无浏览器；完成后 runner_active=false、token释放 | Runtime/Context spy |
+| 部分失败与暂停继续 | 页面技术失败只加 input_progress.technical_failed，不加商品 failed；暂停安全点前后当前输入位置正确、计数来自已提交事实；暂停保留剩余等待，继续无重复访问/计数 | 既有 Runner event seam |
+| 20 条中处理后结束 | 已拒绝2/新增3/技术失败1后结束：processed=6、not_executed=remaining=14、pending=0；status stopped/user_ended，保留成功，Dashboard 显示6/20与未执行14；候选completed=4/remaining=14 | Runtime + persisted API + E2E |
 | 创建后派发失败/浏览器前崩溃 | infrastructure_error 或启动 interrupted，零访问；同 ID 不重启 | scheduler/startup recovery seam |
 | claim/confirm 各崩溃窗口 | 0/unknown/confirmed 互斥且幂等，成功事务未知不重访 | batch_collection fault injection |
 | 单商品同步归批 | 原响应/错误兼容，导航前 Batch/Item、真实 Run/Observation；设置 retry=2 也不多访 | test_collection_api + operating_metrics |
@@ -228,31 +308,30 @@ downgrade：只有不存在 V1.3 add_links/manual_single 任务、输入事实�
 | 删除与失败输入 | 同 Offer 成功/重复/无 ID 失败一并匿名化；计数不变；无悬空 FK/身份泄漏；事务失败全回滚 | deletion API + records |
 | 历史保留 | 升级前后 Run/Observation/Snapshot/错误/时间一致，NULL 不回填；历史 list/detail、商品 recent、Dashboard 趋势、latest_valid 可用 | migration + collection_runs/detail/dashboard/operating_metrics |
 | 筛选所有组合 | 参数化触发×异常表；不适用 422，合法零数据不禁用；手动精细枚举聚合；current/none/recovered/拒绝口径准确 | records API |
+| unknown 旧查询兼容 | trigger_kind=unknown 与 all/current/none/rejected 及日期/分页组合均200空结果，参数元数据正确；UI无该选项；新 manual+rejected/add_links+placeholder 仍422 incompatible_filter | records API + CollectionTasks |
 | 自动筛选交互 | 四控件、无 record_type/未知入口；单侧/逆序日期、第一页重置、清除、缩页、过期响应、错误重试 | CollectionTasks + collection-tasks.spec |
 | 添加详情与旧详情 | 输入分页/商品分页单位准确；摘要不变；历史 attempt 完整；pending≠removed，经营未采集不造字段 | records API + E2E |
-| 迁移完整性 | _14→新 head→可回滚条件；新数据拒绝降级在 DDL 前；外键/索引/CHECK/唯一竞争和数据计数 | migration tmp SQLite |
+| 迁移完整性 | _14→新 head→可回滚条件；business_rejected CHECK 只允许completed/not_attempted，普通批次跨表规则由事务测试验证；新数据拒绝降级在 DDL 前；外键/索引/CHECK/唯一竞争和数据计数 | migration tmp SQLite |
 | 真实副本兼容 | 经另行授权取得一致性副本，在隔离位置升级/校验/回滚条件；绝不对正式库测试 | migration harness，实施/发布阶段 Gate |
 
 删除仅旧页面专用 UI 测试，保留 collection_runs API 历史测试和共享展示、日期、防过期请求回归；修改已有 E2E 场景以保护新合同，不通过整批删除失败测试完成迁移。实施阶段 targeted tests 后检查相关 Backend/Frontend、类型/Lint/构建及受控 Chromium；真实平台人工 QA 须未来另行授权，不由 Mock 测试证明。
 
-## 13. 可行性、唯一推荐与待 ChatGPT 决策风险
+## 13. 可行性、已确认规则与 Review 边界
 
 架构可行：现有互斥/共享 Collector/Run 与持久 Batch 已覆盖主体；真正缺口是“商品创建前的输入和导航证据”，因此一个附属输入表合理且必要。添加采用同一 Runner 的执行操作分支，单商品保留同步共享服务，比把所有旧 API 改异步的兼容成本低。备选“仅让前端逐链接带 batch_id”无法保证刷新后剩余输入受理与任务一致性，不推荐；备选“放宽 Run 商品外键并以 Run 代表输入”混淆尝试/拒绝且影响历史查询，不采用。
 
-提交 ChatGPT Review 的重大取舍（均已有唯一推荐，未获通过前不 Freeze）：
+产品已确认：添加遇验证停止、不自动重访；原批量验证恢复不变；单商品保持同步；旧无 key 客户端跨请求去重有限；添加不做经营补采、不虚构 Observation；100 条/2048 字符上限；删除后去身份化；有 V1.3 数据拒绝有损 downgrade；全业务拒绝显示“未新增”。这些规则不再作为待决风险。
 
-1. 添加遇验证停止、不自动重访；普通批量机制不变。若要求添加也能验证恢复，必须另定义输入多 attempt 事实/预算，不能临时复用成功 Run 假装失败访问。
-2. 旧单商品同步 API 保持一次访问，不改异步；旧添加不带幂等 key 的客户端无法跨请求合并，必须接受此兼容限制或明确弃用旧写 API。
-3. 添加只归档基础采集，经营未采集；因此相关筛选结构性不可用。若本版要求添加经营 Observation，需要扩大本合同与测试，不能显示虚假的完整状态。
-4. 一张输入事实表与 pending/removed 区分是必要增量；添加导航事实与普通 Run 分开存放，API 必须明确来源，避免双计数或把没有 Run 的访问吞掉。
-5. 全部业务拒绝按“未新增/全部失败”而非技术异常；部分成功用 partial_failure 的现有枚举、用户文案为部分成功。需确认该产品文案与统计符合预期。
-6. 100 输入/2048 字符边界、失败原文保留与关联商品删除时匿名化、存在 V1.3 数据禁止有损 downgrade，是本版推荐的兼容/保留边界。正式数据库 schema/副本兼容尚未实测。
+本次四项 Finding 已给出唯一完整合同，无留给 Implement 自行决定的未决产品合同：P1-1 使用输入权威分类及 business_rejected 候选终态；P1-2 使用唯一 Runtime 的显式添加预约/input_progress；P1-3 使用短期 admission 标记+既有互斥+持久唯一键，未决提交不重派；P2-1 保留 unknown 的旧 API 空查询。仍待 ChatGPT Final Spec Review 确认此次修订，不等于已 Freeze。
+
+工程边界：admission 标记只在现有单进程采集部署内有效，不能扩成多进程保障；若原事务无法核对，采集互斥可能保持占用直至 DB 恢复/进程重启后核验，这是避免重复访问的明确限制。正式 schema/真实副本、并发/崩溃与 UI 合同尚未实施验证，须后续按验收矩阵落地；这些是工程验证门槛，不重开已确认的产品决策。
 
 ## 14. Spec 自检与交付门槛
 
 - 已沿七类入口核对 API、Batch/Item/Run/Observation、互斥、重访与 unbatched；未把客户端去重后的条数当原始输入。
 - 已区分既有事实与新增合同；没有按相近时间猜归属，没有让已成功商品再进入 Runner 重采。
 - 已定义幂等/短事务/未知提交、导航计数/中断恢复、失败无 ID、删除匿名化、筛选能力及旧同步接口兼容。
+- 本次集中核对 result_code→Item final_result/base_result→Batch outcome→Runtime→列表/详情/异常筛选→恢复→迁移 CHECK→验收；业务拒绝不计技术失败，pending 受理不伪装持久任务，unknown 旧 API 仍兼容。
 - 新迁移只设计，旧 _14 不修改；无业务代码、测试、正式数据、设置或 Profile 改动。
 - 自检是作者检查，不替代 ChatGPT 独立 Spec Review；状态保持 Draft / 待 Review。
 - 仅提交本文及必要 README 索引；Push 后核对远端 SHA。完成后停止，等 ChatGPT 从 GitHub 独立 Review，未 Freeze 不 Implement。

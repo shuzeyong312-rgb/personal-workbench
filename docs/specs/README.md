@@ -98,6 +98,6 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 
 | Spec | 状态 | 范围 |
 | --- | --- | --- |
-| [collection-trigger-unification-v1.3.md](collection-trigger-unification-v1.3.md) | Draft / 待 ChatGPT 独立 Spec Review；未 Freeze、未实施 | 手动/定时/添加链接统一真实任务；添加输入与失败持久化、幂等、同步单商品归批、首页四项筛选及历史安全保留。继承 V1.2，新增合同只在 Review / Freeze 后实施。 |
+| [collection-trigger-unification-v1.3.md](collection-trigger-unification-v1.3.md) | Draft / 待 ChatGPT Final Spec Review；已按 `178a58c` Review 的 P1×3/P2×1 集中修订，未 Freeze、未实施 | 手动/定时/添加链接统一真实任务；明确业务拒绝终态、添加 Runtime 输入进度、同 ID 并发受理及 unknown 查询兼容。继承 V1.2，新增合同只在 Review / Freeze 后实施。 |
 
 本节为增量索引，不改写上方带日期的历史统计与 V1.2 冻结状态。
