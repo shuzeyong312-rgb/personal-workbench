@@ -1786,40 +1786,59 @@ test("renders detail overview, mapped group, inactive status and latest sku null
   expect(html).toContain("—");
 });
 
-test("single-product detail renders original operating metric values and missing states", () => {
+test("single-product detail keeps eight raw operating values and distinguishes current attempts from history", () => {
   const source = "1688_official_procurement_assistant_top";
   const definitions = [
-    ["listing_time", "上架时间", "经营表现", "observed", "2025-01-02"],
-    ["monthly_deal", "月成交", "经营表现", "observed", "20+"],
-    ["monthly_dropship", "月代销", "经营表现", "placeholder", "-"],
-    ["annual_units", "年成交件数", "经营表现", "loading", null],
-    ["annual_orders", "年成交笔数", "经营表现", "source_unavailable", null],
-    ["review_count", "评论数", "口碑履约", "read_failed", null],
-    ["positive_rate", "好评率", "口碑履约", "observed", "95.6%"],
-    ["pickup_rate", "揽收率", "口碑履约", "placeholder", "-"],
+    ["listing_time", "上架时间", "经营表现", "observed", "2025-01-02", "2025-01-02", 20],
+    ["monthly_deal", "月成交", "经营表现", "placeholder", "-", "100+", 18],
+    ["monthly_dropship", "月代销", "经营表现", "observed", "12", "12", 19],
+    ["annual_units", "年成交件数", "经营表现", "loading", null, null, 20],
+    ["annual_orders", "年成交笔数", "经营表现", "source_unavailable", null, null, 20],
+    ["review_count", "评论数", "口碑履约", "read_failed", null, null, 20],
+    ["positive_rate", "好评率", "口碑履约", "observed", "95.6%", "95.6%", 20],
+    ["pickup_rate", "揽收率", "口碑履约", "placeholder", "-", null, 20],
   ] as const;
-  const operatingMetrics = definitions.map(([metric_key, label, section, status, raw_value], index) => ({
+  const operatingMetrics = definitions.map(([metric_key, label, section, status, raw_value, valid_value, attemptRun], index) => ({
     metric_key, label, section, eligible: true, status,
-    latest_attempt: { collection_run_id: 9, status, raw_value, source, observed_at: `2026-10-10T0${index}:00:00Z`, reason: status === "observed" || status === "placeholder" ? null : "脱敏 Fixture 状态" },
-    latest_valid: status === "observed" ? { collection_run_id: 9, raw_value: raw_value!, source, observed_at: `2026-10-10T0${index}:00:00Z` } : null,
+    latest_attempt: { collection_run_id: 20, status, raw_value, source, observed_at: `2026-10-10T0${index}:00:00Z`, reason: status === "observed" || status === "placeholder" ? null : "脱敏 Fixture 状态" },
+    latest_valid: valid_value ? { collection_run_id: attemptRun, raw_value: valid_value, source, observed_at: `2026-10-09T0${index}:00:00Z` } : null,
   }));
   const html = renderToStaticMarkup(<DetailPage {...detailProps} data={{
     ...detailData,
-    latest_collection_run: { id: 9, started_at: "2026-10-10T00:00:00Z", finished_at: "2026-10-10T00:08:00Z", status: "success", operating_metrics_status: "partial", error_type: null, error_message: null },
-    operating_metrics: [...operatingMetrics, { metric_key: "favorite_count", label: "收藏数", section: "口碑履约", eligible: false, status: "not_attempted", latest_attempt: null, latest_valid: null }],
+    latest_collection_run: { id: 20, started_at: "2026-10-10T00:00:00Z", finished_at: "2026-10-10T00:08:00Z", status: "success", operating_metrics_status: "partial", error_type: null, error_message: null },
+    operating_metrics: [...operatingMetrics, { metric_key: "favorite_count", label: "收藏数", section: "口碑履约", eligible: false, status: "not_attempted", latest_attempt: null, latest_valid: null }, { metric_key: "platform_tag_new", label: "新品", section: "平台标签", eligible: false, status: "not_attempted", latest_attempt: null, latest_valid: null }],
   }} status="ready" error={null} />);
 
   for (const [, label] of definitions) expect(html).toContain(label);
-  for (const [, , , status, rawValue] of definitions) if (status === "observed" && rawValue) expect(html).toContain(rawValue);
-  expect(html).toContain("经营采集：部分成功");
-  expect(html).toContain("有效值来源：1688 官方采购助手顶部区域");
-  expect(html).toContain("有效值时间：");
-  expect(html).toContain("页面显示占位符（-）");
+  for (const [, , , , , validValue] of definitions) if (validValue) expect(html).toContain(validValue);
+  expect(html).toContain("经营数据");
+  expect(html).toContain("1688 官方采购助手 · 保留页面原始值");
+  expect(html).toContain("最近采集已读取");
+  expect(html).toContain("历史有效值");
+  expect(html).toContain("本次：页面显示占位符");
   expect(html).toContain("仍在加载");
   expect(html).toContain("来源不可用");
   expect(html).toContain("读取失败");
-  expect(html).toContain("收藏数");
-  expect(html).toContain("待接入");
+  expect(html).not.toContain("收藏数");
+  expect(html).not.toContain("新品");
+  expect(html).not.toContain("待接入");
+  expect(html).not.toContain("有效值来源：");
+});
+
+test("single-product detail distinguishes uncollected metrics from missing valid values", () => {
+  const html = renderToStaticMarkup(<DetailPage {...detailProps} data={{
+    ...detailData,
+    latest_collection_run: { id: 20, started_at: "2026-10-10T00:00:00Z", finished_at: null, status: "running", operating_metrics_status: "no_values", error_type: null, error_message: null },
+    operating_metrics: [
+      { metric_key: "monthly_deal", label: "月成交", section: "经营表现", eligible: true, status: "not_attempted", latest_attempt: null, latest_valid: { collection_run_id: 18, raw_value: "100+", source: "test", observed_at: "2026-10-08T00:00:00Z" } },
+      { metric_key: "monthly_dropship", label: "月代销", section: "经营表现", eligible: true, status: "not_attempted", latest_attempt: null, latest_valid: null },
+    ],
+  }} status="ready" error={null} />);
+  expect(html).toContain("尚未采集");
+  expect(html).toContain("暂无有效值");
+  expect(html).toContain("100+");
+  expect(html).toContain("历史有效值");
+  expect(html).not.toContain("最近采集已读取");
 });
 
 test("renders monitored offline notice and lifecycle recent change", () => {
@@ -2054,7 +2073,7 @@ test("7-day and 30-day trend scales are computed from their current data", () =>
   expect(buildStockChartScale(sevenDays)!.domain).not.toEqual(buildStockChartScale(thirtyDays)!.domain);
 });
 
-test("detail renders the overview, three trend cards, shared selector, placeholder and bottom facts", () => {
+test("detail renders the overview, two trends, shared selector and bottom facts", () => {
   const withImage = { ...detailData, competitor: { ...detailData.competitor, main_image_url: "https://img.example.com/item.jpg", group_id: 1 }, latest_snapshot: { ...detailData.latest_snapshot!, image_urls: ["https://img.example.com/item.jpg", "https://img.example.com/item-2.jpg", "https://img.example.com/item-3.jpg"], total_stock: 9998 } };
   const html = renderToStaticMarkup(<DetailPage {...detailProps} data={withImage} status="ready" error={null} />);
   expect(html).toContain("https://img.example.com/item.jpg");
@@ -2071,9 +2090,8 @@ test("detail renders the overview, three trend cards, shared selector, placehold
   expect(html).toContain("最近变价");
   expect(html).toContain("价格趋势");
   expect(html).toContain("库存趋势");
-  expect(html).toContain("销量趋势");
-  expect(html).toContain("销量数据待接入");
-  expect(html).toContain("当前数据源尚未达到正式采集标准");
+  expect(html).not.toContain("销量趋势");
+  expect(html).not.toContain("销量数据待接入");
   expect(html).toContain("近 7 天");
   expect(html).toContain("SKU 信息");
   expect(html).toContain("SKU 价格");

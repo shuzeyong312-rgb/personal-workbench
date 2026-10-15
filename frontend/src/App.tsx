@@ -1309,21 +1309,50 @@ export function formatCollectionRunStatus(status: "running" | "success" | "faile
   return `${baseStatus} · 经营${operatingStatus === undefined ? "未采集" : operatingStatusLabels[operatingStatus]}`;
 }
 
-function OperatingMetricsPanel({ metrics = [], latestRun, coverage }: { metrics?: OperatingMetric[]; latestRun?: LatestCollectionRun | null; coverage?: GroupDetailData["operating_metrics_coverage"] }) {
-  const groups = ["经营表现", "口碑履约", "平台标签"] as const;
-  return <section className="table-card detail-section-card operating-metrics-panel" aria-label="经营指标原值">
-    <div className="table-heading"><div><h2>经营指标原值</h2><span>仅展示官方采购助手原文</span></div></div>
-    {latestRun && <p className="operating-run-status">基础采集：{latestRun.status === "success" ? "成功" : latestRun.status === "failed" ? "失败" : "采集中"} · 经营采集：{operatingStatusLabels[latestRun.operating_metrics_status]} · {formatDate(latestRun.finished_at ?? latestRun.started_at)}{latestRun.error_message ? ` · ${latestRun.error_message}` : ""}</p>}
-    {groups.map(section => <div className="operating-metric-group" key={section}><h3>{section}</h3><dl>{metrics.filter(metric => metric.section === section).map(metric => {
-      const attempt = metric.latest_attempt;
-      const valid = metric.latest_valid;
-      if (!metric.eligible) return <div key={metric.metric_key}><dt>{metric.label}</dt><dd><strong>待接入</strong></dd></div>;
-      return <div key={metric.metric_key}><dt>{metric.label}</dt><dd><strong>{valid?.raw_value ?? "暂无有效值"}</strong>{valid && <><small>有效值来源：{operatingMetricSource(valid.source)}</small><small>有效值时间：{formatDate(valid.observed_at)} · Run #{valid.collection_run_id}</small></>}
-        <small>最近尝试：{attempt ? metricAttemptLabels[attempt.status] : "未采集"}{attempt?.status === "placeholder" && `（${attempt.raw_value ?? "-"}）`}{attempt?.reason ? ` · ${attempt.reason}` : ""}{attempt && ` · ${formatDate(attempt.observed_at)} · Run #${attempt.collection_run_id}`}</small>
-        {attempt && <small>尝试来源：{operatingMetricSource(attempt.source)}</small>}
-        {coverage?.[metric.metric_key] && <small>有历史有效值 {coverage[metric.metric_key].has_history_valid_values}/{coverage[metric.metric_key].active_offers}</small>}
-      </dd></div>;
-    })}</dl></div>)}
+function operatingMetricPresentation(metric: OperatingMetric, latestRun?: LatestCollectionRun | null) {
+  const attempt = metric.latest_attempt;
+  const currentAttempt = attempt && latestRun && attempt.collection_run_id === latestRun.id ? attempt : null;
+  const recentlyRead = currentAttempt?.status === "observed" && !!currentAttempt.raw_value?.trim();
+  const hasHistoricalValue = !!metric.latest_valid && (!latestRun || metric.latest_valid.collection_run_id !== latestRun.id);
+  const value = recentlyRead ? currentAttempt.raw_value! : metric.latest_valid?.raw_value ?? null;
+  const status = recentlyRead ? "最近采集已读取"
+    : hasHistoricalValue ? "历史有效值"
+      : !attempt ? "尚未采集"
+        : attempt.status === "observed" ? "暂无有效值"
+          : metricAttemptLabels[attempt.status];
+  return { attempt, currentAttempt, value, status, valueKind: recentlyRead ? "最近读取" : hasHistoricalValue ? "历史有效值" : metric.latest_valid ? "最新 Run 有效值" : "暂无有效值" };
+}
+
+function OperatingMetricsPanel({ metrics = [], latestRun }: { metrics?: OperatingMetric[]; latestRun?: LatestCollectionRun | null }) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const eligibleMetrics = metrics.filter(metric => metric.eligible && metric.section !== "平台标签");
+  const groups = [
+    { key: "经营表现", title: "成交表现" },
+    { key: "口碑履约", title: "口碑与履约" },
+  ] as const;
+  const selected = eligibleMetrics.find(metric => metric.metric_key === selectedKey) ?? null;
+  const toggleMetric = (metricKey: string) => setSelectedKey(current => current === metricKey ? null : metricKey);
+  const evidenceId = "operating-metric-evidence";
+  const evidence = selected ? operatingMetricPresentation(selected, latestRun) : null;
+
+  return <section className="table-card detail-section-card operating-metrics-panel" aria-label="经营数据">
+    <div className="table-heading"><div><h2>经营数据</h2><span>1688 官方采购助手 · 保留页面原始值</span></div><button type="button" className="text-button operating-evidence-toggle" aria-expanded={!!selected} aria-controls={evidenceId} onClick={() => setSelectedKey(current => current ? null : eligibleMetrics[0]?.metric_key ?? null)}>{selected ? "收起数据依据" : "查看数据依据"}</button></div>
+    <div className="operating-metric-groups">{groups.map(group => <div className="operating-metric-group" key={group.key}><h3>{group.title}</h3><div className={`operating-metric-grid operating-metric-grid-${group.key === "经营表现" ? "deals" : "service"}`}>{eligibleMetrics.filter(metric => metric.section === group.key).map(metric => {
+      const presentation = operatingMetricPresentation(metric, latestRun);
+      const selectedCard = selectedKey === metric.metric_key;
+      const showAttemptStatus = !!metric.latest_valid && !!presentation.currentAttempt && presentation.currentAttempt.status !== "observed";
+      return <button key={metric.metric_key} type="button" className={`operating-metric-card${selectedCard ? " operating-metric-card-selected" : ""}`} aria-expanded={selectedCard} aria-controls={evidenceId} onClick={() => toggleMetric(metric.metric_key)}>
+        <span className="operating-metric-label">{metric.label}</span><strong>{presentation.value ?? "暂无有效值"}</strong><span className={`operating-metric-status operating-status-${presentation.status === "最近采集已读取" ? "read" : presentation.status === "历史有效值" ? "history" : presentation.status === "读取失败" || presentation.status === "来源不可用" ? "warning" : "neutral"}`}>{presentation.status}</span>
+        {showAttemptStatus && <span className="operating-metric-latest-status">本次：{metricAttemptLabels[presentation.currentAttempt!.status]}</span>}
+      </button>;
+    })}</div></div>)}</div>
+    {selected && evidence && <section className="operating-metric-evidence" id={evidenceId} role="region" aria-label={`${selected.label}数据依据`}>
+      <header><div><h3>{selected.label} · 数据依据</h3><span>当前展示：{evidence.value ?? "暂无有效值"} · {evidence.valueKind}</span></div><button type="button" className="text-button" onClick={() => setSelectedKey(null)}>收起</button></header>
+      <div className="operating-evidence-grid">
+        <div><strong>最近尝试</strong>{evidence.attempt ? <><span>状态：{metricAttemptLabels[evidence.attempt.status]}</span><span>页面原值：{evidence.attempt.raw_value ?? "暂无有效值"}</span><span>来源：{operatingMetricSource(evidence.attempt.source)}</span><span>观察时间：{formatDate(evidence.attempt.observed_at)}</span><span>CollectionRun：#{evidence.attempt.collection_run_id}</span>{evidence.attempt.reason && <span>原因：{evidence.attempt.reason}</span>}</> : <span>尚未采集</span>}</div>
+        <div><strong>历史有效值</strong>{selected.latest_valid ? <><span>原值：{selected.latest_valid.raw_value}</span><span>来源：{operatingMetricSource(selected.latest_valid.source)}</span><span>观察时间：{formatDate(selected.latest_valid.observed_at)}</span><span>CollectionRun：#{selected.latest_valid.collection_run_id}</span></> : <span>暂无历史有效值</span>}</div>
+      </div>
+    </section>}
   </section>;
 }
 function operatingMetricValue(product: GroupProductFacts, metricKey: string): string {
@@ -1932,10 +1961,6 @@ function DetailTrendCard({ kind, title, description, trend }: { kind: "price" | 
   return <section className="table-card detail-trend-card"><div className="table-heading"><div><h3>{title}</h3><span>{description}</span></div></div><DetailTrendChart kind={kind} trend={trend} /></section>;
 }
 
-function SalesPlaceholderCard() {
-  return <section className="table-card detail-trend-card detail-sales-placeholder"><div className="table-heading"><div><h3>销量趋势</h3><span>正式销量能力尚未开放</span></div></div><div className="detail-sales-placeholder-body"><strong>销量数据待接入</strong><span>当前数据源尚未达到正式采集标准</span></div></section>;
-}
-
 export function DetailPage({ data, groups, status, error, days, rangeLoading = false, onRetry, onRangeChange, onBack, onChangeGroup, onLifecycleAction, lifecycleSubmitting = false, onNavigate }: DetailPageProps) {
   if (status === "loading") return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel"><div className="spinner" /><strong>正在加载竞品详情…</strong></div></AppShell>;
   if (status === "error" || data === null) return <AppShell page="detail" onNavigate={onNavigate} breadcrumb="竞品列表 / 竞品详情"><header className="page-header"><div><h1>竞品详情</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div></header><div className="state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品详情。"}</span><button className="secondary-button" onClick={onRetry}>重试</button></div></AppShell>;
@@ -1944,7 +1969,7 @@ export function DetailPage({ data, groups, status, error, days, rangeLoading = f
     <header className="page-header detail-page-header"><div><h1>{isSelf ? "我方商品详情" : "竞品详情"}</h1><p className="page-description">查看当前商品状态、价格趋势、SKU 信息和历史记录。</p></div><div className="detail-page-actions"><button type="button" className="secondary-button" onClick={onBack}>返回{isSelf ? "我方商品" : "竞品列表"}</button>{data.competitor.is_active ? <button type="button" className="secondary-button" onClick={() => onLifecycleAction?.("stop", data.competitor)} disabled={lifecycleSubmitting}>停止监控</button> : <button type="button" className="primary-button" onClick={() => onLifecycleAction?.("resume", data.competitor)} disabled={lifecycleSubmitting}>恢复监控</button>}<button type="button" className="detail-danger-button" onClick={() => onLifecycleAction?.("delete", data.competitor)} disabled={lifecycleSubmitting}>删除{isSelf ? "我方商品" : "竞品"}</button></div></header>
      <DetailOverview data={data} groups={groups} onChangeGroup={onChangeGroup} />
     <OperatingMetricsPanel metrics={data.operating_metrics} latestRun={data.latest_collection_run} />
-    <section className="detail-trends"><div className="detail-trends-header"><div><h2>趋势数据</h2><span>价格和库存来自每日最终 ProductSnapshot</span></div><div className="range-selector" role="group" aria-label="趋势时间范围" aria-busy={rangeLoading}><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)} disabled={rangeLoading}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)} disabled={rangeLoading}>近 30 天</button>{rangeLoading && <span className="range-loading-indicator" role="status">更新中…</span>}</div></div><div className="detail-trend-grid"><DetailTrendCard kind="price" title="价格趋势" description="最低价 / 最高价" trend={data.daily_trend} /><DetailTrendCard kind="stock" title="库存趋势" description="全部 SKU 库存总和" trend={data.daily_trend} /><SalesPlaceholderCard /></div></section>
+    <section className="detail-trends"><div className="detail-trends-header"><div><h2>趋势数据</h2><span>价格和库存来自每日最终 ProductSnapshot</span></div><div className="range-selector" role="group" aria-label="趋势时间范围" aria-busy={rangeLoading}><button type="button" aria-pressed={days === 7} className={days === 7 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(7)} disabled={rangeLoading}>近 7 天</button><button type="button" aria-pressed={days === 30} className={days === 30 ? "range-button range-button-active" : "range-button"} onClick={() => onRangeChange(30)} disabled={rangeLoading}>近 30 天</button>{rangeLoading && <span className="range-loading-indicator" role="status">更新中…</span>}</div></div><div className="detail-trend-grid"><DetailTrendCard kind="price" title="价格趋势" description="最低价 / 最高价" trend={data.daily_trend} /><DetailTrendCard kind="stock" title="库存趋势" description="全部 SKU 库存总和" trend={data.daily_trend} /></div></section>
     <div className="detail-lower-grid">
       <section className="table-card detail-section-card"><div className="table-heading"><div><h2>SKU 信息</h2><span>{data.latest_snapshot ? `共 ${data.latest_snapshot.sku_count} 个` : "当前快照"}</span></div></div>{data.latest_skus.length === 0 ? <div className="detail-empty">暂无 SKU 数据</div> : <div className="table-scroll detail-table-scroll"><table><thead><tr><th>SKU 规格</th><th>SKU ID</th><th>库存</th><th>SKU 价格</th></tr></thead><tbody>{data.latest_skus.map((sku) => <tr key={sku.sku_id}><td>{sku.sku_name ?? "未命名 SKU"}</td><td>{sku.sku_id}</td><td>{sku.stock === null ? "—" : sku.stock}</td><td>{sku.price === null ? "—" : `¥${sku.price}`}</td></tr>)}</tbody></table></div>}</section>
       <section className="table-card detail-section-card"><div className="table-heading"><div><h2>最近变化</h2><span>最近 20 条 · 检测时间</span></div></div>{data.recent_changes.length === 0 ? <div className="detail-empty">暂无变化记录</div> : <div className="detail-record-list">{data.recent_changes.map((change) => <div className="detail-record-row" key={change.id}><strong>{formatChange(change)}</strong><time>{formatDate(change.detected_at)}</time></div>)}</div>}</section>
