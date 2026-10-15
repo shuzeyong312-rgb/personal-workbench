@@ -96,7 +96,24 @@ function Start-Project {
     $backendCommand = "Set-Location -LiteralPath '$BackendDir'; & '$Python' -m uvicorn app.main:app --reload --host 127.0.0.1 --port $BackendPort *> '$backendLog'"
     $frontendCommand = "Set-Location -LiteralPath '$FrontendDir'; & '$Vite' --host 127.0.0.1 --port $FrontendPort --strictPort --open *> '$frontendLog'"
 
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-ExecutionPolicy', 'Bypass', '-Command', $backendCommand)
+    $backendProcess = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-ExecutionPolicy', 'Bypass', '-Command', $backendCommand)
+    $backendReady = $false
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        if ($backendProcess.HasExited) {
+            throw "Backend exited before becoming healthy. See $backendLog"
+        }
+        try {
+            $health = Invoke-WebRequest "http://127.0.0.1:$BackendPort/api/health" -UseBasicParsing -TimeoutSec 1
+            if ($health.StatusCode -eq 200) {
+                $backendReady = $true
+                break
+            }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $backendReady) {
+        throw "Backend did not become healthy within 60 attempts. See $backendLog"
+    }
     Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-ExecutionPolicy', 'Bypass', '-Command', $frontendCommand)
 }
 

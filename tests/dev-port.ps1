@@ -11,6 +11,13 @@ foreach ($name in @('Get-ProcessTreeIds', 'Get-ProjectProcessIds')) {
     Invoke-Expression ($functions | Where-Object Name -eq $name).Extent.Text
 }
 $start = $functions | Where-Object Name -eq 'Start-Project'
+$startText = $start.Extent.Text
+$backendLaunch = $startText.IndexOf('Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @(''-ExecutionPolicy'', ''Bypass'', ''-Command'', $backendCommand)', [StringComparison]::Ordinal)
+$healthProbe = $startText.IndexOf('http://127.0.0.1:$BackendPort/api/health', [StringComparison]::Ordinal)
+$frontendLaunch = $startText.IndexOf('Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(''-ExecutionPolicy'', ''Bypass'', ''-Command'', $frontendCommand)', [StringComparison]::Ordinal)
+if ($backendLaunch -lt 0 -or $healthProbe -le $backendLaunch -or $frontendLaunch -le $healthProbe) {
+    throw 'Start-Project must wait for backend health before launching Vite'
+}
 # Execute the actual port-selection statements, without migrations or backend startup.
 $selection = @($start.Body.EndBlock.Statements | Select-Object -First 2)
 1..3 | ForEach-Object {
