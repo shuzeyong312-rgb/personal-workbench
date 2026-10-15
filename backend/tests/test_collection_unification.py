@@ -9,6 +9,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app import competitors as api_module
 from app.collection import service
+from app.collection.parser_1688 import CollectionParseError
+from app.collection.types import CollectionPageResult
 from app.database import get_db
 from app.main import app
 from app.models import Base, CollectionAddInput, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, OperatingMetricObservation, ProductSnapshot
@@ -43,6 +45,131 @@ def fake_collector(_url, offer_id, **callbacks):
     callbacks['on_navigation_claim']()
     callbacks['on_navigation_confirmed']()
     return product(offer_id)
+
+
+def test_add_links_accepts_real_page_result_and_persists_one_run(client, offline_worker, monkeypatch):
+    api, factory = client
+    calls = []
+
+    def collector(_url, offer_id, **callbacks):
+        calls.append(offer_id)
+        callbacks['on_navigation_claim']()
+        callbacks['on_navigation_confirmed']()
+        return CollectionPageResult(offer_id, product(offer_id), None, [])
+
+    monkeypatch.setattr(service, 'collect_1688_product', collector)
+    data = payload('https://detail.1688.com/offer/101.html')
+    response = api.post('/api/competitors/add-batch', json=data)
+
+    assert response.status_code == 200, response.text
+    task = response.json()['task']
+    assert task['input_summary']['added'] == 1
+    assert task['input_summary']['technical_failed'] == 0
+    assert task['page_visits'] == task['attempts_started'] == 1
+    assert task['items'][0]['result_code'] == 'added'
+    assert len(task['items'][0]['attempts']) == 1
+    with factory() as db:
+        add_input = db.scalar(select(CollectionAddInput))
+        run = db.scalar(select(CollectionRun))
+        competitor = db.scalar(select(Competitor))
+        snapshot = db.scalar(select(ProductSnapshot))
+        assert add_input.batch_id == task['batch_id']
+        assert run.collection_batch_item_id == add_input.batch_item_id
+        assert run.competitor_id == competitor.id == snapshot.competitor_id
+        assert run.status == 'success'
+        assert db.scalar(select(OperatingMetricObservation)) is None
+    assert len(api.get('/api/competitors').json()) == 1
+    assert api.get('/api/collection-runs').json()['total'] == 1
+
+    replay = api.post('/api/competitors/add-batch', json=data)
+    assert replay.json()['task_id'] == data['submission_id']
+    assert calls == ['101']
+    assert api.get('/api/collection-runs').json()['total'] == 1
+
+
+def test_add_links_maps_page_result_parse_error(client, offline_worker, monkeypatch):
+    api, _ = client
+    error = CollectionParseError('private parser detail')
+    def collector(_url, offer_id, **callbacks):
+        callbacks['on_navigation_claim']()
+        callbacks['on_navigation_confirmed']()
+        return CollectionPageResult(offer_id, None, error, [])
+    monkeypatch.setattr(service, 'collect_1688_product', collector)
+
+    task = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/101.html')).json()['task']
+
+    assert task['items'][0]['result_code'] == 'technical_failed'
+    assert task['items'][0]['error_code'] == 'collection_parse_failed'
+    assert task['input_summary']['business_rejected'] == 0
+    assert task['page_visits'] == 1
+
+
+def test_add_links_maps_missing_product_and_error_to_parse_failure(client, offline_worker, monkeypatch):
+    api, _ = client
+    def collector(_url, offer_id, **callbacks):
+        callbacks['on_navigation_claim']()
+        callbacks['on_navigation_confirmed']()
+        return CollectionPageResult(offer_id, None, None, [])
+    monkeypatch.setattr(service, 'collect_1688_product', collector)
+
+    task = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/101.html')).json()['task']
+
+    assert task['items'][0]['result_code'] == 'technical_failed'
+    assert task['items'][0]['error_code'] == 'collection_parse_failed'
+    assert task['input_summary']['business_rejected'] == 0
+    assert task['page_visits'] == 1
+    assert api.get('/api/competitors').json() == []
+
+
+@pytest.mark.parametrize('exception,expected_code', [
+    (service.LoginRequiredError('private'), '1688_login_required'),
+    (service.VerificationRequiredError('private'), '1688_verification_required'),
+])
+def test_add_links_preserves_login_and_verification_error_mapping(client, offline_worker, monkeypatch, exception, expected_code):
+    api, _ = client
+    def collector(_url, _offer_id, **callbacks):
+        callbacks['on_navigation_claim']()
+        callbacks['on_navigation_confirmed']()
+        raise exception
+    monkeypatch.setattr(service, 'collect_1688_product', collector)
+
+    task = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/101.html')).json()['task']
+
+    assert task['items'][0]['result_code'] == 'verification_required'
+    assert task['items'][0]['error_code'] == expected_code
+    assert task['input_summary']['verification_required'] == 1
+    assert task['input_summary']['technical_failed'] == 0
+    assert task['page_visits'] == 1
+
+
+@pytest.mark.parametrize(('page_offer_id', 'product_offer_id'), [('102', '101'), ('101', '102')])
+def test_add_links_rejects_page_or_product_offer_id_mismatch(client, offline_worker, monkeypatch, page_offer_id, product_offer_id):
+    api, _ = client
+    monkeypatch.setattr(service, 'collect_1688_product', lambda _url, _offer_id, **_callbacks: CollectionPageResult(page_offer_id, product(product_offer_id), None, []))
+
+    task = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/101.html')).json()['task']
+
+    assert task['items'][0]['result_code'] == 'technical_failed'
+    assert task['items'][0]['error_code'] == 'offer_id_mismatch'
+    assert task['input_summary']['business_rejected'] == 0
+    assert api.get('/api/competitors').json() == []
+
+
+@pytest.mark.parametrize('missing', ['title', 'shop_name'])
+def test_add_links_rejects_page_result_missing_required_product_data(client, offline_worker, monkeypatch, missing):
+    api, _ = client
+    data = product('101')
+    data = data.__class__(**{**data.__dict__, missing: ''})
+    monkeypatch.setattr(service, 'collect_1688_product', lambda _url, offer_id, **_callbacks: CollectionPageResult(offer_id, data, None, []))
+
+    task = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/101.html')).json()['task']
+
+    expected_result = 'identity_rejected' if missing == 'shop_name' else 'technical_failed'
+    expected_error = 'shop_name_unavailable' if missing == 'shop_name' else 'collection_partial_data'
+    assert task['items'][0]['result_code'] == expected_result
+    assert task['items'][0]['error_code'] == expected_error
+    assert task['input_summary']['business_rejected'] == (1 if missing == 'shop_name' else 0)
+    assert api.get('/api/competitors').json() == []
 
 
 @pytest.fixture()

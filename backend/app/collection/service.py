@@ -686,7 +686,17 @@ def collect_product(
         if on_navigation_claim is not None:
             kwargs["on_navigation_claim"] = on_navigation_claim
             kwargs["on_navigation_confirmed"] = on_navigation_confirmed
-        product = collect_1688_product(url, offer_id, **kwargs)
+        result = collect_1688_product(url, offer_id, **kwargs)
+        if isinstance(result, CollectionPageResult):
+            if result.offer_id != offer_id:
+                raise OfferIdMismatchError(
+                    f"offer_id mismatch: expected {offer_id}, got {result.offer_id}"
+                )
+            if result.product is None:
+                raise result.product_error or CollectionParseError("product facts unavailable")
+            product = result.product
+        else:
+            product = result
         if isinstance(product, ProductData) and (not isinstance(product.shop_name, str) or not product.shop_name.strip()):
             raise CollectionError(
                 "shop_name_unavailable",
