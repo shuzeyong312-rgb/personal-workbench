@@ -93,3 +93,11 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | Spec | 状态 | 范围 |
 | --- | --- | --- |
 | [collection-reliability-records-v1.2.md](collection-reliability-records-v1.2.md) | ChatGPT 独立 Final Spec Review PASS / Frozen；P0/P1/P2 = 0/0/0；审核基线 `02e9c6a0f61b76091f993b6b0af25796b5024cc8` | 真实 SQLite 诊断；批次生命周期/outcome 分离、匿名删除后汇总、导航事件计数、调度 occurrence 幂等；默认关闭且有熔断的有限经营指标补采。按冻结合同进入 Implement。 |
+
+## Draft / 待 ChatGPT Review（2026-10-15）
+
+| Spec | 状态 | 范围 |
+| --- | --- | --- |
+| [collection-trigger-unification-v1.3.md](collection-trigger-unification-v1.3.md) | Draft / 待 ChatGPT 独立 Spec Review；未 Freeze、未实施 | 手动/定时/添加链接统一真实任务；添加输入与失败持久化、幂等、同步单商品归批、首页四项筛选及历史安全保留。继承 V1.2，新增合同只在 Review / Freeze 后实施。 |
+
+本节为增量索引，不改写上方带日期的历史统计与 V1.2 冻结状态。
