@@ -1,4 +1,5 @@
 import { isValidElement, type ReactNode } from "react";
+import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { chromium, expect as playwrightExpect, type Route } from "@playwright/test";
@@ -956,6 +957,18 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
+  const screenshotDir = fileURLToPath(new URL("../../.artifacts/dashboard-ui-qa/", import.meta.url));
+  await mkdir(screenshotDir, { recursive: true });
+  const captureFixture = async (name: string) => {
+    await page.evaluate(() => {
+      const label = document.createElement("div");
+      label.textContent = "受控 Fixture · 非正式数据库或真实采集结果";
+      Object.assign(label.style, { position: "fixed", left: "12px", top: "76px", zIndex: "9999", padding: "4px 6px", border: "1px solid #dbe7f7", borderRadius: "6px", color: "#405878", background: "rgba(255,255,255,.95)", font: "10px sans-serif" });
+      document.body.append(label);
+    });
+    await page.screenshot({ path: `${screenshotDir}/${name}.png` });
+    await page.locator("body > div:last-child").evaluate((element) => element.remove());
+  };
   const groups = ["第一组", "第二组", "第三组", "第四组", "第五组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
   let batchState: BatchState = idleBatchState;
   const json = (route: Route, body: unknown) => route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
@@ -971,12 +984,29 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
   try {
     const baseUrl = server.resolvedUrls?.local[0];
     if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
-    for (const state of [idleBatchState, makeBatchState("running", { total: 3, completed: 1, remaining: 2, runner_active: true }), makeBatchState("resting", { total: 3, completed: 1, remaining: 2, resting_remaining_seconds: 17, runner_active: true })]) {
+    const runningState = makeBatchState("running", { total: 3, completed: 1, remaining: 2, runner_active: true, current_competitor_title: " Fixture 当前商品", phase: "operating_metrics_retry", retry_completed: 1, retry_total: 2, succeeded: 1, page_visits: 2 });
+    for (const state of [idleBatchState, runningState, makeBatchState("resting", { total: 3, completed: 1, remaining: 2, resting_remaining_seconds: 17, runner_active: true })]) {
       batchState = state;
+      await page.setViewportSize(state.status === "running" ? { width: 1440, height: 1000 } : { width: 1440, height: 900 });
       await page.goto(baseUrl);
       const overview = page.locator(".collection-overview");
       await playwrightExpect(overview).toBeVisible();
       await playwrightExpect(overview.locator(".collection-batch")).toBeVisible();
+      if (state.status === "idle") {
+        await playwrightExpect(overview.locator(".collection-batch-heading")).toHaveText("当前无采集任务今日采集统计仍会保留");
+        await playwrightExpect(overview.getByRole("progressbar")).toHaveCount(0);
+        await playwrightExpect(overview.getByText(/当前商品|阶段：|0 \/ 0/)).toHaveCount(0);
+        await captureFixture("dashboard-1440x900-idle");
+      }
+      if (state.status === "running") {
+        await playwrightExpect(overview.locator(".collection-batch")).toContainText("1 / 3");
+        await playwrightExpect(overview.locator(".collection-batch-current")).toContainText("Fixture 当前商品");
+        await playwrightExpect(overview.locator(".collection-batch")).toContainText("经营补采 1/2");
+        await playwrightExpect(overview.getByRole("button", { name: "暂停采集" })).toBeVisible();
+        await playwrightExpect(overview.getByRole("button", { name: "结束采集" })).toBeVisible();
+        await overview.scrollIntoViewIfNeeded();
+        await captureFixture("dashboard-running");
+      }
       expect(await overview.evaluate((element) => {
         const card = element.getBoundingClientRect();
         const batch = element.querySelector(".collection-batch")!.getBoundingClientRect();
@@ -984,7 +1014,7 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
       })).toBe(true);
       if (state.status === "running" || state.status === "resting") await playwrightExpect(overview.getByRole("progressbar")).toBeVisible();
     }
-    for (const viewport of [{ width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 1600, height: 900 }, { width: 1920, height: 1080 }]) {
       batchState = idleBatchState;
       await page.setViewportSize(viewport);
       await page.goto(baseUrl);
@@ -993,14 +1023,27 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
         const grid = element.getBoundingClientRect();
         const cards = Array.from(element.querySelectorAll<HTMLElement>(":scope > .table-card")).map((card) => card.getBoundingClientRect().height);
         const chart = element.querySelector<HTMLElement>(".dashboard-trend-chart")!.getBoundingClientRect().height;
-        return { remainingBelow: main.bottom - grid.bottom, cards, chart };
+        return { remainingBelow: main.bottom - grid.bottom, cards, chart, grid: grid.height, chartWidth: element.querySelector<HTMLElement>(".dashboard-trend-chart")!.getBoundingClientRect().width };
       });
-      expect(lowerLayout.remainingBelow).toBeLessThanOrEqual(14);
       expect(Math.abs(lowerLayout.cards[0] - lowerLayout.cards[1])).toBeLessThanOrEqual(1);
-      expect(lowerLayout.chart).toBeLessThanOrEqual(260);
+      expect(lowerLayout.chart).toBeGreaterThanOrEqual(160);
+      expect(lowerLayout.chart).toBeLessThan(300);
+      expect(lowerLayout.grid).toBeLessThan(430);
+      if (viewport.height === 1080) expect(lowerLayout.remainingBelow).toBeGreaterThan(100);
+      await page.locator(".chart-hit-area").last().hover();
+      await playwrightExpect(page.locator(".dashboard-trend-tooltip")).toContainText("09/20");
+      await playwrightExpect(page.locator(".dashboard-trend-tooltip")).toContainText("变价 2");
+      const zeroValueLines = await page.locator(".dashboard-trend-wrap polyline").evaluateAll((lines) => lines.map((line) => getComputedStyle(line).strokeDasharray));
+      expect(new Set(zeroValueLines).size).toBeGreaterThan(1);
+      await page.mouse.move(0, 0);
+      await captureFixture(`dashboard-${viewport.width}x${viewport.height}`);
     }
-    const dimensions = await page.locator(".main-content-dashboard").evaluate((element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
-    expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight);
+    await page.setViewportSize({ width: 1440, height: 680 });
+    await page.goto(baseUrl);
+    const shortDimensions = await page.locator(".main-content-dashboard").evaluate((element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
+    expect(shortDimensions.scrollHeight).toBeGreaterThan(shortDimensions.clientHeight);
+    await page.locator(".collection-overview").scrollIntoViewIfNeeded();
+    await playwrightExpect(page.locator(".collection-overview")).toBeVisible();
     const mainContent = page.locator(".main-content-dashboard");
     expect(await mainContent.evaluate((element) => getComputedStyle(element).scrollbarGutter)).toBe("stable");
     expect(await mainContent.evaluate((element) => getComputedStyle(element, "::-webkit-scrollbar").width)).toBe("7px");
@@ -1045,6 +1088,9 @@ test("limits rendered reasons to the backend-provided list and shows the no-chan
   expect(empty).toContain("今日暂无需要关注的竞争变化");
   expect(empty).not.toContain("一般组");
   expect(empty).not.toContain("重点组");
+  const oneGroup = renderDashboard({ attention: { ...attentionData, groups: attentionData.groups.slice(0, 1) } });
+  expect(oneGroup).toContain("一般组");
+  expect(oneGroup).not.toContain("dashboard-attention-toggle");
 });
 
 test("isolates Attention error from collection and trend and offers an Attention-only retry", () => {
@@ -1095,14 +1141,19 @@ test("renders the seven trend labels and keeps zero-valued chart points valid", 
   const points = buildDashboardTrendChartPoints(dashboardData.trend_7d);
   expect(points).toHaveLength(7);
   expect(points.every((point) => Number.isFinite(point.y.price_changes))).toBe(true);
+  expect(new Set(Object.values(points[0].y)).size).toBe(1);
+  expect(points.at(-1)?.x).toBe(602);
   const html = renderToStaticMarkup(<DashboardTrendChart trend={dashboardData.trend_7d} />);
+  expect(html).toContain('viewBox="0 0 640 320"');
   expect((html.match(/class="chart-label chart-y-label"/g) || []).length).toBeGreaterThanOrEqual(4);
   expect(html).toContain("09/14");
   expect(html).toContain("09/20");
+  expect(renderToStaticMarkup(<DashboardTrendChart trend={[dashboardData.trend_7d[6]]} />)).toContain("09/20");
 });
 
 test("dashboard trend uses a zero-based integer scale with useful intermediate ticks", () => {
   const trend = [{ date: "2026-09-20", price_changes: 15, stock_changes: 0, sku_changes: 0, failed_collections: 0 }];
+  expect(buildDashboardTrendChartPoints(trend)[0].x).toBe(327);
   const scale = buildDashboardTrendScale(trend);
   expect(scale.domain[0]).toBe(0);
   expect(scale.ticks).toEqual([0, 5, 10, 15]);
@@ -1125,9 +1176,22 @@ test("renders batch state with the dashboard collection action", () => {
   const empty = renderDashboard({ data: { ...dashboardData, stats: { ...dashboardData.stats, monitored_competitors: 0 } } });
   expect(empty).toContain("当前无采集任务");
   expect(empty).toContain("今日采集统计仍会保留");
+  expect(empty).not.toContain("阶段：");
+  expect(empty).not.toContain("role=\"progressbar\"");
   expect(empty).toContain('disabled=""');
   expect(empty).not.toContain("添加竞品");
   expect(empty).toContain("立即采集");
+  const completed = renderDashboard({ batchState: makeBatchState("completed", { total: 4, completed: 4, succeeded: 3, failed: 1, remaining: 0, page_visits: 4, current_competitor_id: 1, current_competitor_title: "已完成商品" }) });
+  expect(completed).toContain("最近批次完成");
+  expect(completed).toContain("成功 3 · 失败 1");
+  expect(completed).toContain("已完成 4 / 4");
+  expect(completed).not.toContain("当前商品");
+  expect(completed).not.toContain("role=\"progressbar\"");
+  const addLinks = renderDashboard({ batchState: makeBatchState("running", { work_kind: "add_links", input_progress: { total: 5, candidate_total: 5, processed: 2, pending: 0, remaining: 3, added: 1, business_rejected: 1, technical_failed: 0, verification_required: 0, interrupted: 0, not_executed: 3, anomaly_inputs: 0 }, current_input_position: 2, page_visits: 1, runner_active: true }) });
+  expect(addLinks).toContain("添加链接：已处理 2/5");
+  expect(addLinks).toContain("业务拒绝 1");
+  expect(addLinks).toContain("技术失败 0");
+  expect(addLinks).toContain("页面访问 1 · 未知 0");
 });
 
 test("renders detail entry actions on dashboard and competitor list", () => {
