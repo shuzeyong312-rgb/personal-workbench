@@ -41,11 +41,13 @@ test("directory search, filters, stable sorting, actions, and empty state work",
   await expect(page.locator('[data-group-id="3"]')).toContainText("已停止 2 个");
   await expect(page.locator('[data-group-id="1"]')).toContainText("Portable Warmer Long Product Name");
   await expect(page.locator('[data-group-id="2"]')).toContainText("尚未绑定");
+  await expect(page.getByRole("button", { name: "清除筛选" })).toBeHidden();
   expect(await ids()).toEqual([1, 2, 5, 3, 4, 6]);
 
   await page.getByRole("textbox", { name: "搜索竞品组" }).fill("portable warmer");
   await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(1);
   await expect(page.locator(".group-directory-table tbody tr").first()).toHaveAttribute("data-group-id", "1");
+  await expect(page.getByRole("button", { name: "清除筛选" })).toBeVisible();
   await page.getByRole("button", { name: "清除筛选" }).click();
   await page.getByRole("textbox", { name: "搜索竞品组" }).fill("group c");
   await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(1);
@@ -106,7 +108,7 @@ test("wide desktop screenshots and narrow layout keep the directory usable", asy
   for (const width of [1440, 1600]) {
     await page.setViewportSize({ width, height: 1000 });
     await expect(page.locator(".group-directory-table tbody tr")).toHaveCount(8);
-    await expect(page.getByRole("button", { name: "清除筛选" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "清除筛选" })).toBeHidden();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`competitor-groups-${width}.png`), fullPage: true });
   }
