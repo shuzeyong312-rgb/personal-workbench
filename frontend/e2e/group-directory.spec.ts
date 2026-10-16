@@ -72,7 +72,7 @@ test("directory search, filters, stable sorting, actions, and empty state work",
   await mock.expectNoUnexpectedApi();
 });
 
-test("group analysis, rename and delete prompts remain available", async ({ page }) => {
+test("group name opens analysis and rename and delete prompts remain available", async ({ page }) => {
   const { mock } = await openDirectory(page);
   const detailRequests: number[] = [];
   page.on("request", request => {
@@ -82,9 +82,8 @@ test("group analysis, rename and delete prompts remain available", async ({ page
   await page.locator('[data-group-id="3"] .group-directory-name').click();
   await expect(page.getByRole("heading", { name: "Group C 竞争分析" })).toBeVisible();
   await page.getByRole("button", { name: "返回竞品分组" }).click();
-  await page.locator('[data-group-id="3"]').getByRole("button", { name: "组分析" }).click();
-  await expect(page.getByRole("heading", { name: "Group C 竞争分析" })).toBeVisible();
-  expect(detailRequests).toEqual([3, 3]);
+  await expect(page.locator('[data-group-id="3"]').getByRole("button", { name: "组分析" })).toHaveCount(0);
+  expect(detailRequests).toEqual([3]);
   await page.getByRole("button", { name: "竞品分组", exact: true }).click();
   await page.getByRole("button", { name: "新增竞品组" }).click();
   await expect(page.getByRole("dialog")).toContainText("新增竞品组");
@@ -114,7 +113,7 @@ test("wide desktop screenshots and narrow layout keep the directory usable", asy
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(page.locator(".group-directory-table")).toBeVisible();
   await expect(page.locator('[data-group-id="1"]').getByRole("button", { name: "查看竞品" })).toBeVisible();
-  await expect(page.locator('[data-group-id="1"]').getByRole("button", { name: "组分析" })).toBeHidden();
+  await expect(page.locator('[data-group-id="1"]').getByRole("button", { name: "组分析" })).toHaveCount(0);
   await expect(page.locator(".group-unassigned-row")).toContainText("2 个商品尚未归入竞品组");
 });
 

@@ -477,9 +477,15 @@ test("keeps product and monitoring status in separate list columns", () => {
   expect((html.match(/<td(?:\s|>)/g) ?? [])).toHaveLength(22);
 });
 
-test("renders completed and verification batch states", () => {
-  const completed = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} batchState={{ ...idleBatchState, status: "completed", total: 1, completed: 1, succeeded: 1 }} status="ready" error={null} onRetry={noop} onAdd={noop} />);
-  expect(completed).toContain("采集完成：成功 1，失败 0");
+test("does not keep completed collection messages in either product list", () => {
+  const completedState = { ...idleBatchState, status: "completed" as const, total: 1, completed: 1, succeeded: 1 };
+  for (const ownership of ["self", "competitor"] as const) {
+    const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} ownership={ownership} batchState={completedState} status="ready" error={null} onRetry={noop} onAdd={noop} />);
+    expect(html).not.toContain("采集完成：成功 1，失败 0");
+  }
+});
+
+test("renders verification batch state", () => {
   const verification = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} batchState={{ ...idleBatchState, status: "verification_required", total: 2, completed: 1, remaining: 1, verification_required: 1, browser_open: true, runner_active: true }} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(verification).toContain("1688 需要人工验证，本次采集已停止");
   expect(verification).toContain("关闭浏览器后可重新发起采集");
@@ -1220,6 +1226,8 @@ test("marks active root and monitoring navigation with one consistent icon style
   const competitors = renderToStaticMarkup(<Sidebar page="competitors" onNavigate={noop} />);
   const groups = renderToStaticMarkup(<Sidebar page="groups" onNavigate={noop} />);
   const collectionTasks = renderToStaticMarkup(<Sidebar page="collection-tasks" onNavigate={noop} />);
+  const productLibrary = renderToStaticMarkup(<Sidebar page="product-library" onNavigate={noop} />);
+  const aiAssistant = renderToStaticMarkup(<Sidebar page="ai-assistant" onNavigate={noop} />);
   const priceCompare = renderToStaticMarkup(<Sidebar page="price-compare" onNavigate={noop} />);
   const autoInquiry = renderToStaticMarkup(<Sidebar page="auto-inquiry" onNavigate={noop} />);
   const autoListing = renderToStaticMarkup(<Sidebar page="auto-listing" onNavigate={noop} />);
@@ -1234,6 +1242,10 @@ test("marks active root and monitoring navigation with one consistent icon style
   expect(competitors).toContain("竞品列表");
   expect(groups).toContain("竞品分组");
   expect(collectionTasks).toContain("采集记录");
+  expect(productLibrary).toContain("产品库");
+  expect(productLibrary).toContain('aria-current="page"');
+  expect(aiAssistant).toContain("AI智能助手");
+  expect(aiAssistant).toContain('aria-current="page"');
   expect(priceCompare).toContain("全网比价");
   expect(priceCompare).toContain('aria-current="page"');
   expect(priceCompare).toContain('aria-expanded="false"');
@@ -1342,7 +1354,8 @@ test("renders group page loading, error, full empty, unassigned and normal state
   expect(normal).toContain("3 个竞品");
   expect(normal).toContain("¥34.00 ~ ¥40.00");
   expect(normal).toContain("更多");
-  expect(normal).toContain("组分析");
+  expect(normal).toContain('class="group-directory-name"');
+  expect(normal).not.toContain(">组分析</button>");
   expect(normal).toContain('class="filter-card group-directory-toolbar"');
   expect(normal).toContain('class="filter-field filter-search"');
   expect(normal).toContain("清除筛选");
@@ -1519,7 +1532,7 @@ test("parses dates, percentages, integer counts, and grouped thousands while lea
 test("shows own role in list and detail and limits bind candidates to group members", () => {
   const own = { ...competitor, id: 7, group_id: 1, group_role: "own" as const, ownership: "self" as const, title: null };
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[own]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
-  expect(list).toContain("我方");
+  expect(list).not.toContain("own-role-badge");
   const detail = renderToStaticMarkup(<DetailPage {...detailProps} data={{ ...detailData, competitor: { ...detailData.competitor, group_role: "own", ownership: "self" } }} status="ready" error={null} />);
   expect(detail).toContain("我方商品");
   const dialog = renderToStaticMarkup(<OwnProductDialog group={{ ...groupSummary, own_product: { id: own.id, offer_id: own.offer_id, title: null, shop_name: null, main_image_url: null, status: "unknown", is_active: true } }} mode="bind" competitors={[own, { ...competitor, id: 8, group_id: null }, { ...competitor, id: 9, group_id: 1, offer_id: "909" }]} loading={false} selectedId={null} confirming={false} submitting={false} error={null} onSelect={noop} onConfirmStep={noop} onClose={noop} onSubmit={noop} />);
@@ -1700,13 +1713,13 @@ test("polls cooling batches through retry and refreshes authoritative data once 
     await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("17 秒");
     await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("11 秒", { timeout: 4000 });
     const refreshBaseline = { competitorReads, todayReads, attentionReads };
-    await playwrightExpect(page.locator(".batch-status-panel")).toContainText("采集完成：成功 1，失败 0", { timeout: 6000 });
     await playwrightExpect.poll(() => statusReads, { timeout: 6000 }).toBeGreaterThanOrEqual(5);
     await playwrightExpect.poll(() => competitorReads, { timeout: 3000 }).toBe(refreshBaseline.competitorReads + 1);
     await playwrightExpect.poll(() => todayReads, { timeout: 3000 }).toBe(refreshBaseline.todayReads + 1);
     await playwrightExpect.poll(() => attentionReads, { timeout: 3000 }).toBe(refreshBaseline.attentionReads + 1);
     await playwrightExpect(page.locator(".toast")).toHaveCount(1);
     await playwrightExpect(page.locator(".toast")).toHaveText("采集完成：成功 1，失败 0");
+    await playwrightExpect(page.locator(".batch-status-panel")).toHaveCount(0);
   } finally {
     await context.close();
     await browser.close();
@@ -1756,11 +1769,11 @@ test("refreshes after cooling_down completes directly and ignores historical com
     await page.getByRole("button", { name: "竞品列表" }).click();
     await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("17 秒");
     const refreshBaseline = { competitorReads, todayReads, attentionReads };
-    await playwrightExpect(page.locator(".batch-status-panel")).toContainText("采集完成：成功 1，失败 0", { timeout: 4000 });
     await playwrightExpect.poll(() => competitorReads, { timeout: 3000 }).toBe(refreshBaseline.competitorReads + 1);
     await playwrightExpect.poll(() => todayReads, { timeout: 3000 }).toBe(refreshBaseline.todayReads + 1);
     await playwrightExpect.poll(() => attentionReads, { timeout: 3000 }).toBe(refreshBaseline.attentionReads + 1);
     await playwrightExpect(page.locator(".toast")).toHaveCount(1);
+    await playwrightExpect(page.locator(".batch-status-panel")).toHaveCount(0);
     await page.reload();
     await playwrightExpect(page.locator(".collection-batch")).toContainText("最近批次完成");
     await playwrightExpect(page.locator(".toast")).toHaveCount(0);

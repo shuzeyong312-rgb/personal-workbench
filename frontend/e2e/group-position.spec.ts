@@ -10,7 +10,7 @@ async function openWorkbench(page: Page, data = detail, competitors: Competitor[
   await page.route("**/api/competitor-groups/91/detail?*", route => route.fulfill({ json: { ...data, range_days: Number(new URL(route.request().url()).searchParams.get("days")), event_page: { ...(data.event_page ?? eventPage), range: new URL(route.request().url()).searchParams.get("days") } } }));
   await page.goto("/");
   await page.getByRole("button", { name: "竞品分组", exact: true }).click();
-  await page.getByRole("button", { name: "组分析", exact: true }).click();
+  await page.locator(".group-directory-name").click();
   await expect(page.getByRole("heading", { name: "隔离测试组 竞争分析" })).toBeVisible();
   return mock;
 }
@@ -761,7 +761,7 @@ test("read-only real A19 response can be inspected in the browser", async ({ pag
   await page.route(`**/api/competitor-groups/${real.group.id}/detail?*`, route => route.fulfill({ json: real }));
   await page.goto("/");
   await page.getByRole("button", { name: "竞品分组", exact: true }).click();
-  await page.getByRole("button", { name: "组分析", exact: true }).click();
+  await page.locator(".group-directory-name").click();
   await expect(page.locator(".position-summaries")).toContainText("并列第 3 / 9");
   const own = page.locator(`[data-offer-id="${real.own_product!.id}"]`);
   expect(await rowIds(page)).toEqual([2, 3, 1, 4, 5, 6, 7, 8, 9]);

@@ -1,4 +1,4 @@
-import { Fragment, FormEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, Fragment, FormEvent, type Dispatch, type ReactNode, type SetStateAction, type SyntheticEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import "./App.css";
 
@@ -8,7 +8,7 @@ type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
 export type BatchStatus = "idle" | "running" | "pausing" | "paused" | "stopping" | "stopped" | "resting" | "cooling_down" | "completed" | "verification_required";
-export type Page = "home" | "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "price-compare" | "auto-inquiry" | "auto-listing" | "settings";
+export type Page = "home" | "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "product-library" | "ai-assistant" | "price-compare" | "auto-inquiry" | "auto-listing" | "settings";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
 type BatchAction = "selected" | "all_active" | "group" | "stop" | "resume" | "delete";
@@ -1044,12 +1044,14 @@ export function StatusBadge({ status }: { status: Competitor["status"] }) {
 }
 
 type ShellProps = { page: Page; onNavigate: (page: Page) => void; breadcrumb: string; children: ReactNode };
-type NavIconName = "home" | "monitoring" | "compare" | "inquiry" | "listing" | "settings";
+type NavIconName = "home" | "monitoring" | "library" | "assistant" | "compare" | "inquiry" | "listing" | "settings";
 
 function NavIcon({ name }: { name: NavIconName }) {
   const paths: Record<NavIconName, ReactNode> = {
     home: <><path d="m4 10 8-6 8 6" /><path d="M6 9v11h12V9" /><path d="M10 20v-6h4v6" /></>,
     monitoring: <><path d="M4 17V9" /><path d="M10 17V5" /><path d="M16 17v-4" /><path d="m4 7 5-3 5 5 6-5" /></>,
+    library: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22V5.5Z" /><path d="M4 5.5V22" /><path d="M8 7h8" /><path d="M8 11h8" /></>,
+    assistant: <><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" /><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z" /></>,
     compare: <><path d="M5 7h12" /><path d="m14 4 3 3-3 3" /><path d="M19 17H7" /><path d="m10 14-3 3 3 3" /></>,
     inquiry: <><path d="M5 5h14v10H9l-4 4V5Z" /><path d="M8 9h8" /><path d="M8 12h5" /></>,
     listing: <><path d="M5 9v10h14V9" /><path d="M9 7l3-3 3 3" /><path d="M12 4v10" /></>,
@@ -1059,11 +1061,15 @@ function NavIcon({ name }: { name: NavIconName }) {
 }
 
 const monitoringPages = new Set<Page>(["dashboard", "own-products", "competitors", "detail", "groups", "group-detail", "collection-tasks"]);
+const MonitoringNavigationContext = createContext<{ expanded: boolean; setExpanded: Dispatch<SetStateAction<boolean>> } | null>(null);
 
 export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: Page) => void }) {
   const monitoringActive = monitoringPages.has(page);
-  const [monitoringExpanded, setMonitoringExpanded] = useState(monitoringActive);
-  useEffect(() => { setMonitoringExpanded(monitoringActive); }, [page, monitoringActive]);
+  const navigationState = useContext(MonitoringNavigationContext);
+  const [localExpanded, setLocalExpanded] = useState(monitoringActive);
+  const monitoringExpanded = navigationState?.expanded ?? localExpanded;
+  const setMonitoringExpanded = navigationState?.setExpanded ?? setLocalExpanded;
+  useEffect(() => { if (monitoringActive) setMonitoringExpanded(true); }, [monitoringActive, setMonitoringExpanded]);
   return <aside className="sidebar">
     <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>工作提效工具集</span></div></div>
     <nav aria-label="主导航">
@@ -1078,6 +1084,8 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
           <button className={"nav-item nav-child" + (page === "collection-tasks" ? " nav-active" : "")} onClick={() => onNavigate("collection-tasks")} aria-current={page === "collection-tasks" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />采集记录</button>
         </div>
       </div>
+      <button className={"nav-item" + (page === "product-library" ? " nav-active" : "")} onClick={() => onNavigate("product-library")} aria-current={page === "product-library" ? "page" : undefined}><NavIcon name="library" />产品库</button>
+      <button className={"nav-item" + (page === "ai-assistant" ? " nav-active" : "")} onClick={() => onNavigate("ai-assistant")} aria-current={page === "ai-assistant" ? "page" : undefined}><NavIcon name="assistant" />AI智能助手</button>
       <button className={"nav-item" + (page === "price-compare" ? " nav-active" : "")} onClick={() => onNavigate("price-compare")} aria-current={page === "price-compare" ? "page" : undefined}><NavIcon name="compare" />全网比价</button>
       <button className={"nav-item" + (page === "auto-inquiry" ? " nav-active" : "")} onClick={() => onNavigate("auto-inquiry")} aria-current={page === "auto-inquiry" ? "page" : undefined}><NavIcon name="inquiry" />自动询价</button>
       <button className={"nav-item" + (page === "auto-listing" ? " nav-active" : "")} onClick={() => onNavigate("auto-listing")} aria-current={page === "auto-listing" ? "page" : undefined}><NavIcon name="listing" />自动上架</button>
@@ -1157,7 +1165,7 @@ function CompetitorGroupRow({ group, onViewCompetitors, onViewAnalysis, onRename
     <td className="group-directory-price" title="链接展示价范围，不代表同规格竞品比较价">{formatGroupPriceRange(group)}</td>
     <td className={group.changed_competitors_today > 0 ? "group-directory-changed" : "group-directory-muted"}>{group.changed_competitors_today || "—"}</td>
     <td className="group-directory-latest">{formatGroupLatestChange(group.last_change_at)}</td>
-    <td><div className="group-directory-actions"><button type="button" className="detail-button" onClick={onViewCompetitors}>查看竞品</button><button type="button" className="detail-button group-analysis-action" onClick={onViewAnalysis}>组分析</button><GroupMoreMenu onRename={onRename} onDelete={onDelete} /></div></td>
+    <td><div className="group-directory-actions"><button type="button" className="detail-button" onClick={onViewCompetitors}>查看竞品</button><GroupMoreMenu onRename={onRename} onDelete={onDelete} /></div></td>
   </tr>;
 }
 
@@ -1687,7 +1695,6 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd = 
         <header className="page-header"><div><h1>{selfPage ? "我方商品" : "竞品列表"}</h1><p className="page-description">{selfPage ? "查看已识别为我方店铺的监控商品，并管理采集与竞品组关系。" : "查看当前已添加的 1688 竞品，并管理监控对象。"}</p></div><div className="page-actions"><div className="batch-menu"><button type="button" className="secondary-button batch-trigger" aria-haspopup="menu" aria-expanded={batchMenuOpen} onClick={() => setBatchMenuOpen((open) => !open)} disabled={batchBusy}>批量操作（{selectedCount}） <span aria-hidden="true">▼</span></button>{batchMenuOpen && <div className="batch-menu-popover" role="menu">{!selfPage && <><button type="button" role="menuitem" disabled={selectedGroupCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("group", selectedFilteredCompetitors.map((item) => item.id)); }}>设置分组（{selectedGroupCount}）</button><span className="batch-menu-divider" role="separator" /></>}<button type="button" role="menuitem" disabled={selectedActiveCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("stop", selectedFilteredCompetitors.map((item) => item.id)); }}>停止监控（{selectedActiveCount}）</button><button type="button" role="menuitem" disabled={selectedInactiveCompetitors.length === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("resume", selectedFilteredCompetitors.map((item) => item.id)); }}>恢复监控（{selectedInactiveCompetitors.length}）</button>{!selfPage && <><span className="batch-menu-divider" role="separator" /><button type="button" role="menuitem" className="batch-menu-danger" disabled={selectedGroupCount === 0 || batchBusy} onClick={() => { setBatchMenuOpen(false); onBatchAction("delete", selectedFilteredCompetitors.map((item) => item.id)); }}>删除竞品（{selectedGroupCount}）</button></>}</div>}</div></div></header>
         {batchState.status === "running" && <div className="batch-status-panel batch-status-running" role="status">采集中 {batchState.completed} / {batchState.total} · 成功 {batchState.succeeded} · 失败 {batchState.failed}</div>}
         {batchState.status === "cooling_down" && <div className="batch-status-panel batch-status-cooling_down" role="status">1688 验证已触发，浏览器已自动关闭。将在 {formatBatchCooldown(batchState.cooldown_remaining_seconds)} 后自动继续采集（自动恢复 {batchState.auto_resume_attempt}/{batchState.auto_resume_max}）。<span>已完成 {batchState.completed} / {batchState.total}，剩余 {batchState.remaining}</span></div>}
-        {batchState.status === "completed" && <div className="batch-status-panel" role="status">采集完成：成功 {batchState.succeeded}，失败 {batchState.failed}</div>}
         {batchState.status === "verification_required" && <div className="batch-status-panel batch-status-verification" role="alert">1688 需要人工验证，本次采集已停止。请在弹出的浏览器中完成处理，关闭浏览器后可重新发起采集。<span>已完成 {batchState.completed} / {batchState.total}，剩余 {batchState.remaining}</span></div>}
         <section className="filter-card" aria-label="搜索和筛选">
           <div className="filter-field filter-search"><input id="search" aria-label="搜索商品名称 / offerId / 店铺" value={filters.search} onChange={(event) => updateFilters((current) => ({ ...current, search: event.target.value }))} placeholder="搜索商品名称 / offerId / 店铺" /></div>
@@ -1708,7 +1715,7 @@ export function ListPage({ competitors, groups, status, error, onRetry, onAdd = 
           {status === "ready" && competitors.length === 0 && <div className="state-panel"><div className="empty-icon">+</div><strong>{selfPage ? "还没有我方商品" : "还没有添加竞品"}</strong><span>{selfPage ? "从竞品监控大屏添加商品后，识别为我方店铺的商品会出现在这里。" : "从竞品监控大屏添加一个 1688 商品链接，开始建立你的监控列表。"}</span></div>}
           {status === "ready" && competitors.length > 0 && filteredCompetitors.length === 0 && <div className="state-panel"><strong>{selfPage ? "没有找到符合条件的我方商品" : "没有找到符合条件的竞品"}</strong><span>请调整搜索词或筛选条件</span><button type="button" className="secondary-button" onClick={resetFilters}>重置筛选</button></div>}
           {status === "ready" && filteredCompetitors.length > 0 && <div className="table-scroll"><table><thead><tr><th className="selection-column"><input ref={selectAllRef} type="checkbox" aria-label="全选当前页全部商品" checked={allSelected} disabled={pageIds.length === 0 || batchBusy} onChange={(event) => onToggleAll(event.target.checked, pageIds)} /></th><th>商品信息</th><th>店铺名称</th><th>竞品组</th><th>当前价格</th><th>SKU 数量</th><th>最近变化</th><th>最近采集时间</th><th>商品状态</th><th>监控状态</th><th>操作</th></tr></thead><tbody>
-             {pagedCompetitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={selectedIds.has(competitor.id)} disabled={batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"} {isSelfProduct(competitor) && <span className="own-role-badge">我方</span>}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td><div className="list-group-cell"><span>{getCompetitorGroupLabel(competitor.group_id, groups)}</span><button type="button" className="text-button" onClick={() => onOpenGroupAssignment(competitor)}>{competitor.group_id === null ? "+ 绑定竞品组" : "更换/解除"}</button></div></td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button></td></tr>) }
+             {pagedCompetitors.map((competitor) => <tr key={competitor.id}><td className="selection-column"><input type="checkbox" aria-label={`选择 ${competitor.title || competitor.offer_id}`} checked={selectedIds.has(competitor.id)} disabled={batchBusy} onChange={() => onToggleSelected(competitor.id)} /></td><td><div className="product-cell"><ProductImage competitor={competitor} /><div><strong>{competitor.title || "未采集"}</strong><span>offerId：{competitor.offer_id}</span><a href={competitor.url} target="_blank" rel="noreferrer">查看 1688 商品 ↗</a></div></div></td><td>{competitor.shop_name || "未采集"}</td><td><div className="list-group-cell"><span>{getCompetitorGroupLabel(competitor.group_id, groups)}</span><button type="button" className="text-button" onClick={() => onOpenGroupAssignment(competitor)}>{competitor.group_id === null ? "+ 绑定竞品组" : "更换/解除"}</button></div></td><td className={competitor.latest_snapshot?.price_min || competitor.latest_snapshot?.price_max ? "price-cell" : "muted-cell"}>{formatPriceDisplay(competitor.latest_snapshot)}</td><td className={competitor.latest_snapshot === null ? "muted-cell" : "sku-cell"}>{competitor.latest_snapshot === null ? "未采集" : competitor.latest_snapshot.sku_count}</td><td className={competitor.latest_change === null ? "muted-cell" : "change-cell"}>{formatLatestChange(competitor.latest_change)}</td><td className="collection-date-cell">{formatDate(competitor.last_collected_at)}</td><td><StatusBadge status={competitor.status} /></td><td><span className={competitor.is_active ? "list-monitoring-badge" : "list-monitoring-badge list-monitoring-inactive"}>{competitor.is_active ? "监控中" : "已停止"}</span></td><td><button type="button" className="detail-button" onClick={() => onOpenDetail?.(competitor.id)}>详情</button></td></tr>) }
           </tbody></table></div>}
         </section>
         <PaginationBar total={filteredCompetitors.length} itemLabel={selfPage ? "个我方商品" : "个竞品"} page={pagination.page} totalPages={pagination.totalPages} onPrevious={() => setCurrentPage((page) => page - 1)} onNext={() => setCurrentPage((page) => page + 1)} previousDisabled={pagination.page === 1} nextDisabled={pagination.page === pagination.totalPages} />
@@ -2359,6 +2366,7 @@ export function SettingsPage({ configured, value, status, error, saveError, subm
 
 function App() {
   const [page, setPage] = useState<Page>("dashboard");
+  const [monitoringExpanded, setMonitoringExpanded] = useState(() => monitoringPages.has("dashboard"));
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [ownProducts, setOwnProducts] = useState<Competitor[]>([]);
   const [groups, setGroups] = useState<CompetitorGroup[]>([]);
@@ -3059,8 +3067,10 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <>
+  return <MonitoringNavigationContext.Provider value={{ expanded: monitoringExpanded, setExpanded: setMonitoringExpanded }}><>
     {page === "home" && <HomePage onNavigate={navigate} />}
+    {page === "product-library" && <WorkspacePlaceholderPage page="product-library" title="产品库" description="产品资料管理入口。" note="产品库模块已预留，具体能力待规划。" icon="library" onNavigate={navigate} />}
+    {page === "ai-assistant" && <WorkspacePlaceholderPage page="ai-assistant" title="AI智能助手" description="智能辅助工作入口。" note="AI智能助手模块已预留，具体能力待规划。" icon="assistant" onNavigate={navigate} />}
     {page === "price-compare" && <WorkspacePlaceholderPage page="price-compare" title="全网比价" description="统一检索并对比全网同款与相似商品价格。" note="后续将在这里承载商品检索、候选同款筛选、价格对比和结果沉淀。" icon="compare" onNavigate={navigate} />}
     {page === "auto-inquiry" && <WorkspacePlaceholderPage page="auto-inquiry" title="自动询价" description="统一管理供应商询价任务与报价结果。" note="后续将在这里承载询价对象、询价话术、回复状态和供应商报价记录。" icon="inquiry" onNavigate={navigate} />}
     {page === "auto-listing" && <WorkspacePlaceholderPage page="auto-listing" title="自动上架" description="统一管理商品资料校验、上架任务与执行结果。" note="后续将在这里承载商品资料准备、渠道映射、批量上架和失败结果处理。" icon="listing" onNavigate={navigate} />}
@@ -3081,7 +3091,7 @@ function App() {
     {batchLifecycleDialog && <BatchLifecycleDialog action={batchLifecycleDialog.action} selectedCount={batchLifecycleDialog.selectedCount} eligibleCount={batchLifecycleDialog.competitorIds.length} ownCount={batchLifecycleDialog.ownCount} submitting={batchLifecycleSubmitting} error={batchLifecycleError} onClose={closeBatchLifecycleDialog} onConfirm={() => void submitBatchLifecycle()} />}
     {groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}
     {lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}
-  </>;
+  </></MonitoringNavigationContext.Provider>;
 }
 
 export default App;
