@@ -1192,7 +1192,6 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
   const pageGroups = groups.slice((currentPage - 1) * 10, currentPage * 10);
   const totalCompetitors = summary ? summary.groups.reduce((total, group) => total + group.competitor_count, summary.unassigned.competitor_count) : 0;
   const totalActive = summary ? summary.groups.reduce((total, group) => total + group.active_count, summary.unassigned.active_count) : 0;
-  const hasDirectoryCriteria = Boolean(query.trim()) || filter !== "all" || sort !== "recent";
   useEffect(() => { setPage((current) => Math.min(current, totalPages)); }, [totalPages]);
   const clearFilters = () => { setQuery(""); setFilter("all"); setSort("recent"); setPage(1); };
   return <AppShell page="groups" onNavigate={onNavigate} breadcrumb="竞品分组">
@@ -1207,7 +1206,7 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
           <div className="filter-field filter-search"><label htmlFor="group-directory-search">搜索</label><input id="group-directory-search" aria-label="搜索竞品组" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="组名或我方商品标题" /></div>
           <div className="filter-field group-directory-select"><label htmlFor="group-directory-filter">筛选</label><select id="group-directory-filter" aria-label="分组筛选" value={filter} onChange={(event) => { setFilter(event.target.value as GroupDirectoryFilter); setPage(1); }}><option value="all">全部分组</option><option value="changed">今日有变化</option><option value="incomplete">监控不全</option></select></div>
           <div className="filter-field group-directory-select"><label htmlFor="group-directory-sort">排序</label><select id="group-directory-sort" aria-label="分组排序" value={sort} onChange={(event) => { setSort(event.target.value as GroupDirectorySort); setPage(1); }}><option value="recent">最近变化优先</option><option value="count">竞品数量最多</option><option value="name">组名排序</option></select></div>
-          {hasDirectoryCriteria && <button type="button" className="text-button group-directory-clear" onClick={clearFilters}>清除筛选</button>}
+          <button type="button" className="text-button group-directory-clear" onClick={clearFilters}>清除筛选</button>
         </section>
         <div className="group-directory-table-wrap">
           {pageGroups.length > 0 ? <table className="group-directory-table"><thead><tr><th>商品组 / 我方商品</th><th>监控情况</th><th>竞品价格范围</th><th>今日变化</th><th>最近变化</th><th>操作</th></tr></thead><tbody>{pageGroups.map(group => <CompetitorGroupRow key={group.id} group={group} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} />)}</tbody></table> : <section className="group-directory-no-results"><strong>没有符合条件的竞品组</strong><span>调整搜索或筛选条件后重试。</span></section>}
