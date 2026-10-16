@@ -99,6 +99,48 @@ def metric(offer_id, key, status='observed', raw_value='100+', *, source='1688_o
 METRIC_KEYS = ('listing_time', 'monthly_deal', 'monthly_dropship', 'annual_units', 'annual_orders', 'review_count', 'positive_rate', 'pickup_rate')
 
 
+@pytest.mark.parametrize('metric_status', ['source_unavailable', 'loading', 'read_failed', 'placeholder'])
+@pytest.mark.parametrize('bulk', [False, True])
+def test_deleted_add_product_preserves_anonymous_metric_counts_and_filters(client, offline_worker, monkeypatch, metric_status, bulk):
+    api, factory = client
+    def collector(_url, offer_id, **callbacks):
+        callbacks['on_navigation_claim'](); callbacks['on_navigation_confirmed']()
+        return CollectionPageResult(offer_id, product(offer_id), None, [metric(offer_id, 'monthly_deal', metric_status, '-')])
+    monkeypatch.setattr(service, 'collect_1688_product', collector)
+    task = api.post('/api/competitors/add-batch', json=payload('https://detail.1688.com/offer/101.html')).json()['task']
+    detail_url = f"/api/collection-batches/{task['task_id']}"
+    technical = int(metric_status != 'placeholder')
+    def check():
+        detail = api.get(detail_url).json()
+        assert detail['technical_exception_products'] == detail['anomaly_products'] == technical
+        row = detail['items'][0]
+        assert row['technical_exception_count'] == technical
+        assert row[metric_status + '_count'] == 1
+        assert row['has_anomaly'] is bool(technical)
+        for trigger in ('all', 'add_links'):
+            home = api.get(f'/api/collection-batches?trigger_kind={trigger}').json()['items'][0]
+            assert home['technical_exception_products'] == home['anomaly_products'] == technical
+            for anomaly, expected in ((metric_status, 1), ('current', technical), ('none', 1 - technical)):
+                assert api.get(f'/api/collection-batches?trigger_kind={trigger}&anomaly={anomaly}').json()['total'] == expected
+                assert api.get(detail_url + '?anomaly=' + anomaly).json()['total'] == expected
+        assert api.get(detail_url + '?reason=' + metric_status).json()['total'] == 1
+        assert api.get(detail_url + '?final_result=exception').json()['total'] == technical
+        return row
+    check()
+    competitor_id = task['items'][0]['competitor_id']
+    response = api.post('/api/competitors/delete-batch', json={'competitor_ids': [competitor_id]}) if bulk else api.delete(f'/api/competitors/{competitor_id}')
+    assert response.status_code in (200, 204), response.text
+    for _ in range(2):
+        assert service.recover_interrupted_batches(factory) == 0
+        row = check()
+        assert row['identity_removed'] is True
+        assert row['input_text'] is row['offer_id'] is row['competitor_id'] is None
+        assert row['attempts'] == []
+    with factory() as db:
+        assert db.scalars(select(CollectionRun)).all() == []
+        assert db.scalars(select(OperatingMetricObservation)).all() == []
+
+
 def test_add_links_persists_six_metric_state_combinations_and_filters(client, offline_worker, monkeypatch):
     api, factory = client
     calls = []

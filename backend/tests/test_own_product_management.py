@@ -11,7 +11,7 @@ from alembic import command
 from alembic.config import Config
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -20,7 +20,6 @@ from app.database import get_db
 import app.database as database
 from app.collection.service import BATCH_RUNTIME
 from app.collection.service import COLLECTION_LOCK
-import app.competitors as competitors_module
 from app.main import app
 from app.models import Base, Competitor, CompetitorGroup, SystemSetting
 from app.collection.types import ProductData, SkuData
@@ -457,7 +456,7 @@ def test_add_final_validation_reads_own_shop_name_after_collector_transaction(cl
         assert release_collector.wait(timeout=2)
         return _collected("130", "采集前店铺")
 
-    with patch("app.collection.service.collect_product", side_effect=blocking_collect):
+    with patch("app.collection.service.collect_1688_product", side_effect=blocking_collect):
         request_thread = Thread(
             target=lambda: responses.append(
                 client[0].post("/api/competitors", json={"url": "https://detail.1688.com/offer/130.html"})
@@ -492,7 +491,7 @@ def test_add_final_validation_reads_deleted_group_after_collector_transaction(cl
         assert release_collector.wait(timeout=2)
         return _collected("131", "其他店铺")
 
-    with patch("app.collection.service.collect_product", side_effect=blocking_collect):
+    with patch("app.collection.service.collect_1688_product", side_effect=blocking_collect):
         request_thread = Thread(
             target=lambda: responses.append(
                 client[0].post(
@@ -521,21 +520,21 @@ def test_add_final_validation_reads_deleted_group_after_collector_transaction(cl
         assert session.scalar(select(CollectionRun)) is None
 
 
-def test_add_integrity_error_without_duplicate_or_own_conflict_is_save_failure(client, monkeypatch):
+def test_add_integrity_error_without_duplicate_or_own_conflict_is_save_failure(client):
     assert client[0].put("/api/settings/own-shop-name", json={"own_shop_name": "我方店铺"}).status_code == 200
 
-    original_commit = competitors_module.Session.commit
-    def fail_commit(_session):
-        if any(isinstance(row, (ProductSnapshot, CollectionRun)) for row in _session.new):
-            raise IntegrityError("forced", {}, RuntimeError("unrelated constraint"))
-        return original_commit(_session)
+    def fail_insert(*_args):
+        raise IntegrityError("forced", {}, RuntimeError("unrelated constraint"))
 
-    monkeypatch.setattr(competitors_module.Session, "commit", fail_commit)
-    with patch("app.collection.service.collect_1688_product", return_value=_collected("127", "其他店铺")):
-        response = client[0].post(
-            "/api/competitors",
-            json={"url": "https://detail.1688.com/offer/127.html"},
-        )
+    event.listen(ProductSnapshot, "before_insert", fail_insert)
+    try:
+        with patch("app.collection.service.collect_1688_product", return_value=_collected("127", "其他店铺")):
+            response = client[0].post(
+                "/api/competitors",
+                json={"url": "https://detail.1688.com/offer/127.html"},
+            )
+    finally:
+        event.remove(ProductSnapshot, "before_insert", fail_insert)
 
     assert response.status_code == 500
     assert response.json()["code"] == "collection_save_failed"
@@ -606,7 +605,7 @@ def test_add_collection_lock_rejects_batch_reservation_without_sleep(client):
         assert release_collector.wait(timeout=2)
         return _collected("129", "其他店铺")
 
-    with patch("app.collection.service.collect_product", side_effect=blocking_collect):
+    with patch("app.collection.service.collect_1688_product", side_effect=blocking_collect):
         add_thread = Thread(
             target=lambda: add_responses.append(
                 client[0].post("/api/competitors", json={"url": "https://detail.1688.com/offer/129.html"})

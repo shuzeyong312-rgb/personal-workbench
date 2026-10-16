@@ -54,7 +54,7 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
     app.state.collection_session_factory = session_factory
     test_client = TestClient(app)
     try:
-        with patch("app.collection.service.collect_product", side_effect=fake_collect_product):
+        with patch("app.collection.service.collect_1688_product", side_effect=fake_collect_product):
             yield test_client, session_factory
     finally:
         test_client.close()

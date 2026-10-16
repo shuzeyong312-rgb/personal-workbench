@@ -133,9 +133,13 @@ def list_batches(
     add_mode = CollectionBatch.trigger_kind == "add_links"
     def add_has(codes):
         return select(CollectionAddInput.id).where(CollectionAddInput.batch_id == CollectionBatch.id, CollectionAddInput.result_code.in_(codes)).exists()
-    add_metric_current = select(CollectionBatchItem.id).join(CollectionRun, CollectionRun.collection_batch_item_id == CollectionBatchItem.id).join(
-        OperatingMetricObservation, OperatingMetricObservation.collection_run_id == CollectionRun.id
-    ).where(CollectionBatchItem.batch_id == CollectionBatch.id, OperatingMetricObservation.status.in_(TECHNICAL_STATUSES)).exists()
+    add_metric_anomaly = or_(
+        select(CollectionRun.id).join(OperatingMetricObservation, OperatingMetricObservation.collection_run_id == CollectionRun.id).where(
+            CollectionRun.collection_batch_item_id == CollectionBatchItem.id, OperatingMetricObservation.status.in_(TECHNICAL_STATUSES)
+        ).exists(),
+        and_(CollectionBatchItem.identity_state == 'removed', CollectionBatchItem.technical_exception_count > 0),
+    )
+    add_metric_current = select(CollectionBatchItem.id).where(CollectionBatchItem.batch_id == CollectionBatch.id, add_metric_anomaly).exists()
     add_current = or_(add_has(["technical_failed", "verification_required", "interrupted"]), add_metric_current, CollectionBatch.outcome_code.in_(["infrastructure_error", "interrupted"]))
     add_none = and_(CollectionBatch.lifecycle_status == "terminal", ~add_current, ~add_has(["not_executed"]), ~select(CollectionAddInput.id).where(CollectionAddInput.batch_id == CollectionBatch.id, CollectionAddInput.result_code.is_(None)).exists())
     if trigger_kind != "unknown" and ((trigger_kind == "add_links" and anomaly == "recovered") or (trigger_kind not in {"all", "add_links"} and anomaly == "rejected")):
@@ -245,11 +249,9 @@ def list_batches(
             add_inputs.setdefault(row.batch_id, []).append(row)
     add_metric_items: dict[int, set[int]] = {}
     if batch_ids:
-        for batch_id, item_id in db.execute(select(CollectionBatchItem.batch_id, CollectionBatchItem.id).join(
-            CollectionRun, CollectionRun.collection_batch_item_id == CollectionBatchItem.id
-        ).join(OperatingMetricObservation, OperatingMetricObservation.collection_run_id == CollectionRun.id).where(
-            CollectionBatchItem.batch_id.in_(batch_ids), OperatingMetricObservation.status.in_(TECHNICAL_STATUSES)
-        ).distinct()):
+        for batch_id, item_id in db.execute(select(CollectionBatchItem.batch_id, CollectionBatchItem.id).where(
+            CollectionBatchItem.batch_id.in_(batch_ids), add_metric_anomaly
+        )):
             add_metric_items.setdefault(batch_id, set()).add(item_id)
     items = []
     for batch in batches:

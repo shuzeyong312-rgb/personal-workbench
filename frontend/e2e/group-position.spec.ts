@@ -165,9 +165,11 @@ test("hidden-own notice follows actual filters and clears with keyboard location
   await expect(notice).toHaveText("当前筛选未显示我方商品清除筛选并定位");
   await search.clear();
   await expect(notice).toHaveCount(0);
-  await page.getByLabel("监控状态", { exact: true }).selectOption("stopped");
-  await expect(notice).toBeVisible();
-  await page.getByLabel("监控状态", { exact: true }).selectOption("all");
+  await expect(page.getByLabel("监控状态", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("商品状态", { exact: true })).toHaveCount(0);
+  await page.getByLabel("仅看重要变化").check();
+  await expect(notice).toHaveCount(0);
+  await page.getByLabel("仅看重要变化").uncheck();
   await expect(notice).toHaveCount(0);
   await search.fill("9001");
   await page.screenshot({ path: testInfo.outputPath("group-position-hidden-own.png") });
@@ -651,7 +653,7 @@ for (const width of [1753, 1440, 1280, 800]) test(`visual layout at ${width}px`,
   }));
   await page.mouse.move(0, 0);
   const normal = await colors(1);
-  await expect(page.locator(".page-header .page-description")).toHaveText("1 条我方商品 · 8 条竞品 · 仅监控样本，非实时报价");
+  await expect(page.locator(".page-header .page-description")).toHaveText("当前参与对比 9 个商品 · 仅监控样本，非实时报价");
   await expect(page.locator(".position-workbench > .position-context")).toHaveCount(0);
   await expect(page.locator(".position-aside")).not.toContainText("排名覆盖：");
   expect(new Set(normal.cells).size).toBe(1);

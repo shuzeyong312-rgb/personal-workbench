@@ -545,7 +545,12 @@ def add_task_detail(db, batch, *, search=None, final_result='all', anomaly='all'
         item_id: [observation for run in item_runs for observation in observations_by_run.get(run.id, [])]
         for item_id, item_runs in runs_by_item.items()
     }
-    technical_items = {item_id for item_id, values in observations_by_item.items() if any(value.status in METRIC_TECHNICAL_STATUSES for value in values)}
+    metric_counts_by_item = {
+        item.id: Counter({status: getattr(item, status + '_count') for status in METRIC_TECHNICAL_STATUSES | {'placeholder'}})
+        if item.identity_state == 'removed' else Counter(value.status for value in observations_by_item.get(item.id, []))
+        for _, item, _ in rows if item is not None
+    }
+    technical_items = {item_id for item_id, counts in metric_counts_by_item.items() if any(counts[status] for status in METRIC_TECHNICAL_STATUSES)}
     counts = Counter(item.final_result or 'pending' for _, item, _ in rows if item is not None)
     visits = sum(row.navigation_confirmed_at is not None for row, _, _ in rows)
     unknown = sum(row.navigation_claimed_at is not None and row.navigation_confirmed_at is None for row, _, _ in rows)
@@ -564,8 +569,8 @@ def add_task_detail(db, batch, *, search=None, final_result='all', anomaly='all'
     anomaly_rows = set()
     for row, item, competitor in rows:
         input_current = row.result_code in {'technical_failed', 'verification_required', 'interrupted'}
-        metric_observations = observations_by_item.get(item.id, []) if item is not None else []
-        metric_current = any(value.status in METRIC_TECHNICAL_STATUSES for value in metric_observations)
+        metric_counts = metric_counts_by_item.get(item.id, Counter()) if item is not None else Counter()
+        metric_current = any(metric_counts[status] for status in METRIC_TECHNICAL_STATUSES)
         current = input_current or metric_current
         if current:
             anomaly_rows.add(row.id)
@@ -574,9 +579,9 @@ def add_task_detail(db, batch, *, search=None, final_result='all', anomaly='all'
             continue
         if final_result == 'success' and row.result_code != 'added' or final_result == 'exception' and not current or final_result == 'business_rejected' and not rejected or final_result == 'pending' and row.result_code is not None or final_result == 'not_executed' and row.result_code != 'not_executed':
             continue
-        if anomaly == 'base_failed' and row.result_code != 'technical_failed' or anomaly == 'current' and not current or anomaly == 'none' and (row.result_code not in ({'added'} | REJECTED) or current) or anomaly == 'rejected' and not rejected or anomaly == 'verification_required' and row.result_code != 'verification_required' or anomaly in METRIC_TECHNICAL_STATUSES | {'placeholder'} and not any(value.status == anomaly for value in metric_observations):
+        if anomaly == 'base_failed' and row.result_code != 'technical_failed' or anomaly == 'current' and not current or anomaly == 'none' and (row.result_code not in ({'added'} | REJECTED) or current) or anomaly == 'rejected' and not rejected or anomaly == 'verification_required' and row.result_code != 'verification_required' or anomaly in METRIC_TECHNICAL_STATUSES | {'placeholder'} and not metric_counts[anomaly]:
             continue
-        if reason in METRIC_TECHNICAL_STATUSES | {'placeholder'} and not any(value.status == reason for value in metric_observations):
+        if reason in METRIC_TECHNICAL_STATUSES | {'placeholder'} and not metric_counts[reason]:
             continue
         if reason == 'base_failed' and row.result_code != 'technical_failed':
             continue
@@ -603,11 +608,11 @@ def add_task_detail(db, batch, *, search=None, final_result='all', anomaly='all'
                       'page_visits_unknown': int(row.navigation_claimed_at is not None and row.navigation_confirmed_at is None),
                       'navigation_claimed_at': row.navigation_claimed_at, 'navigation_confirmed_at': row.navigation_confirmed_at,
                       'navigation_evidence_source': 'add_input', 'attempts_started': len(attempts), 'attempts': attempts,
-                      'retry_visits': 0, 'technical_exception_count': sum(value.status in METRIC_TECHNICAL_STATUSES for value in metric_observations),
-                      'placeholder_count': sum(value.status == 'placeholder' for value in metric_observations),
-                      'source_unavailable_count': sum(value.status == 'source_unavailable' for value in metric_observations),
-                      'loading_count': sum(value.status == 'loading' for value in metric_observations),
-                      'read_failed_count': sum(value.status == 'read_failed' for value in metric_observations)})
+                      'retry_visits': 0, 'technical_exception_count': sum(metric_counts[status] for status in METRIC_TECHNICAL_STATUSES),
+                      'placeholder_count': metric_counts['placeholder'],
+                      'source_unavailable_count': metric_counts['source_unavailable'],
+                      'loading_count': metric_counts['loading'],
+                      'read_failed_count': metric_counts['read_failed']})
     base['anomaly_products'] = len(anomaly_rows)
     if anomalies_first:
         items.sort(key=lambda value: (not value['has_anomaly'], value['position']))
