@@ -1813,7 +1813,7 @@ test("single-product detail keeps eight raw operating values and distinguishes c
   for (const [, , , , , validValue] of definitions) if (validValue) expect(html).toContain(validValue);
   expect(html).toContain("经营数据");
   expect(html).toContain("1688 官方采购助手 · 保留页面原始值");
-  expect(html).toContain("最近采集已读取");
+  expect(html).toContain("本次有效值");
   expect(html).toContain("历史有效值");
   expect(html).toContain("本次：页面显示占位符");
   expect(html).toContain("仍在加载");
@@ -1838,7 +1838,7 @@ test("single-product detail distinguishes uncollected metrics from missing valid
   expect(html).toContain("暂无有效值");
   expect(html).toContain("100+");
   expect(html).toContain("历史有效值");
-  expect(html).not.toContain("最近采集已读取");
+  expect(html).not.toContain("本次有效值");
 });
 
 test("renders monitored offline notice and lifecycle recent change", () => {

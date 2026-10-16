@@ -48,9 +48,11 @@ function detail(mode: "normal" | "mixed") {
   };
 }
 
-async function openDetail(page: Page, mode: "normal" | "mixed") {
+async function openDetail(page: Page, mode: "normal" | "mixed", adjust?: (data: ReturnType<typeof detail>) => void) {
   await installApiMock(page, { competitors: [product] });
-  await page.route("**/api/competitors/1/detail**", route => route.fulfill({ json: detail(mode) }));
+  const fixture = detail(mode);
+  adjust?.(fixture);
+  await page.route("**/api/competitors/1/detail**", route => route.fulfill({ json: fixture }));
   await page.goto("/");
   await page.getByRole("button", { name: "竞品列表" }).click();
   await page.getByRole("button", { name: "详情", exact: true }).click();
@@ -93,6 +95,11 @@ test("normal operating metrics and complete detail layout at 1440px", async ({ p
   await screenshot(page, testInfo, "D-complete-product-detail-1440-fixture.png");
   const cards = await page.locator(".operating-metric-card").count();
   expect(cards).toBe(8);
+  await page.getByRole("button", { name: /月成交/ }).click();
+  const currentEvidence = page.getByRole("region", { name: "月成交数据依据" });
+  await expect(currentEvidence).toContainText("本次有效值");
+  await expect(currentEvidence.locator(".operating-evidence-record")).toHaveCount(1);
+  await screenshot(page, testInfo, "E-current-valid-evidence-1440-fixture.png");
 });
 
 test("historical values, read failures, evidence switching, and responsive detail layout", async ({ page }, testInfo) => {
@@ -113,10 +120,12 @@ test("historical values, read failures, evidence switching, and responsive detai
 
   await monthly.click();
   const evidence = page.getByRole("region", { name: "月成交数据依据" });
-  await expect(evidence).toContainText("页面原值：-");
-  await expect(evidence).toContainText("CollectionRun：#20");
-  await expect(evidence).toContainText("原值：100+");
-  await expect(evidence).toContainText("CollectionRun：#18");
+  await expect(evidence.locator("dd").nth(1)).toHaveText("-");
+  await expect(evidence).toContainText("CollectionRun ID");
+  await expect(evidence).toContainText("#20");
+  await expect(evidence).toContainText("100+");
+  await expect(evidence).toContainText("#18");
+  await expect(evidence.locator(".operating-evidence-record")).toHaveCount(2);
   await expect(monthly).toHaveAttribute("aria-expanded", "true");
   await screenshot(page, testInfo, "C-operating-data-evidence-1600-fixture.png");
 
@@ -128,7 +137,8 @@ test("historical values, read failures, evidence switching, and responsive detai
   await page.getByRole("button", { name: /年成交件数/ }).click();
   const annual = page.getByRole("region", { name: "年成交件数数据依据" });
   await expect(annual).toContainText("仍在加载");
-  await expect(annual).toContainText("CollectionRun：#20");
+  await expect(annual).toContainText("CollectionRun ID");
+  await expect(annual).toContainText("#20");
   await expect(evidence).toHaveCount(0);
   await page.getByRole("button", { name: "收起", exact: true }).click();
   await expect(page.locator(".operating-metric-evidence")).toHaveCount(0);
@@ -142,4 +152,45 @@ test("historical values, read failures, evidence switching, and responsive detai
     const trendColumns = await page.locator(".detail-trend-grid").evaluate(element => getComputedStyle(element).gridTemplateColumns.split(" ").length);
     expect(trendColumns, `trend columns at ${width}px`).toBe(2);
   }
+});
+
+test("historical field-only records, absent latest run, and conflicting same-run evidence stay explicit", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await openDetail(page, "normal", fixture => {
+    fixture.operating_metrics[1].latest_attempt = { ...fixture.operating_metrics[1].latest_attempt!, collection_run_id: 19 };
+    fixture.operating_metrics[1].latest_valid = { ...fixture.operating_metrics[1].latest_valid!, collection_run_id: 19 };
+    fixture.operating_metrics[2].latest_valid = { ...fixture.operating_metrics[2].latest_valid!, raw_value: "different" };
+    fixture.operating_metrics[3].latest_attempt = { ...fixture.operating_metrics[3].latest_attempt!, status: "read_failed", raw_value: null, reason: "脱敏 Fixture 失败" };
+    fixture.operating_metrics[3].latest_valid = null;
+  });
+
+  const historical = page.getByRole("button", { name: /月成交/ });
+  await historical.click();
+  const historicalEvidence = page.getByRole("region", { name: "月成交数据依据" });
+  await expect(historicalEvidence).toContainText("最近字段记录（历史）");
+  await expect(historicalEvidence.locator(".operating-evidence-record")).toHaveCount(1);
+  await expect(historicalEvidence).not.toContainText("本次有效值");
+
+  await page.getByRole("button", { name: /月代销/ }).click();
+  const conflictingEvidence = page.getByRole("region", { name: "月代销数据依据" });
+  await expect(conflictingEvidence.locator(".operating-evidence-record")).toHaveCount(2);
+  await expect(conflictingEvidence).toContainText("12");
+  await expect(conflictingEvidence).toContainText("different");
+
+  await page.getByRole("button", { name: /年成交件数/ }).click();
+  const failedEvidence = page.getByRole("region", { name: "年成交件数数据依据" });
+  await expect(failedEvidence).toContainText("读取失败");
+  await expect(failedEvidence).toContainText("脱敏 Fixture 失败");
+  await expect(failedEvidence).toContainText("暂无有效值");
+  await expect(failedEvidence.locator(".operating-evidence-record")).toHaveCount(1);
+
+});
+
+test("an absent latest run never labels an observed value as current", async ({ page }) => {
+  await openDetail(page, "normal", fixture => { fixture.latest_collection_run = null; });
+  await page.getByRole("button", { name: /月成交/ }).click();
+  const evidence = page.getByRole("region", { name: "月成交数据依据" });
+  await expect(evidence).toContainText("有效值记录");
+  await expect(evidence).not.toContainText("本次有效值");
+  await expect(evidence.locator(".operating-evidence-record")).toHaveCount(1);
 });

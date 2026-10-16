@@ -1312,15 +1312,31 @@ export function formatCollectionRunStatus(status: "running" | "success" | "faile
 function operatingMetricPresentation(metric: OperatingMetric, latestRun?: LatestCollectionRun | null) {
   const attempt = metric.latest_attempt;
   const currentAttempt = attempt && latestRun && attempt.collection_run_id === latestRun.id ? attempt : null;
-  const recentlyRead = currentAttempt?.status === "observed" && !!currentAttempt.raw_value?.trim();
-  const hasHistoricalValue = !!metric.latest_valid && (!latestRun || metric.latest_valid.collection_run_id !== latestRun.id);
-  const value = recentlyRead ? currentAttempt.raw_value! : metric.latest_valid?.raw_value ?? null;
-  const status = recentlyRead ? "最近采集已读取"
+  const valid = metric.latest_valid;
+  const attemptHasValue = attempt?.status === "observed" && !!attempt.raw_value?.trim();
+  const currentRead = currentAttempt?.status === "observed" && !!currentAttempt.raw_value?.trim();
+  const sameObservedValue = !!attempt && !!valid && attempt.collection_run_id === valid.collection_run_id
+    && attempt.status === "observed" && !!attempt.raw_value?.trim() && attempt.raw_value === valid.raw_value;
+  const hasHistoricalValue = !!valid && !!latestRun && valid.collection_run_id !== latestRun.id;
+  const value = attemptHasValue ? attempt.raw_value! : valid?.raw_value ?? null;
+  const status = currentRead ? "本次有效值"
     : hasHistoricalValue ? "历史有效值"
-      : !attempt ? "尚未采集"
-        : attempt.status === "observed" ? "暂无有效值"
-          : metricAttemptLabels[attempt.status];
-  return { attempt, currentAttempt, value, status, valueKind: recentlyRead ? "最近读取" : hasHistoricalValue ? "历史有效值" : metric.latest_valid ? "最新 Run 有效值" : "暂无有效值" };
+      : !attempt ? valid ? "有效值记录" : "尚未采集"
+        : latestRun && attempt.collection_run_id !== latestRun.id ? "最近字段记录（历史）"
+          : attempt.status === "observed" ? "有效值记录" : metricAttemptLabels[attempt.status];
+  const records = [];
+  if (attempt) records.push({
+    label: sameObservedValue ? (currentAttempt ? "本次有效值" : latestRun ? "最近字段记录（历史）" : "有效值记录")
+      : currentAttempt ? "最近一次字段尝试" : latestRun ? "最近字段记录（历史）" : "最近字段记录",
+    status: metricAttemptLabels[attempt.status], rawValue: attempt.raw_value,
+    source: attempt.source, observedAt: attempt.observed_at, runId: attempt.collection_run_id, reason: attempt.reason,
+  });
+  if (valid && !sameObservedValue) records.push({
+    label: hasHistoricalValue ? "历史有效值" : "有效值记录",
+    status: null, rawValue: valid.raw_value, source: valid.source,
+    observedAt: valid.observed_at, runId: valid.collection_run_id, reason: null,
+  });
+  return { attempt, currentAttempt, value, status, valueKind: currentRead ? "本次有效值" : hasHistoricalValue ? "历史有效值" : valid || attemptHasValue ? "有效值记录" : "暂无有效值", records };
 }
 
 function OperatingMetricsPanel({ metrics = [], latestRun }: { metrics?: OperatingMetric[]; latestRun?: LatestCollectionRun | null }) {
@@ -1342,16 +1358,22 @@ function OperatingMetricsPanel({ metrics = [], latestRun }: { metrics?: Operatin
       const selectedCard = selectedKey === metric.metric_key;
       const showAttemptStatus = !!metric.latest_valid && !!presentation.currentAttempt && presentation.currentAttempt.status !== "observed";
       return <button key={metric.metric_key} type="button" className={`operating-metric-card${selectedCard ? " operating-metric-card-selected" : ""}`} aria-expanded={selectedCard} aria-controls={evidenceId} onClick={() => toggleMetric(metric.metric_key)}>
-        <span className="operating-metric-label">{metric.label}</span><strong>{presentation.value ?? "暂无有效值"}</strong><span className={`operating-metric-status operating-status-${presentation.status === "最近采集已读取" ? "read" : presentation.status === "历史有效值" ? "history" : presentation.status === "读取失败" || presentation.status === "来源不可用" ? "warning" : "neutral"}`}>{presentation.status}</span>
+        <span className="operating-metric-label">{metric.label}</span><strong>{presentation.value ?? "暂无有效值"}</strong><span className={`operating-metric-status operating-status-${presentation.status === "本次有效值" ? "read" : presentation.status.includes("历史") ? "history" : presentation.status === "读取失败" || presentation.status === "来源不可用" ? "warning" : "neutral"}`}>{presentation.status}</span>
         {showAttemptStatus && <span className="operating-metric-latest-status">本次：{metricAttemptLabels[presentation.currentAttempt!.status]}</span>}
       </button>;
     })}</div></div>)}</div>
     {selected && evidence && <section className="operating-metric-evidence" id={evidenceId} role="region" aria-label={`${selected.label}数据依据`}>
       <header><div><h3>{selected.label} · 数据依据</h3><span>当前展示：{evidence.value ?? "暂无有效值"} · {evidence.valueKind}</span></div><button type="button" className="text-button" onClick={() => setSelectedKey(null)}>收起</button></header>
-      <div className="operating-evidence-grid">
-        <div><strong>最近尝试</strong>{evidence.attempt ? <><span>状态：{metricAttemptLabels[evidence.attempt.status]}</span><span>页面原值：{evidence.attempt.raw_value ?? "暂无有效值"}</span><span>来源：{operatingMetricSource(evidence.attempt.source)}</span><span>观察时间：{formatDate(evidence.attempt.observed_at)}</span><span>CollectionRun：#{evidence.attempt.collection_run_id}</span>{evidence.attempt.reason && <span>原因：{evidence.attempt.reason}</span>}</> : <span>尚未采集</span>}</div>
-        <div><strong>历史有效值</strong>{selected.latest_valid ? <><span>原值：{selected.latest_valid.raw_value}</span><span>来源：{operatingMetricSource(selected.latest_valid.source)}</span><span>观察时间：{formatDate(selected.latest_valid.observed_at)}</span><span>CollectionRun：#{selected.latest_valid.collection_run_id}</span></> : <span>暂无历史有效值</span>}</div>
-      </div>
+      {evidence.records.length ? <div className={`operating-evidence-records operating-evidence-records-${evidence.records.length > 1 ? "multiple" : "single"}`}>{evidence.records.map((record, index) => <div className="operating-evidence-record" key={`${record.label}-${record.runId}-${index}`}>
+        <strong>{record.label}</strong><dl>
+          {record.status && <><dt>状态</dt><dd>{record.status}</dd></>}
+          <dt>{record.status ? "页面原值" : "原值"}</dt><dd>{record.rawValue ?? "—"}</dd>
+          {record.reason && <><dt>原因</dt><dd>{record.reason}</dd></>}
+          <dt>来源</dt><dd>{operatingMetricSource(record.source)}</dd>
+          <dt>观察时间</dt><dd>{formatDate(record.observedAt)}</dd>
+          <dt>CollectionRun ID</dt><dd>#{record.runId}</dd>
+        </dl>
+      </div>)}</div> : <p className="operating-evidence-empty">{evidence.attempt?.reason ? `原因：${evidence.attempt.reason}` : "尚未采集该字段"} · 暂无有效值</p>}
     </section>}
   </section>;
 }
