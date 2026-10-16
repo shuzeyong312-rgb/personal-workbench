@@ -1304,12 +1304,13 @@ test("uses neutral group change placeholder and offline snapshot freshness for o
   expect(formatGroupProductFreshness(groupProduct())).toBe("18:00 更新");
 
   const html = renderToStaticMarkup(<GroupDetailPage data={{ ...groupDetailData, own_product: offlineOwn, competitors: [offlineCompetitor] }} status="ready" error={null} days={7} rangeLoading={false} rangeError={null} onRetry={noop} onRangeChange={noop} onBack={noop} onViewCompetitors={noop} onOpenDetail={noop} onNavigate={noop} />);
-  expect(html).toContain(`最近有效基础快照 · ${formatDate("2026-09-22T10:00:00Z")}`);
-  expect(html).toContain(`快照时间：${formatDate("2026-09-21T10:00:00Z")}`);
-  expect(html).not.toContain("最后快照");
-  expect(html).toContain("已下架");
+  expect(html).toContain("当前参与对比 0 个商品");
+  expect(html).toContain("已隐藏 2 条下架或停监商品");
+  expect(html).toContain("我方基准商品当前已下架，不参与比较；绑定关系保留。");
+  expect(html).toContain("当前组暂无有效商品可速览");
+  expect(html).not.toContain(`最近有效基础快照 · ${formatDate("2026-09-22T10:00:00Z")}`);
+  expect(html).not.toContain(`快照时间：${formatDate("2026-09-21T10:00:00Z")}`);
   expect(html).not.toContain('<td>暂无变化</td>');
-  expect(html).toContain("查看详情");
 });
 
 test("summarizes meaningful group differences without turning unknown fields into advantages", () => {
@@ -1342,8 +1343,8 @@ test("renders competitive workbench states and compact product preview", () => {
   }
   expect(html).not.toContain("position-row-hint");
   expect(html).not.toContain("最近真实采集");
-  expect(html).toContain(`1 条我方商品 · ${groupDetailData.competitors.length} 条竞品 · 仅监控样本，非实时报价`);
-  expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, own_product: null, competitors: [] }} />)).toContain("0 条我方商品 · 0 条竞品 · 仅监控样本，非实时报价");
+  expect(html).toContain("当前参与对比 2 个商品 · 仅监控样本，非实时报价");
+  expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, own_product: null, competitors: [] }} />)).toContain("当前参与对比 0 个商品");
   expect(html).not.toContain("group-own-row");
   expect(html).toContain("position-own-row");
   expect(html).not.toContain("position-filter-notice");
@@ -1355,7 +1356,23 @@ test("renders competitive workbench states and compact product preview", () => {
   expect(html.indexOf('data-offer-id="10"')).toBeLessThan(html.indexOf('data-offer-id="7"'));
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, own_product: null }} />)).toContain("尚未绑定我方商品");
   expect(renderToStaticMarkup(<GroupDetailPage {...props} rangeError="请求失败" />)).toContain("保留上一份事实");
-  expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, competitors: [] }} />)).toContain("仅我方 1 条");
+  expect(renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, competitors: [] }} />)).toContain("当前参与对比 1 个商品");
+});
+
+test("GroupDetail comparison includes only monitored non-offline Offers and keeps monitored unknown status", () => {
+  const props = { data: groupDetailData, status: "ready" as const, error: null, days: 7 as const, rangeLoading: false, rangeError: null, onRetry: noop, onRangeChange: noop, onBack: noop, onViewCompetitors: noop, onOpenDetail: noop, onNavigate: noop };
+  const competitors = [
+    groupProduct({ id: 11, status: "active", is_active: true }),
+    groupProduct({ id: 12, status: "offline", is_active: true }),
+    groupProduct({ id: 13, status: "active", is_active: false }),
+    groupProduct({ id: 14, status: "offline", is_active: false }),
+    groupProduct({ id: 15, status: "unknown", is_active: true }),
+  ].map(product => ({ ...product, comparison: groupDetailData.competitors[0].comparison }));
+  const html = renderToStaticMarkup(<GroupDetailPage {...props} data={{ ...groupDetailData, competitors }} />);
+  expect([...html.matchAll(/data-offer-id="(\d+)"/g)].map(([, id]) => Number(id))).toEqual([7, 11, 15]);
+  expect(html).toContain("状态未知");
+  expect(html).toContain("当前参与对比 3 个商品");
+  expect(html).toContain("已隐藏 3 条下架或停监商品");
 });
 
 test("links only valid HTTP product URLs from Group Detail shop names", () => {

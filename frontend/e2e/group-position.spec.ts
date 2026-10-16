@@ -1,13 +1,13 @@
 import { readFileSync } from "node:fs";
-import type { GroupDetailData } from "../src/App";
+import type { Competitor, GroupDetailData } from "../src/App";
 import { expect, test, type Page } from "@playwright/test";
 import { installApiMock } from "./support/api-mock";
 import { detail, event, eventPage, group } from "./fixtures/group-position";
 
-async function openWorkbench(page: Page, data = detail) {
-  const mock = await installApiMock(page, { competitors: [], groups: [group] });
+async function openWorkbench(page: Page, data = detail, competitors: Competitor[] = []) {
+  const mock = await installApiMock(page, { competitors, groups: [group] });
   await page.route("**/api/competitor-groups/summary", route => route.fulfill({ json: { groups: [{ ...group, competitor_count: 8, active_count: 7, price_min: "9", price_max: "150", changed_competitors_today: 2, last_change_at: null, own_product: detail.own_product }], unassigned: { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } } }));
-  await page.route("**/api/competitor-groups/91/detail?*", route => route.fulfill({ json: { ...data, range_days: Number(new URL(route.request().url()).searchParams.get("days")), event_page: { ...eventPage, range: new URL(route.request().url()).searchParams.get("days") } } }));
+  await page.route("**/api/competitor-groups/91/detail?*", route => route.fulfill({ json: { ...data, range_days: Number(new URL(route.request().url()).searchParams.get("days")), event_page: { ...(data.event_page ?? eventPage), range: new URL(route.request().url()).searchParams.get("days") } } }));
   await page.goto("/");
   await page.getByRole("button", { name: "竞品分组", exact: true }).click();
   await page.getByRole("button", { name: "组分析", exact: true }).click();
@@ -18,7 +18,7 @@ async function openWorkbench(page: Page, data = detail) {
 test("compact rows have no hover or focus popup and select same-shop Offers independently", async ({ page }) => {
   const mock = await openWorkbench(page);
   const preview = page.locator(".position-aside");
-  for (const id of [1, 8, 2, 3]) {
+  for (const id of [1, 7, 2, 3]) {
     const row = page.locator(`[data-offer-id="${id}"]`);
     await row.locator("td:first-child").hover();
     await expect(page.getByRole("tooltip")).toHaveCount(0);
@@ -33,7 +33,6 @@ test("compact rows have no hover or focus popup and select same-shop Offers inde
     await expect(preview).toContainText(`隔离商品 ${id}`);
     await expect(preview).toContainText(`Offer ID：900${id}`);
     await expect(preview).toContainText("最近有效基础快照");
-    if (id === 8) { await expect(row).toHaveAttribute("aria-label", /排名排除：/); await expect(preview).toContainText("已停止"); }
     expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(54);
   }
   await mock.expectNoUnexpectedApi();
@@ -377,6 +376,87 @@ test("clicking different Offer rows updates the right-hand preview", async ({ pa
   await mock.expectNoUnexpectedApi();
 });
 
+test("current comparison consistently excludes offline and stopped Offers and preserves unknown status", async ({ page }, testInfo) => {
+  let refreshed = false;
+  const mixed: GroupDetailData = {
+    ...detail,
+    event_page: { ...eventPage, items: [{ ...event(99), competitor_id: 4, offer_id: "9004" }] },
+    competitors: detail.competitors.map(product => ({
+      ...product,
+      status: product.id === 4 || product.id === 6 ? "offline" : product.id === 9 ? "unknown" : "active",
+      is_active: product.id !== 5 && product.id !== 6,
+    })),
+  };
+  const mock = await openWorkbench(page, mixed);
+  await expect(page.locator(".group-detail-page-header")).toContainText("当前参与对比 6 个商品");
+  await expect(page.locator(".group-detail-page-header")).toContainText("已隐藏 3 条下架或停监商品");
+  await expect(page.getByLabel("监控状态", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("商品状态", { exact: true })).toHaveCount(0);
+  await expect(page.locator('[data-offer-id="9"]')).toContainText("状态未知");
+  await expect(page.locator(".position-event-list")).toContainText("当前已下架或停监");
+  expect(await rowIds(page)).toEqual([1, 2, 3, 7, 8, 9]);
+  await page.setViewportSize({ width: 1600, height: 1400 });
+  await page.screenshot({ path: testInfo.outputPath("group-position-mixed-status.png"), fullPage: true });
+
+  for (const view of ["经营表现", "口碑履约", "竞争总览"] as const) {
+    await page.getByRole("tab", { name: view, exact: true }).click();
+    expect((await rowIds(page)).sort((a, b) => a - b)).toEqual([1, 2, 3, 7, 8, 9]);
+    for (const id of [4, 5, 6]) await expect(page.locator(`[data-offer-id="${id}"]`)).toHaveCount(0);
+  }
+  await page.getByRole("button", { name: "MOQ ↑", exact: true }).click();
+  await expect(page.getByLabel("搜索店铺、商品或 Offer")).toBeVisible();
+  await page.getByLabel("搜索店铺、商品或 Offer").fill("9004");
+  await expect(page.locator(".position-table tbody tr")).toHaveCount(0);
+  await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+  expect((await rowIds(page)).sort((a, b) => a - b)).toEqual([1, 2, 3, 7, 8, 9]);
+  await page.getByLabel("仅看重要变化").check();
+  expect((await rowIds(page)).sort((a, b) => a - b)).toEqual([1, 3]);
+  await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+  expect((await rowIds(page)).sort((a, b) => a - b)).toEqual([1, 2, 3, 7, 8, 9]);
+
+  await expect(page.locator('[data-offer-id="4"]')).toHaveCount(0);
+  await page.locator('[data-offer-id="1"] td:nth-child(2)').click();
+  await expect(page.locator(".product-preview")).toContainText("Offer ID：9001");
+  await page.route("**/api/competitor-groups/91/detail?*", route => {
+    const update = refreshed ? mixed : { ...mixed, competitors: mixed.competitors.map(product => product.id === 1 ? { ...product, status: "offline" as const } : product) };
+    refreshed = true;
+    return route.fulfill({ json: { ...update, range_days: 7, event_page: eventPage } });
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(page.locator('[data-offer-id="1"]')).toHaveCount(0);
+  await expect(page.locator(".product-preview")).toContainText("Offer ID：9003");
+  await expect(page.locator(".group-detail-page-header")).toContainText("已隐藏 4 条下架或停监商品");
+  await mock.expectNoUnexpectedApi();
+});
+
+test("competitor list and detail still expose offline and stopped group members", async ({ page }) => {
+  const mixed: GroupDetailData = {
+    ...detail,
+    competitors: detail.competitors.map(product => ({
+      ...product,
+      status: product.id === 4 || product.id === 6 ? "offline" : "active",
+      is_active: product.id !== 5 && product.id !== 6,
+    })),
+  };
+  const listed = mixed.competitors.map(product => ({ ...product, group_id: group.id, group_role: "competitor", ownership: "competitor", created_at: "2026-10-01T00:00:00Z" }));
+  const mock = await openWorkbench(page, mixed, listed);
+  await page.route("**/api/competitors/4/detail?*", route => {
+    const product = listed.find(item => item.id === 4)!;
+    return route.fulfill({ json: { range_days: 7, competitor: product, latest_snapshot: product.latest_snapshot ? { ...product.latest_snapshot, image_urls: null, product_status: "offline" } : null, latest_skus: [], latest_price_change: null, daily_trend: [], recent_changes: [], recent_collection_runs: [] } });
+  });
+  await page.getByRole("button", { name: "查看竞品", exact: true }).click();
+  const offline = page.locator("tbody tr").filter({ hasText: "9004" });
+  const stopped = page.locator("tbody tr").filter({ hasText: "9005" });
+  await expect(offline).toContainText("已下架");
+  await expect(offline).toContainText("监控中");
+  await expect(stopped).toContainText("在售");
+  await expect(stopped).toContainText("已停止");
+  await offline.getByRole("button", { name: "详情", exact: true }).click();
+  await expect(page.locator(".detail-page-header")).toContainText("竞品详情");
+  await expect(page.locator(".detail-stat-grid")).toContainText("已下架");
+  await mock.expectNoUnexpectedApi();
+});
+
 test("details action opens its Offer detail directly", async ({ page }) => {
   const mock = await openWorkbench(page);
   await mockOfferDetail(page, 6);
@@ -430,7 +510,7 @@ for (const key of ["Enter", "Space"]) test(`keyboard details opens directly with
   await mock.expectNoUnexpectedApi();
 });
 
-test("header sorting, tied positions, filtering, own location and pending views", async ({ page }) => {
+test("header sorting, tied positions, filtering, own location and pending views", async ({ page }, testInfo) => {
   const mock = await openWorkbench(page);
   await expect(page.locator(".position-aside")).toContainText("Offer ID：9003");
   await expect(page.locator(".position-table thead")).toContainText("店铺");
@@ -447,6 +527,8 @@ test("header sorting, tied positions, filtering, own location and pending views"
   await expect(page.locator(".position-tag-cell")).toHaveText(Array(9).fill("—"));
   expect(await page.locator(".position-tag-cell").allTextContents()).not.toContain("无标签");
   expect(await rowIds(page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  await page.setViewportSize({ width: 1600, height: 1400 });
+  await page.screenshot({ path: testInfo.outputPath("group-position-normal-comparison.png"), fullPage: true });
   await page.getByRole("button", { name: "MOQ ↑", exact: true }).click();
   expect(await rowIds(page)).toEqual([3, 4, 5, 6, 1, 2, 7, 8, 9]);
   await expect(page.locator('[data-offer-id="3"]')).toHaveClass(/position-selected/);
