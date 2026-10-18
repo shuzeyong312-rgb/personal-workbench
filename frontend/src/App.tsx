@@ -1,6 +1,7 @@
 import { createContext, Fragment, FormEvent, type Dispatch, type ReactNode, type SetStateAction, type SyntheticEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import "./App.css";
+import { ProductLibrary } from "./ProductLibrary";
 
 type AddStatus = "initial" | "submitting" | "success" | "partial" | "failed" | "invalid" | "duplicate" | "server-error";
 type GroupCreateStatus = "initial" | "submitting" | "success" | "invalid" | "duplicate" | "server-error";
@@ -3068,7 +3069,7 @@ function App() {
   }
   return <MonitoringNavigationContext.Provider value={{ expanded: monitoringExpanded, setExpanded: setMonitoringExpanded }}><>
     {page === "home" && <HomePage onNavigate={navigate} />}
-    {page === "product-library" && <WorkspacePlaceholderPage page="product-library" title="产品库" description="产品资料管理入口。" note="产品库模块已预留，具体能力待规划。" icon="library" onNavigate={navigate} />}
+    {page === "product-library" && <AppShell page="product-library" breadcrumb="产品库" onNavigate={navigate}><ProductLibrary /></AppShell>}
     {page === "ai-assistant" && <WorkspacePlaceholderPage page="ai-assistant" title="AI智能助手" description="智能辅助工作入口。" note="AI智能助手模块已预留，具体能力待规划。" icon="assistant" onNavigate={navigate} />}
     {page === "price-compare" && <WorkspacePlaceholderPage page="price-compare" title="全网比价" description="统一检索并对比全网同款与相似商品价格。" note="后续将在这里承载商品检索、候选同款筛选、价格对比和结果沉淀。" icon="compare" onNavigate={navigate} />}
     {page === "auto-inquiry" && <WorkspacePlaceholderPage page="auto-inquiry" title="自动询价" description="统一管理供应商询价任务与报价结果。" note="后续将在这里承载询价对象、询价话术、回复状态和供应商报价记录。" icon="inquiry" onNavigate={navigate} />}

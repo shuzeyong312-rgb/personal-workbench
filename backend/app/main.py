@@ -6,6 +6,8 @@ from threading import Event
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from sqlalchemy.orm import Session
 
 from datetime import datetime, timezone
@@ -22,6 +24,7 @@ from app.group_attention import router as group_attention_router
 from app.database import engine
 from app.dashboard import router as dashboard_router
 from app.settings import router as settings_router
+from app.product_library import router as product_library_router
 
 
 DAILY_COLLECTION_INTERVAL_SECONDS = 60
@@ -92,6 +95,15 @@ app.include_router(group_detail_router)
 app.include_router(group_attention_router)
 app.include_router(dashboard_router)
 app.include_router(settings_router)
+app.include_router(product_library_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def product_library_validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/api/product-library/"):
+        code = "invalid_decisions" if request.url.path.endswith("/confirm") else "invalid_product"
+        return JSONResponse(status_code=422, content={"code": code, "message": "请求字段或格式无效"})
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.exception_handler(HTTPException)

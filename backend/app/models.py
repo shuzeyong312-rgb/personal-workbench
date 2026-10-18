@@ -351,3 +351,37 @@ class CollectionAddInput(Base):
     navigation_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     navigation_terminal_reason: Mapped[str | None] = mapped_column(String(64))
     identity_removed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+
+class LibraryProduct(Base):
+    __tablename__ = "library_products"
+    __table_args__ = (
+        CheckConstraint("wholesale_price_cents IS NULL OR (wholesale_price_cents >= 0 AND wholesale_price_cents <= 99999999999)", name="ck_library_products_price"),
+        CheckConstraint("version >= 1", name="ck_library_products_version"),
+        Index("uq_library_products_manufacturer_model", "manufacturer_name", "model", unique=True, sqlite_where=text("model IS NOT NULL")),
+        {"sqlite_autoincrement": True},
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    manufacturer_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    parameters: Mapped[str | None] = mapped_column(String(10000))
+    selling_points: Mapped[str | None] = mapped_column(String(10000))
+    wholesale_price_cents: Mapped[int | None] = mapped_column(Integer)
+    price_note: Mapped[str | None] = mapped_column(String(2000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class LibraryImport(Base):
+    __tablename__ = "library_imports"
+    __table_args__ = (CheckConstraint("status IN ('ready', 'committed')", name="ck_library_imports_status"),)
+    import_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    manufacturer_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    preview: Mapped[dict | None] = mapped_column(JSON)
+    baseline_digest: Mapped[str | None] = mapped_column(String(64))
+    decision_digest: Mapped[str | None] = mapped_column(String(64))
+    result: Mapped[dict | None] = mapped_column(JSON)

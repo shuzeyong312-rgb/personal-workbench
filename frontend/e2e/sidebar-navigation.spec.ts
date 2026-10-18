@@ -19,7 +19,13 @@ test("preserves monitoring expansion across page navigation and opens placeholde
   await expect(page.getByRole("button", { name: "竞品监控大屏" })).toBeHidden();
   await expect(monitoringToggle).toHaveAttribute("aria-expanded", "false");
 
-  for (const moduleName of ["产品库", "AI智能助手", "全网比价", "自动询价", "自动上架"] as const) {
+  await page.route("**/api/product-library/products?*", route => route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } }));
+  await page.route("**/api/product-library/manufacturers", route => route.fulfill({ json: { items: [] } }));
+  await page.getByRole("button", { name: "产品库", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "产品库", exact: true })).toBeVisible();
+  await expect(page.getByText("没有符合条件的产品")).toBeVisible();
+  await expect(monitoringToggle).toHaveAttribute("aria-expanded", "false");
+  for (const moduleName of ["AI智能助手", "全网比价", "自动询价", "自动上架"] as const) {
     await page.getByRole("button", { name: moduleName, exact: true }).click();
     await expect(page.getByRole("heading", { name: moduleName, exact: true })).toBeVisible();
     await expect(page.getByText(`${moduleName}模块已预留`, { exact: true })).toBeVisible();

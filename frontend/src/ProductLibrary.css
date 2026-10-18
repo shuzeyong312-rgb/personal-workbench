@@ -1,0 +1,27 @@
+.library-actions, .library-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.library-actions a { text-decoration: none; }
+.library-toolbar { padding: 18px; align-items: end; }
+.library-toolbar label, .library-form label { display: grid; gap: 6px; font-size: 13px; color: #465c7a; }
+.library-toolbar input, .library-toolbar select, .library-form input, .library-form textarea, .library-preview select { padding: 9px 11px; border: 1px solid #dce5f1; border-radius: 8px; background: white; color: #344d73; font: inherit; max-width: 100%; }
+.library-toolbar input { min-width: min(280px, 65vw); }
+.library-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.library-table th, .library-table td, .library-diff th, .library-diff td { padding: 12px; border-bottom: 1px solid #edf1f8; text-align: left; overflow-wrap: anywhere; }
+.library-table th { color: #71839f; background: #f8faff; }
+.library-dialog { width: min(900px, calc(100vw - 32px)); max-height: 88vh; overflow-y: auto; border: 1px solid #e0e8f5; margin: auto; color: #344d73; }
+.library-dialog::backdrop { background: rgba(25, 40, 65, .35); }
+.library-dialog p { line-height: 1.7; overflow-wrap: anywhere; }
+.library-form { display: grid; gap: 13px; }
+.library-form textarea { min-height: 85px; resize: vertical; }
+.library-form .library-check { display: flex; align-items: center; }
+.library-form .library-check input { width: auto; }
+.library-preview-row { border-top: 1px solid #dce5f1; padding: 14px 0; }
+.library-preview-row h3 { font-size: 14px; overflow-wrap: anywhere; }
+.library-diff { width: 100%; table-layout: fixed; font-size: 12px; border-collapse: collapse; }
+.library-diff td, .library-details dd { white-space: pre-wrap; overflow-wrap: anywhere; }
+.library-diff th:first-child { width: 15%; }
+.library-details > div { padding: 10px 0; border-bottom: 1px solid #edf1f8; }
+.library-details dt { font-size: 12px; color: #71839f; }
+.library-details dd { margin: 6px 0 0; }
+.library-page .pagination-bar { display: flex; gap: 12px; align-items: center; padding: 15px; flex-wrap: wrap; }
+.library-dialog .pagination-bar { display: flex; justify-content: center; gap: 12px; margin-top: 15px; }
+@media (max-width: 680px) { .library-page .page-header { flex-direction: column; align-items: start; gap: 12px; }.library-table { min-width: 650px; }.library-dialog .dialog-actions { flex-wrap: wrap; }.library-toolbar { align-items: stretch; }.library-toolbar label { flex: 1; min-width: 120px; } }

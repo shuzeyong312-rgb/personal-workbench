@@ -5,3 +5,4 @@ alembic
 pytest
 httpx
 playwright
+openpyxl==3.1.5
