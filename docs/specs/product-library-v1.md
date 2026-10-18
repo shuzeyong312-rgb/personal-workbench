@@ -1,6 +1,7 @@
 # Product Library V1 — 厂家产品资料库
 
-- 状态：Draft / 待 ChatGPT 独立 Spec Review；未冻结、未实施。
+- 状态：Frozen / ChatGPT 最终独立 Spec Review PASS；已冻结、未实施。
+- 审查基准：`f7719ef9295b8ce9bb3f44ccd814cd38ad540d9c`；P0/P1/P2 = 0/0/0，原 P2 已关闭；两项 P3 为非阻塞实施注意事项。
 - 日期：2026-10-18。
 - 核对基线：main `21e3d962ea9e643c00120029ce2b154478e9a8b7`。
 - 本轮仅新增本 Spec；不修改业务代码、测试、依赖、数据库或历史 Spec，不执行正式迁移。自检后仅提交并推送本文，不进入 Implement。
@@ -279,6 +280,6 @@ confirm 必须对每个非空数据行恰好提供一个决策，不能重复/�
 | 身份隔离 | 通过：不复用 Competitor、Snapshot 或采集任务，无外键联动 |
 | 最小实现与可实现性 | 通过：现有单体内实现，无新服务/任务框架；仅产品、必要凭据及一项 Excel 依赖 |
 | 测试主要风险 | 通过：包含 12 项指定场景以及类型、并发、幂等、迁移和 UI 风险 |
-| 阻塞冻结的已知 P0/P1/P2 | 自检未发现；这不是独立 Spec Review 结论 |
+| 阻塞冻结的已知 P0/P1/P2 | ChatGPT 最终独立 Spec Review PASS，P0/P1/P2 = 0/0/0；审查基准见文首 |
 
-交付仍为 Draft。自检通过后仅 Commit/Push 本文并核对远端；不更新长期文档或索引来暗示已经实施/冻结。最终由 ChatGPT 从 GitHub 读取本次提交做独立 Spec Review，Review 通过才可冻结，后续另获授权进入 Implement。正式数据库当前结构/数据未读取，本 Spec 不宣称本机数据库已升级到源码 head。
+本 Spec 已通过 ChatGPT 最终独立 Spec Review 并冻结；本次仅完成冻结状态及审查元信息收尾，Commit/Push 本文后核对远端，不更新长期文档或索引，不进入 Implement。后续实现仍需另获授权，并严格遵循已冻结合同。正式数据库当前结构/数据未读取，本 Spec 不宣称本机数据库已升级到源码 head。
