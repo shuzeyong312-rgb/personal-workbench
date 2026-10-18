@@ -39,8 +39,8 @@ test("directory search, filters, stable sorting, actions, and empty state work",
   await expect(page.locator('[data-group-id="2"]')).toContainText("8/8");
   await expect(page.locator('[data-group-id="3"]')).toContainText("1/3");
   await expect(page.locator('[data-group-id="3"]')).toContainText("已停止 2 个");
-  await expect(page.locator('[data-group-id="1"]')).toContainText("Portable Warmer Long Product Name");
-  await expect(page.locator('[data-group-id="2"]')).toContainText("尚未绑定");
+  await expect(page.locator('[data-group-id="1"]')).not.toContainText("Portable Warmer Long Product Name");
+  await expect(page.locator('[data-group-id="2"]')).not.toContainText("尚未绑定");
   expect(await ids()).toEqual([1, 2, 5, 3, 4, 6]);
 
   await page.getByRole("textbox", { name: "搜索竞品组" }).fill("portable warmer");
@@ -69,6 +69,15 @@ test("directory search, filters, stable sorting, actions, and empty state work",
   await page.locator('[data-group-id="3"]').getByRole("button", { name: "查看竞品" }).click();
   await expect(page.getByRole("heading", { name: "竞品列表" })).toBeVisible();
   await expect(page.getByLabel("竞品组")).toHaveValue("3");
+  await mock.expectNoUnexpectedApi();
+});
+
+test("returning to directory reloads current binding data", async ({ page }) => {
+  const { mock, setGroups } = await openDirectory(page);
+  await page.locator('[data-group-id="1"] .group-directory-name').click();
+  setGroups(groups.map(group => group.id === 1 ? { ...group, name: "Updated Group" } : group));
+  await page.getByRole("button", { name: "返回竞品分组", exact: true }).click();
+  await expect(page.locator('[data-group-id="1"] .group-directory-name')).toHaveText("Updated Group");
   await mock.expectNoUnexpectedApi();
 });
 

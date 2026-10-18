@@ -1362,7 +1362,7 @@ test("renders group page loading, error, full empty, unassigned and normal state
   expect(normal).toContain("共 1 个竞品组");
   expect(normal).toContain("第 1 / 1 页");
   const bound = renderToStaticMarkup(<GroupPage summary={{ groups: [{ ...groupSummary, own_product: { id: 7, offer_id: "700", title: "我的基准商品", shop_name: "我的店铺", main_image_url: null, status: "active", is_active: true } }], unassigned: { ...groupMetrics, competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
-  expect(bound).toContain("我的基准商品");
+  expect(bound).not.toContain("我的基准商品");
 });
 
 test("formats compact group update times and only nonzero action domains", () => {

@@ -1160,7 +1160,7 @@ export function filterAndSortCompetitorGroups(groups: readonly CompetitorGroupSu
 function CompetitorGroupRow({ group, onViewCompetitors, onViewAnalysis, onRename, onDelete }: { group: CompetitorGroupSummary; onViewCompetitors: () => void; onViewAnalysis: () => void; onRename: () => void; onDelete: () => void }) {
   const stoppedCount = group.competitor_count - group.active_count;
   return <tr data-group-id={group.id}>
-    <td className="group-directory-product"><button type="button" className="group-directory-name" title={group.name} onClick={onViewAnalysis}>{group.name}</button><span title={group.own_product?.title || undefined}>{group.own_product?.title || "尚未绑定"}</span></td>
+    <td className="group-directory-product"><button type="button" className="group-directory-name" title={group.name} onClick={onViewAnalysis}>{group.name}</button></td>
     <td className="group-directory-monitor"><strong>{group.active_count}/{group.competitor_count}</strong>{stoppedCount > 0 && <span>已停止 {stoppedCount} 个</span>}</td>
     <td className="group-directory-price" title="链接展示价范围，不代表同规格竞品比较价">{formatGroupPriceRange(group)}</td>
     <td className={group.changed_competitors_today > 0 ? "group-directory-changed" : "group-directory-muted"}>{group.changed_competitors_today || "—"}</td>
@@ -1443,9 +1443,9 @@ export function sortGroupOffers(offers: GroupProductFacts[], position: MetricPos
   });
 }
 
-export function GroupDetailPage({ data, status, error, days, rangeLoading, rangeError, onRetry, onRangeChange, onBack, onViewCompetitors, onOpenDetail, onNavigate }: {
+export function GroupDetailPage({ data, status, error, days, rangeLoading, rangeError, onRetry, onRangeChange, onBack, onViewCompetitors, onOpenDetail, onNavigate, onAdd = noop }: {
   data: GroupDetailData | null; status: DetailStatus; error: string | null; days: 7 | 30; rangeLoading: boolean; rangeError: string | null;
-  onRetry: () => void; onRangeChange: (days: 7 | 30) => void; onBack: () => void; onViewCompetitors: (groupId: number) => void; onOpenDetail: (competitorId: number) => void; onNavigate: (page: Page) => void;
+  onAdd?: (groupId: number) => void; onRetry: () => void; onRangeChange: (days: 7 | 30) => void; onBack: () => void; onViewCompetitors: (groupId: number) => void; onOpenDetail: (competitorId: number) => void; onNavigate: (page: Page) => void;
 }) {
   const own = data?.own_product ?? null;
   const allOffers = [...(own ? [own] : []), ...(data?.competitors ?? [])];
@@ -1546,7 +1546,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const columns: { title: string; metric?: PositionMetric; field?: "price" | "moq" | "sku" | "stock"; metric_key?: OperatingMetricSortKey }[] = view === "竞争总览" ? [{ title: "竞争力" }, { title: "展示报价", metric: "display_price_min", field: "price" }, { title: "MOQ", metric: "min_order_quantity", field: "moq" }, { title: "SKU", metric: "sku_count", field: "sku" }, { title: "库存", metric: "total_stock", field: "stock" }, { title: "月成交", metric_key: "monthly_deal" }, { title: "增长" }] : (pendingViews[view as keyof typeof pendingViews] ?? []).map(column => ({ ...column, metric_key: column.metric_key as OperatingMetricSortKey }));
   return <AppShell page="group-detail" onNavigate={onNavigate} breadcrumb={`竞品分组 / ${data.group.name}`}>
     <div className="position-workbench">
-    <header className="page-header group-detail-page-header"><div><h1>{data.group.name} 竞争分析</h1><p className="page-description">当前参与对比 {currentOffers.length} 个商品 · 仅监控样本，非实时报价</p>{hiddenOfferCount > 0 && <p className="page-description">已隐藏 {hiddenOfferCount} 条下架或停监商品</p>}</div><div className="detail-page-actions"><button className="secondary-button" onClick={onRetry}>刷新</button><button className="secondary-button" onClick={() => onViewCompetitors(data.group.id)}>查看竞品</button><button className="secondary-button" onClick={onBack}>返回竞品分组</button></div></header>
+    <header className="page-header group-detail-page-header"><div><h1>{data.group.name} 竞争分析</h1><p className="page-description">当前参与对比 {currentOffers.length} 个商品 · 仅监控样本，非实时报价</p>{hiddenOfferCount > 0 && <p className="page-description">已隐藏 {hiddenOfferCount} 条下架或停监商品</p>}</div><div className="detail-page-actions"><button className="primary-button" onClick={() => onAdd(data.group.id)}>添加竞品</button><button className="secondary-button" onClick={onRetry}>刷新</button><button className="secondary-button" onClick={() => onViewCompetitors(data.group.id)}>查看竞品</button><button className="secondary-button" onClick={onBack}>返回竞品分组</button></div></header>
     {(error || rangeError) && <div className="feedback feedback-server-error" role="alert">更新失败，保留上一份事实：{error || rangeError}<button className="text-button" onClick={onRetry}>重试</button></div>}
     <section className="position-summaries">{[["组内经营景气信号", "证据不足", "不计算销量排名、增长或综合评分"], ["我方综合竞争力及组内位置", "待接入", "评分规则未冻结"], ["经营字段历史有效值", "八项原值已接入", operatingCoverageText ? `${operatingCoverageText}（按监控中 Offer 统计）` : "各 Offer 有效值覆盖将在采集后逐项显示"], ["当前经营决策提示", "证据不足", "先核查原值、时间与来源"]].map(([title, value, hint], index) => <article className="table-card" key={title}><span>{title}</span><strong>{value}</strong><small>{index === 1 && own ? ownExcluded ? "我方基准商品当前不可参与比较" : positionText(own) : hint}</small>{index === 1 && <small>{hint}</small>}</article>)}</section>
     <div className="position-layout"><div className="position-primary">
@@ -2401,7 +2401,6 @@ function App() {
   const [groupSummary, setGroupSummary] = useState<CompetitorGroupsSummary | null>(null);
   const [groupStatus, setGroupStatus] = useState<GroupStatus>("loading");
   const [groupError, setGroupError] = useState<string | null>(null);
-  const [groupLoaded, setGroupLoaded] = useState(false);
   const [listNavigationIntent, setListNavigationIntent] = useState<ListNavigationIntent>({ filter: null, version: 0 });
   const [detailStatus, setDetailStatus] = useState<DetailStatus>("loading");
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -2538,10 +2537,10 @@ function App() {
       const [summaryData, groupData] = await Promise.all([summaryResponse.json(), groupsResponse.json()]);
       setGroupSummary(summaryData as CompetitorGroupsSummary);
       setGroups(groupData as CompetitorGroup[]);
-      setGroupStatus("ready"); setGroupLoaded(true);
+      setGroupStatus("ready");
       return true;
     } catch {
-      setGroupError("暂时无法获取竞品组，请检查服务是否正常运行。"); setGroupStatus("error"); setGroupLoaded(false);
+      setGroupError("暂时无法获取竞品组，请检查服务是否正常运行。"); setGroupStatus("error");
       return false;
     }
   }
@@ -2599,7 +2598,7 @@ function App() {
       const wasActiveBatch = previous.status === "running" || previous.status === "pausing" || previous.status === "paused" || previous.status === "stopping" || previous.status === "resting" || previous.status === "cooling_down";
       const addFinished = next.work_kind === "add_links" && next.lifecycle_status === "terminal" && (wasActiveBatch || previous.task_id !== next.task_id);
       if (addFinished || (next.status === "completed" || next.status === "stopped") && wasActiveBatch) {
-        const refreshSucceeded = (await Promise.all([loadCurrentProducts(), loadDashboard()])).every(Boolean);
+        const refreshSucceeded = (await Promise.all([loadCurrentProducts(), loadDashboard(), ...(page === "group-detail" && selectedGroupId !== null ? [loadGroupDetail(selectedGroupId, groupDetailDays, true)] : [])])).every(Boolean);
         setNotice(refreshSucceeded
           ? next.work_kind === "add_links" && next.input_progress
             ? { message: `添加任务：新增 ${next.input_progress.added}，业务拒绝 ${next.input_progress.business_rejected}，技术失败 ${next.input_progress.technical_failed}，未执行 ${next.input_progress.not_executed}`, type: next.input_progress.anomaly_inputs ? "error" : "success" }
@@ -2656,7 +2655,7 @@ function App() {
     if (nextPage === "dashboard") void loadDashboard();
     if (nextPage === "competitors" && !listLoaded) void loadCompetitors();
     if (nextPage === "own-products" && !ownListLoaded) void loadOwnProducts();
-    if (nextPage === "groups" && !groupLoaded) void loadGroups();
+    if (nextPage === "groups") void loadGroups();
     if (nextPage === "settings" && settingsStatus !== "ready") void loadOwnShopName();
   }
   function openDetail(competitorId: number) { setSelectedCompetitorId(competitorId); setDetailDays(7); setDetailRangeLoading(false); setPage("detail"); void loadDetail(competitorId, 7); }
@@ -2668,8 +2667,8 @@ function App() {
     if (updated) setDetailDays(days);
     setDetailRangeLoading(false);
   }
-  function openDialog() { setNotice(null); setUrl(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupId(null); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true); void loadAddDialogGroups();
-    try { const stored = localStorage.getItem(pendingAddKey); if (stored) { const pending = JSON.parse(stored) as PendingAddEnvelope; setUrl(pending.draft_text ?? Array.from({ length: Math.max(...pending.inputs.map(input => input.source_line)) }, (_, index) => pending.inputs.find(input => input.source_line === index + 1)?.text || "").join("\n")); setGroupId(pending.group_id); setNotice({ message: "有待确认的添加提交，点击添加将先查询原任务，不会重复采集。", type: "error" }); } } catch { setNotice({ message: "无法读取提交恢复信息，请检查浏览器存储。", type: "error" }); }
+  function openDialog(initialGroupId: number | null = null) { setNotice(null); setUrl(""); setAddStatus("initial"); setAddFailures([]); setAddSucceededCount(0); setAddProgress({ completed: 0, total: 0 }); setGroupId(initialGroupId); setNewGroupName(""); setGroupCreateStatus("initial"); setDialogOpen(true); void loadAddDialogGroups();
+    try { const stored = localStorage.getItem(pendingAddKey); if (stored) { const pending = JSON.parse(stored) as PendingAddEnvelope; if (initialGroupId !== null && pending.group_id !== initialGroupId) return; setUrl(pending.draft_text ?? Array.from({ length: Math.max(...pending.inputs.map(input => input.source_line)) }, (_, index) => pending.inputs.find(input => input.source_line === index + 1)?.text || "").join("\n")); setGroupId(pending.group_id); setNotice({ message: "有待确认的添加提交，点击添加将先查询原任务，不会重复采集。", type: "error" }); } } catch { setNotice({ message: "无法读取提交恢复信息，请检查浏览器存储。", type: "error" }); }
   }
   function openDashboardAddDialog() {
     if (!ownShopName) { navigate("settings"); return; }
@@ -2711,7 +2710,7 @@ function App() {
     setGroupCreateStatus("submitting");
     try {
       const response = await fetch("/api/competitor-groups", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: newGroupName }) });
-      if (response.ok) { const group = await response.json() as CompetitorGroup; setGroups((current) => [...current, group]); setAddDialogGroups((current) => [...current, group]); setGroupId(group.id); setNewGroupName(""); setGroupCreateStatus("success"); setGroupLoaded(false); return; }
+      if (response.ok) { const group = await response.json() as CompetitorGroup; setGroups((current) => [...current, group]); setAddDialogGroups((current) => [...current, group]); setGroupId(group.id); setNewGroupName(""); setGroupCreateStatus("success"); return; }
       const body = await response.json() as { code?: string }; setGroupCreateStatus(getGroupCreateStatus(false, body.code));
     } catch { setGroupCreateStatus("server-error"); }
   }
@@ -2892,7 +2891,7 @@ function App() {
       setAddFailures(failed); setAddSucceededCount(succeeded);
       setUrl(failed.map(input => input.url).join("\n")); setAddStatus(failed.length ? succeeded ? "partial" : "failed" : "initial");
       if (!failed.length) setDialogOpen(false);
-      await Promise.all([loadCompetitors(), loadOwnProducts(), loadDashboard(), loadBatchStatus()]);
+      await Promise.all([loadCompetitors(), loadOwnProducts(), loadDashboard(), loadBatchStatus(), ...(page === "group-detail" && selectedGroupId !== null ? [loadGroupDetail(selectedGroupId, groupDetailDays, true)] : [])]);
       setNotice({ message: `添加任务：新增 ${succeeded}，业务拒绝 ${task.input_summary?.business_rejected || 0}，技术失败 ${task.input_summary?.technical_failed || 0}；完整结果见采集记录。`, type: task.input_summary?.anomaly_inputs ? "error" : "success" });
     } catch (error) {
       setAddStatus("server-error");
@@ -3022,7 +3021,7 @@ function App() {
   }
   async function refreshAfterLifecycle(message: string, competitor: LifecycleCompetitor, deleted = false): Promise<boolean> {
     setLifecycleDialog(null); setLifecycleError(null);
-    setGroupLoaded(false);
+
     const isSelf = competitor.ownership === "self";
     const refreshList = isSelf ? loadOwnProducts : loadCompetitors;
     if (deleted) {
@@ -3080,7 +3079,7 @@ function App() {
     {page === "collection-tasks" && <CollectionTasksPage onNavigate={navigate} batchState={batchState} batchStatus={batchStatus} batchError={batchError} onRefreshBatch={loadBatchStatus} />}
     {page === "settings" && <SettingsPage configured={settingsConfigured} value={settingsValue} status={settingsStatus} error={settingsError} saveError={settingsSaveError} submitting={settingsSubmitting} onChange={setSettingsValue} onRetry={() => void loadOwnShopName()} onSave={submitOwnShopName} onNavigate={navigate} monitoring={monitoringSettings} monitoringStatus={monitoringStatus} monitoringError={monitoringError} monitoringSaveError={monitoringSaveError} monitoringSubmitting={monitoringSubmitting} onMonitoringChange={setMonitoringSettings} onMonitoringOpen={() => { if (monitoringStatus !== "ready") void loadMonitoringSettings(); }} onMonitoringRetry={() => void loadMonitoringSettings()} onMonitoringSave={submitMonitoringSettings} />}
     {page === "groups" && <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} />}
-    {page === "group-detail" && <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays, groupDetail !== null)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onOpenDetail={openDetail} onNavigate={navigate} />}
+    {page === "group-detail" && <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays, groupDetail !== null)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onAdd={(id) => { if (!ownShopName) { navigate("settings"); return; } openDialog(id); }} onOpenDetail={openDetail} onNavigate={navigate} />}
     {page === "detail" && <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate(detail?.competitor.ownership === "self" ? "own-products" : "competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}
     {notice && <div className={"toast toast-" + notice.type} role="status">{notice.message}</div>}
     {dialogOpen && <AddDialog url={url} status={addStatus} onUrlChange={setUrl} onSubmit={handleSubmit} onClose={closeDialog} groups={addDialogGroups} groupsStatus={addDialogGroupsStatus} groupsError={addDialogGroupsError} onRetryGroups={() => void loadAddDialogGroups()} groupId={groupId} onGroupChange={setGroupId} newGroupName={newGroupName} onNewGroupNameChange={setNewGroupName} onCreateGroup={() => void handleCreateGroup()} groupCreateStatus={groupCreateStatus} failures={addFailures} succeededCount={addSucceededCount} progress={addProgress} />}

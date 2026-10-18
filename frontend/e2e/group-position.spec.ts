@@ -15,6 +15,24 @@ async function openWorkbench(page: Page, data = detail, competitors: Competitor[
   return mock;
 }
 
+test("add competitor from analysis submits current group and refreshes", async ({ page }, testInfo) => {
+  const mock = await openWorkbench(page);
+  await page.screenshot({ path: testInfo.outputPath("group-add-entry.png"), fullPage: true });
+  await page.getByRole("button", { name: "添加竞品", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("竞品组", { exact: true })).toHaveValue("91");
+  await dialog.getByLabel("1688 商品链接", { exact: true }).fill("https://detail.1688.com/offer/123456789.html");
+  await page.screenshot({ path: testInfo.outputPath("group-add-dialog.png"), fullPage: true });
+  const submitted = page.waitForRequest(request => request.method() === "POST" && request.url().endsWith("/api/competitors/add-batch"));
+  const refreshed = page.waitForRequest(request => request.url().includes("/api/competitor-groups/91/detail?"));
+  await dialog.getByRole("button", { name: "添加监控商品", exact: true }).click();
+  expect((await submitted).postDataJSON()).toMatchObject({ group_id: 91, inputs: [{ text: "https://detail.1688.com/offer/123456789.html", source_line: 1 }] });
+  await refreshed;
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "隔离测试组 竞争分析" })).toBeVisible();
+  await mock.expectNoUnexpectedApi();
+});
+
 test("compact rows have no hover or focus popup and select same-shop Offers independently", async ({ page }) => {
   const mock = await openWorkbench(page);
   const preview = page.locator(".position-aside");
