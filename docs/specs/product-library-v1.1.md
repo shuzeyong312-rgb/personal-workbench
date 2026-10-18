@@ -1,9 +1,11 @@
 # Product Library V1.1 — 列表效率、批量管理与客户报价导出
 
-- 状态：Draft，待 ChatGPT 从 GitHub 独立 Spec Review；未冻结、未实施。
+- 状态：Frozen。
+- ChatGPT Final Spec Review：PASS；审查基准 `fbbf710aa29d20dd65ed93620c9fbfca43b60308`；P0/P1/P2/P3 = 0/0/0/0。
+- 冻结日期：2026-10-18。
 - 基线：Product Library V1 已交付；业务合同继承 `docs/specs/product-library-v1.md`，V1.1 只补充本文明确列出的能力。
 - 日期：2026-10-18。
-- 本 Spec 阶段只新增本文；Spec 自检后允许仅提交并推送本文，之后等待独立 Spec Review，不进入 Implement。
+- 本 Spec 已完成冻结；Implement 尚未开始，按后续独立任务执行。
 
 ## Problem Statement
 
@@ -157,7 +159,7 @@ V1.1 在现有产品库页面和 API 上补充价格筛选、跨页批量管理�
 
 ### 待确认问题
 
-无。Review 指出的金额、敏感文本、产品集合一致性及默认说明规则均已按本轮指示收敛；如 Final Spec Review 再发现业务歧义，继续在冻结前处理。
+无。ChatGPT Final Spec Review 已通过；金额、敏感文本、产品集合一致性及默认说明规则均已收敛。
 
 ### Spec 自检
 
@@ -167,4 +169,4 @@ V1.1 在现有产品库页面和 API 上补充价格筛选、跨页批量管理�
 - 已明确客户 Excel 白名单、结构化采购成本绝不输出、产品文字风险词人工核查及不含厂家/成本信息的安全资料复制字段。
 - 已明确预览/导出产品集合、规则摘要和版本校验，以及各税费/运费模式的默认客户说明。
 - 已列出正常 193 款 + 8 行错误、跨页筛选、未报价、低于成本及泄露哨兵测试。
-- Review 指出的待修订项已收敛，当前无剩余待确认问题；本文仍为 Draft，等待 ChatGPT Final Spec Review，未经批准不标记 Frozen、不开始 Implement。
+- ChatGPT Final Spec Review 结论为 PASS，P0/P1/P2/P3 = 0/0/0/0；本文已冻结，Implement 尚未开始。
