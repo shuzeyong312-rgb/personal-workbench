@@ -24,4 +24,18 @@
 .library-details dd { margin: 6px 0 0; }
 .library-page .pagination-bar { display: flex; gap: 12px; align-items: center; padding: 15px; flex-wrap: wrap; }
 .library-dialog .pagination-bar { display: flex; justify-content: center; gap: 12px; margin-top: 15px; }
+.library-page .library-table td, .library-page .library-table th { padding: 8px 10px; }
+.library-selection { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 18px; border-top: 1px solid #edf1f8; }
+.library-match { display: block; color: #71839f; max-width: 360px; white-space: pre-wrap; margin-top: 4px; }
+.library-side-panel { margin: 0 0 0 auto; height: 100vh; max-height: 100vh; width: min(600px, 100vw); border-radius: 14px 0 0 14px; }
+.library-dialog .library-sticky-actions { position: sticky; bottom: -24px; z-index: 2; background: #fff; padding: 14px 0; border-top: 1px solid #dce5f1; flex-wrap: wrap; }
+.library-sticky-actions > span { width: 100%; font-size: 12px; }
+.library-preview-row { padding: 8px 0; }
+.library-preview-row h3 { margin: 6px 0; }
+.library-preview-row summary { cursor: pointer; margin: 7px 0; font-size: 12px; }
+.quotation-rules { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.quotation-rules select, .quotation-preview input { padding: 8px; border: 1px solid #dce5f1; border-radius: 8px; max-width: 100%; font: inherit; }
+.quotation-preview label { display: block; margin: 8px 0; }
+.library-text { white-space: pre-wrap; }
+.library-dialog input[type="checkbox"] { width: auto; }
 @media (max-width: 680px) { .library-page .page-header { flex-direction: column; align-items: start; gap: 12px; }.library-table { min-width: 650px; }.library-dialog .dialog-actions { flex-wrap: wrap; }.library-toolbar { align-items: stretch; }.library-toolbar label { flex: 1; min-width: 120px; } }

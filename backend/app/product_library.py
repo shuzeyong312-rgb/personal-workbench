@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.product_library_service import (
     HEADERS,
+    batch_delete_service,
     MIB,
     error,
     confirm_import_service,
@@ -25,6 +26,7 @@ from app.product_library_service import (
     preview_import_service,
     update_product_service,
 )
+from app.product_library_quotations import preview_quotation_service, export_quotation_service
 
 router = APIRouter(prefix="/api/product-library", tags=["product-library"])
 
@@ -36,16 +38,36 @@ def list_products(
     sort: str = "updated_desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    price_status: str = "all",
+    price_mode: str | None = None,
+    price_min: str | None = None,
+    price_max: str | None = None,
     db: Session = Depends(get_db),
 ):
     return list_products_service(
-        q=q, manufacturer=manufacturer, sort=sort, page=page, page_size=page_size, db=db
+        q=q, manufacturer=manufacturer, sort=sort, page=page, page_size=page_size, db=db,
+        price_status=price_status, price_mode=price_mode, price_min=price_min, price_max=price_max,
     )
 
 
 @router.get("/manufacturers")
 def manufacturers(db: Session = Depends(get_db)):
     return manufacturers_service(db=db)
+
+
+@router.post("/products/batch-delete")
+def batch_delete(payload: dict = Body(...), db: Session = Depends(get_db)):
+    return batch_delete_service(payload, db)
+
+
+@router.post("/customer-quotations/preview")
+def preview_quotation(payload: dict = Body(...), db: Session = Depends(get_db)):
+    return preview_quotation_service(payload, db)
+
+
+@router.post("/customer-quotations/export")
+def export_quotation(payload: dict = Body(...), db: Session = Depends(get_db)):
+    return export_quotation_service(payload, db)
 
 
 @router.get("/products/{product_id}")

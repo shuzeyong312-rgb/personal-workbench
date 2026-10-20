@@ -516,10 +516,33 @@ def decisions(payload):
     return result
 
 
-def list_products_service(q, manufacturer, sort, page, page_size, db):
+def list_products_service(q, manufacturer, sort, page, page_size, db,
+                          price_status="all", price_mode=None, price_min=None, price_max=None):
     if sort not in ("updated_desc", "price_asc", "price_desc"):
         error(422, "invalid_product", "排序无效")
     query = select(LibraryProduct)
+    if price_status not in ("all", "quoted", "unquoted"):
+        error(422, "invalid_product", "报价状态无效")
+    if price_status != "all":
+        query = query.where(LibraryProduct.wholesale_price_cents.is_(None) if price_status == "unquoted" else LibraryProduct.wholesale_price_cents.is_not(None))
+    if price_mode not in (None, "below", "above", "between"):
+        error(422, "invalid_product", "价格条件无效")
+    try:
+        low, high = price(price_min), price(price_max)
+        if (price_mode is None and (low is not None or high is not None)
+            or price_mode == "below" and (high is None or low is not None)
+            or price_mode == "above" and (low is None or high is not None)
+            or price_mode == "between" and (low is None or high is None or Decimal(low) > Decimal(high))):
+            raise ValueError("价格边界缺失或与所选条件不一致")
+    except ValueError as exc:
+        error(422, "invalid_product", str(exc))
+    amount = LibraryProduct.wholesale_price_cents
+    if low is not None:
+        cents = int(Decimal(low) * 100)
+        query = query.where(amount > cents if price_mode == "above" else amount >= cents)
+    if high is not None:
+        cents = int(Decimal(high) * 100)
+        query = query.where(amount < cents if price_mode == "below" else amount <= cents)
     if q.strip():
         literal = (
             q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -561,7 +584,7 @@ def list_products_service(q, manufacturer, sort, page, page_size, db):
         ]
     )
     items = db.scalars(
-        query.order_by(*ordering).offset((page - 1) * page_size).limit(page_size)
+        query.order_by(*ordering).offset((page - 1) * (page_size or 0)).limit(page_size)
     ).all()
     return {
         "items": [product_view(p) for p in items],
@@ -569,6 +592,39 @@ def list_products_service(q, manufacturer, sort, page, page_size, db):
         "page": page,
         "page_size": page_size,
     }
+
+
+def product_versions(items):
+    if not isinstance(items, list) or not items:
+        error(422, "invalid_product", "请选择产品")
+    seen = set()
+    for item in items:
+        if (not isinstance(item, dict) or set(item) != {"id", "version"}
+                or type(item["id"]) is not int or item["id"] < 1
+                or type(item["version"]) is not int or item["version"] < 1
+                or item["id"] in seen):
+            error(422, "invalid_product", "产品 ID/version 非法或重复")
+        seen.add(item["id"])
+    return items
+
+
+def batch_delete_service(payload, db):
+    if set(payload) != {"items"}:
+        error(422, "invalid_product", "必须仅提供 items")
+    items = product_versions(payload["items"])
+    try:
+        begin_write(db)
+        rows = []
+        for item in items:
+            product = db.get(LibraryProduct, item["id"])
+            outcome = "missing" if product is None else "stale" if product.version != item["version"] else "deleted"
+            if outcome == "deleted":
+                db.delete(product)
+            rows.append({**item, "outcome": outcome})
+        db.commit()
+        return {"items": rows, **{key: sum(row["outcome"] == key for row in rows) for key in ("deleted", "missing", "stale")}}
+    except SQLAlchemyError as exc:
+        database_error(db, exc, "product_save_failed")
 
 
 def manufacturers_service(db):

@@ -28,6 +28,158 @@ async function setup(page: Page) {
   return mock;
 }
 
+test("V1.1 combines filters, preserves cross-page selection and reports partial deletion", async ({ page }) => {
+  const mock = await setup(page);
+  const products = Array.from({ length: 21 }, (_, i) => ({ ...product, id: i + 1, model: `M${i + 1}`, name: `产品${i + 1}` }));
+  await page.route("**/api/product-library/products?*", route => {
+    const url = new URL(route.request().url()); const p = Number(url.searchParams.get("page"));
+    return route.fulfill({ json: { items: products.slice((p - 1) * 20, p * 20), total: 21, page: p, page_size: 20 } });
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(page.getByRole("cell", { name: "产品1", exact: true })).toBeVisible();
+  await page.getByLabel("选择本页", { exact: true }).check();
+  await expect(page.getByText("跨页已选 20 款", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "下一页", exact: true }).click();
+  await page.getByLabel("选择产品 21", { exact: true }).check();
+  await expect(page.getByText("跨页已选 21 款", { exact: true })).toBeVisible();
+  await page.route("**/api/product-library/products/batch-delete", async route => {
+    const items = route.request().postDataJSON().items;
+    expect(items).toHaveLength(21); expect(items[0]).toEqual({ id: 1, version: 1 });
+    await route.fulfill({ json: { items: items.map((item: { id: number; version: number }) => ({ ...item, outcome: item.id === 21 ? "stale" : "deleted" })), deleted: 20, missing: 0, stale: 1 } });
+  });
+  await page.getByRole("button", { name: "批量删除", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("21 款产品");
+  await page.getByRole("button", { name: "确定删除", exact: true }).click();
+  await expect(page.getByText("跨页已选 1 款", { exact: true })).toBeVisible();
+  await page.getByLabel("报价状态", { exact: true }).selectOption("quoted");
+  await expect(page.getByText("筛选条件已改变，已清除旧查询的选择")).toBeVisible();
+  await page.getByLabel("价格条件", { exact: true }).selectOption("between");
+  await page.getByLabel("最低价", { exact: true }).fill("10");
+  const request = page.waitForRequest(req => req.url().includes("price_max=20"));
+  await page.getByLabel("最高价", { exact: true }).fill("20");
+  const url = new URL((await request).url());
+  expect(url.searchParams.get("price_status")).toBe("quoted"); expect(url.searchParams.get("price_min")).toBe("10"); expect(url.searchParams.get("page")).toBe("1");
+  await mock.expectNoUnexpectedApi();
+});
+
+test("V1.1 side preview copies only customer fields and warns before sensitive text", async ({ page, context }) => {
+  const mock = await setup(page);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.route("**/api/product-library/products/1", route => route.fulfill({ json: { ...product, parameters: "采购价请核查\n3.7V", price_note: "SECRET_NOTE", manufacturer_name: "SECRET_SUPPLIER" } }));
+  await page.getByRole("button", { name: "查看", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveClass(/library-side-panel/);
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.getByRole("button", { name: "复制完整资料", exact: true }).click();
+  await expect(page.getByText("复制成功", { exact: true })).toHaveCount(0);
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "复制完整资料", exact: true }).click();
+  await expect(page.getByText("复制成功", { exact: true })).toBeVisible();
+  const copied = (await page.evaluate(() => navigator.clipboard.readText())).replace(/\r\n/g, "\n");
+  expect(copied).toContain("采购价请核查\n3.7V"); expect(copied).not.toContain("SECRET"); expect(copied).not.toContain("12.30");
+  await page.evaluate(() => { Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: () => Promise.reject(new Error("denied")) } }); });
+  await page.getByRole("button", { name: "复制卖点", exact: true }).click();
+  await expect(page.getByText("复制失败，请手动选择并复制资料")).toBeVisible();
+  await page.screenshot({ path: "test-results/product-library-v11-side.png", fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});
+
+test("V1.1 quotation retains manual prices, requires text review and recovers stale versions", async ({ page }) => {
+  const mock = await setup(page); let stale = true; let previews = 0;
+  await page.getByLabel("选择产品 1", { exact: true }).check();
+  const rules = { markup_mode: "none", markup_value: "0.00", tax_mode: "excluded", tax_value: "0.00", freight_mode: "separate", freight_value: "0.00", rounding: "cents" };
+  await page.route("**/api/product-library/customer-quotations/preview", async route => {
+    const body = route.request().postDataJSON(); previews++;
+    await route.fulfill({ json: { items: body.items, rules: { ...rules, ...body.rules }, digest: "controlled-digest", note: "以上报价为未税单价，税费另计。运费另计，金额以订单确认为准。", rows: [{ ...product, final_price: body.overrides["1"] ?? "12.30", manual: !!body.overrides["1"], risks: [], error: null, text_risks: [{ field: "parameters", word: "成本", snippet: "成本需核查" }] }] } });
+  });
+  await page.route("**/api/product-library/customer-quotations/export", async route => {
+    const body = route.request().postDataJSON(); expect(body.overrides).toEqual({ "1": "20.00" }); expect(body.confirmed_risk_ids).toEqual([1]); expect(body.confirmed_all_text).toBe(true);
+    if (stale) { stale = false; await route.fulfill({ status: 409, json: { code: "quotation_stale", message: "产品已变化，请重新预览", items: [{ id: 1, version: 1, reason: "stale" }] } }); }
+    else await route.fulfill({ contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: Buffer.from("controlled-xlsx-download") });
+  });
+  await page.getByRole("button", { name: "客户报价 Excel", exact: true }).click();
+  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await page.getByLabel("人工报价 1", { exact: true }).fill("20.00");
+  await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();
+  await page.getByLabel("加价方式").selectOption("percent");
+  await page.getByLabel("加价百分点（10表示10%）").fill("10");
+  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await expect(page.getByText("最终报价：20.00 · 人工报价")).toBeVisible();
+  await page.getByLabel("已核对全部客户可见产品文本").check();
+  await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();
+  await page.getByLabel("已逐项核查此产品客户文本", { exact: false }).check();
+  await page.getByRole("button", { name: "下载客户 Excel" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "需刷新并复核的产品" })).toBeVisible();
+  await expect(page.getByLabel("人工报价 1", { exact: true })).toHaveValue("20.00");
+  await page.route("**/api/product-library/products/1", route => route.fulfill({ json: { ...product, version: 2 } }));
+  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await page.getByLabel("已核对全部客户可见产品文本").check();
+  await page.getByLabel("已逐项核查此产品客户文本", { exact: false }).check();
+  const download = page.waitForEvent("download"); await page.getByRole("button", { name: "下载客户 Excel" }).click();
+  expect((await download).suggestedFilename()).toBe("客户报价.xlsx"); expect(previews).toBe(3);
+  await page.getByRole("button", { name: "恢复自动计算", exact: true }).click();
+  await expect(page.getByLabel("人工报价 1", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();
+  await page.screenshot({ path: "test-results/product-library-v11-quotation.png", fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});
+
+test("V1.1 dense 193+8 import keeps whole-batch actions visible across pages", async ({ page }) => {
+  const mock = await setup(page);
+  const rows: PreviewRow[] = [
+    ...Array.from({ length: 193 }, (_, i) => ({ ...previewRows[0], row_number: i + 2, model: `N${i}`, name: `普通产品${i}` })),
+    ...Array.from({ length: 8 }, (_, i) => ({ ...previewRows[2], row_number: i + 195 })),
+  ];
+  const receipt = { ...preview, rows, counts: { total_rows: 201, new: 193, existing: 0, conflict: 0, suspected: 0, invalid: 8, ignored_blank_rows: 0 } };
+  await page.route("**/api/product-library/imports/preview?*", route => route.fulfill({ status: 201, json: receipt }));
+  await page.route(`**/api/product-library/imports/${importId}/confirm`, async route => {
+    const choices = route.request().postDataJSON().decisions;
+    expect(choices).toHaveLength(201); expect(choices.filter((row: { action: string }) => row.action === "insert")).toHaveLength(193);
+    await route.fulfill({ json: { ...result, inserted: 193, updated: 0, skipped: 0, invalid: 8, rows: [] } });
+  });
+  await upload(page);
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator(".library-preview-row").first()).toContainText("第 195 行");
+  await expect(dialog.locator(".library-preview-row").nth(7)).toContainText("第 202 行");
+  await expect(dialog.getByLabel("第 195 行操作")).toBeDisabled();
+  await expect(dialog.locator(".library-preview-row").nth(8).locator("details")).not.toHaveAttribute("open");
+  const confirmButton = dialog.getByRole("button", { name: "确认导入", exact: true });
+  await expect(confirmButton).toBeInViewport();
+  await dialog.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(confirmButton).toBeInViewport();
+  await dialog.getByRole("button", { name: "下一页", exact: true }).click();
+  await expect(dialog.getByText("计划新增 193 · 更新 0 · 错误 8 · 合法跳过 0", { exact: true })).toBeVisible();
+  await expect(confirmButton).toBeInViewport();
+  await page.screenshot({ path: "test-results/product-library-v11-dense-import.png", fullPage: true });
+  await confirmButton.click();
+  await expect(dialog.getByText("导入完成：新增 193 · 更新 0 · 跳过 0 · 错误 8")).toBeVisible();
+  await mock.expectNoUnexpectedApi();
+});
+
+for (const scope of ["filtered", "all"]) test(`V1.1 stale ${scope} refresh preserves the original snapshot without adding new matches`, async ({ page }) => {
+  const mock = await setup(page); let previews = 0;
+  const rules = { markup_mode: "none", markup_value: "0.00", tax_mode: "excluded", tax_value: "0.00", freight_mode: "separate", freight_value: "0.00", rounding: "cents" };
+  await page.route("**/api/product-library/customer-quotations/preview", async route => {
+    const body = route.request().postDataJSON(); previews++;
+    if (previews === 1) expect(body.scope).toBe(scope);
+    else { expect(body.scope).toBe("selected"); expect(body.items).toEqual([{ id: 1, version: 2 }]); }
+    const items = previews > 1 && body.scope !== "selected" ? [{ id: 1, version: 2 }, { id: 2, version: 1 }] : [{ id: 1, version: previews > 1 ? 2 : 1 }];
+    await route.fulfill({ json: { items, rules, digest: "controlled-digest", note: "未税单价，运费另计。", rows: items.map(item => ({ ...product, ...item, name: item.id === 2 ? "不应混入的新产品" : product.name, final_price: "12.30", manual: false, risks: [], text_risks: [], error: null })) } });
+  });
+  await page.route("**/api/product-library/customer-quotations/export", route => route.fulfill({ status: 409, json: { code: "quotation_stale", message: "产品已变化，请重新预览", items: [{ id: 1, version: 1, reason: "stale" }] } }));
+  await page.getByRole("button", { name: "客户报价 Excel", exact: true }).click();
+  await page.getByLabel("导出范围", { exact: false }).selectOption(scope);
+  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await page.getByLabel("已核对全部客户可见产品文本").check();
+  await page.getByRole("button", { name: "下载客户 Excel" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "需刷新并复核的产品" })).toBeVisible();
+  await page.route("**/api/product-library/products/1", route => route.fulfill({ json: { ...product, version: 2 } }));
+  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await expect(page.getByText("不应混入的新产品")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();
+  expect(previews).toBe(2);
+  await mock.expectNoUnexpectedApi();
+});
+
 async function upload(page: Page) {
   await page.getByRole("button", { name: "批量导入", exact: true }).click();
   await page.getByRole("dialog").getByLabel("厂家名称").fill("厂家 A");
