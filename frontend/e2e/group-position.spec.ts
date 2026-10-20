@@ -471,7 +471,7 @@ test("competitor list and detail still expose offline and stopped group members"
   await expect(offline).toContainText("监控中");
   await expect(stopped).toContainText("在售");
   await expect(stopped).toContainText("已停止");
-  await offline.getByRole("button", { name: "详情", exact: true }).click();
+  await offline.getByRole("button", { name: "隔离商品 4", exact: true }).click();
   await expect(page.locator(".detail-page-header")).toContainText("竞品详情");
   await expect(page.locator(".detail-stat-grid")).toContainText("已下架");
   await mock.expectNoUnexpectedApi();

@@ -7,16 +7,16 @@ test("preserves monitoring expansion across page navigation and opens placeholde
 
   const monitoringToggle = page.getByRole("button", { name: "竞品监控", exact: true });
   await expect(monitoringToggle).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByRole("button", { name: "竞品监控大屏" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "主导航", exact: true }).getByRole("button", { name: "竞品监控大屏", exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "首页", exact: true }).click();
   await expect(page.getByRole("heading", { name: "首页", exact: true })).toBeVisible();
-  await expect(page.getByText("首页模块已预留")).toBeVisible();
+  await expect(page.getByRole("button", { name: "进入竞品监控大屏" })).toBeVisible();
   await expect(monitoringToggle).toHaveAttribute("aria-expanded", "true");
 
   await monitoringToggle.click();
   await expect(monitoringToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByRole("button", { name: "竞品监控大屏" })).toBeHidden();
+  await expect(page.getByRole("navigation", { name: "主导航", exact: true }).getByRole("button", { name: "竞品监控大屏", exact: true })).toBeHidden();
   await expect(monitoringToggle).toHaveAttribute("aria-expanded", "false");
 
   await page.route("**/api/product-library/products?*", route => route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } }));

@@ -4,6 +4,7 @@ import { createContext, Fragment, FormEvent, type Dispatch, type ReactNode, type
 
 import "./App.css";
 import "./CompetitorList.css";
+import "./Workspace.css";
 import { ProductLibrary } from "./ProductLibrary";
 
 type AddStatus = "initial" | "submitting" | "success" | "partial" | "failed" | "invalid" | "duplicate" | "server-error";
@@ -1068,41 +1069,50 @@ const monitoringPages = new Set<Page>(["dashboard", "own-products", "competitors
 const MonitoringNavigationContext = createContext<{ expanded: boolean; setExpanded: Dispatch<SetStateAction<boolean>> } | null>(null);
 
 export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: Page) => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  function closeMenu() { setMenuOpen(false); menuButton.current?.focus(); }
+  function selectPage(nextPage: Page) { setMenuOpen(false); onNavigate(nextPage); }
   const monitoringActive = monitoringPages.has(page);
   const navigationState = useContext(MonitoringNavigationContext);
   const [localExpanded, setLocalExpanded] = useState(monitoringActive);
   const monitoringExpanded = navigationState?.expanded ?? localExpanded;
   const setMonitoringExpanded = navigationState?.setExpanded ?? setLocalExpanded;
   useEffect(() => { if (monitoringActive) setMonitoringExpanded(true); }, [monitoringActive, setMonitoringExpanded]);
-  return <aside className="sidebar">
+  return <aside className={"sidebar workspace-sidebar" + (menuOpen ? " workspace-menu-open" : "")} onKeyDown={(event) => { if (event.key === "Escape" && menuOpen) { event.preventDefault(); closeMenu(); } }}>
     <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>工作提效工具集</span></div></div>
+    <button type="button" ref={menuButton} className="workspace-menu-toggle" aria-expanded={menuOpen} aria-controls="workspace-navigation" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? "收起导航" : "展开导航"}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d={menuOpen ? "m6 6 12 12M6 18 18 6" : "M4 6h16M4 12h16M4 18h16"} /></svg></button>
+    <div id="workspace-navigation" className="workspace-navigation">
     <nav aria-label="主导航">
-      <button className={"nav-item" + (page === "home" ? " nav-active" : "")} onClick={() => onNavigate("home")} aria-current={page === "home" ? "page" : undefined}><NavIcon name="home" />首页</button>
+      <button className={"nav-item" + (page === "home" ? " nav-active" : "")} onClick={() => selectPage("home")} aria-current={page === "home" ? "page" : undefined}><NavIcon name="home" />首页</button>
+      <p className="nav-section-label">工作工具</p>
+      <button className={"nav-item" + (page === "product-library" ? " nav-active" : "")} onClick={() => selectPage("product-library")} aria-current={page === "product-library" ? "page" : undefined}><NavIcon name="library" />产品库</button>
       <div className={"nav-group" + (monitoringExpanded ? "" : " nav-group-collapsed")}>
         <button type="button" className={"nav-group-title" + (monitoringActive ? " nav-group-title-current" : "")} onClick={() => setMonitoringExpanded((expanded) => !expanded)} aria-expanded={monitoringExpanded} aria-controls="competitor-monitoring-nav"><NavIcon name="monitoring" />竞品监控<span className="nav-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 14 4-4 4 4" /></svg></span></button>
         <div className="nav-group-children" id="competitor-monitoring-nav" hidden={!monitoringExpanded}>
-          <button className={"nav-item nav-child" + (page === "dashboard" ? " nav-active" : "")} onClick={() => onNavigate("dashboard")} aria-current={page === "dashboard" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
-          <button className={"nav-item nav-child" + (page === "own-products" ? " nav-active" : "")} onClick={() => onNavigate("own-products")} aria-current={page === "own-products" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />我方商品</button>
-          <button className={"nav-item nav-child" + (page === "competitors" || page === "detail" ? " nav-active" : "")} onClick={() => onNavigate("competitors")} aria-current={page === "competitors" || page === "detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品列表</button>
-          <button className={"nav-item nav-child" + (page === "groups" || page === "group-detail" ? " nav-active" : "")} onClick={() => onNavigate("groups")} aria-current={page === "groups" || page === "group-detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品分组</button>
-          <button className={"nav-item nav-child" + (page === "collection-tasks" ? " nav-active" : "")} onClick={() => onNavigate("collection-tasks")} aria-current={page === "collection-tasks" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />采集记录</button>
+          <button className={"nav-item nav-child" + (page === "dashboard" ? " nav-active" : "")} onClick={() => selectPage("dashboard")} aria-current={page === "dashboard" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品监控大屏</button>
+          <button className={"nav-item nav-child" + (page === "own-products" ? " nav-active" : "")} onClick={() => selectPage("own-products")} aria-current={page === "own-products" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />我方商品</button>
+          <button className={"nav-item nav-child" + (page === "competitors" || page === "detail" ? " nav-active" : "")} onClick={() => selectPage("competitors")} aria-current={page === "competitors" || page === "detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品列表</button>
+          <button className={"nav-item nav-child" + (page === "groups" || page === "group-detail" ? " nav-active" : "")} onClick={() => selectPage("groups")} aria-current={page === "groups" || page === "group-detail" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />竞品分组</button>
+          <button className={"nav-item nav-child" + (page === "collection-tasks" ? " nav-active" : "")} onClick={() => selectPage("collection-tasks")} aria-current={page === "collection-tasks" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />采集记录</button>
         </div>
       </div>
-      <button className={"nav-item" + (page === "product-library" ? " nav-active" : "")} onClick={() => onNavigate("product-library")} aria-current={page === "product-library" ? "page" : undefined}><NavIcon name="library" />产品库</button>
-      <button className={"nav-item" + (page === "ai-assistant" ? " nav-active" : "")} onClick={() => onNavigate("ai-assistant")} aria-current={page === "ai-assistant" ? "page" : undefined}><NavIcon name="assistant" />AI智能助手</button>
-      <button className={"nav-item" + (page === "price-compare" ? " nav-active" : "")} onClick={() => onNavigate("price-compare")} aria-current={page === "price-compare" ? "page" : undefined}><NavIcon name="compare" />全网比价</button>
-      <button className={"nav-item" + (page === "auto-inquiry" ? " nav-active" : "")} onClick={() => onNavigate("auto-inquiry")} aria-current={page === "auto-inquiry" ? "page" : undefined}><NavIcon name="inquiry" />自动询价</button>
-      <button className={"nav-item" + (page === "auto-listing" ? " nav-active" : "")} onClick={() => onNavigate("auto-listing")} aria-current={page === "auto-listing" ? "page" : undefined}><NavIcon name="listing" />自动上架</button>
-      <button className={"nav-item" + (page === "settings" ? " nav-active" : "")} onClick={() => onNavigate("settings")} aria-current={page === "settings" ? "page" : undefined}><NavIcon name="settings" />系统设置</button>
+      <p className="nav-section-label nav-section-planned">规划工具<span>规划中</span></p>
+      <button className={"nav-item" + (page === "ai-assistant" ? " nav-active" : "")} onClick={() => selectPage("ai-assistant")} aria-current={page === "ai-assistant" ? "page" : undefined}><NavIcon name="assistant" />AI智能助手</button>
+      <button className={"nav-item" + (page === "price-compare" ? " nav-active" : "")} onClick={() => selectPage("price-compare")} aria-current={page === "price-compare" ? "page" : undefined}><NavIcon name="compare" />全网比价</button>
+      <button className={"nav-item" + (page === "auto-inquiry" ? " nav-active" : "")} onClick={() => selectPage("auto-inquiry")} aria-current={page === "auto-inquiry" ? "page" : undefined}><NavIcon name="inquiry" />自动询价</button>
+      <button className={"nav-item" + (page === "auto-listing" ? " nav-active" : "")} onClick={() => selectPage("auto-listing")} aria-current={page === "auto-listing" ? "page" : undefined}><NavIcon name="listing" />自动上架</button>
+      <button className={"nav-item" + (page === "settings" ? " nav-active" : "")} onClick={() => selectPage("settings")} aria-current={page === "settings" ? "page" : undefined}><NavIcon name="settings" />系统设置</button>
     </nav>
-    <div className="sidebar-note"><strong>让工作更高效</strong><span>v1.0.0</span></div>
+    </div>
+    <div className="sidebar-note"><strong>个人工作台</strong><span>商品资料与竞争情报</span></div>
   </aside>;
 }
 
 function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
   const monitoringPage = monitoringPages.has(page);
-  return <div className={`app-shell${page === "settings" ? " settings-shell" : ""}${page === "group-detail" ? " group-detail-shell" : ""}`}><Sidebar page={page} onNavigate={onNavigate} /><main className={`main-content${page === "dashboard" ? " main-content-dashboard" : ""}`} data-page={page}>
-    <div className="workspace-header"><div className="breadcrumb">个人工作台 <span>/</span>{monitoringPage && <>竞品监控 <span>/</span></>}<strong>{breadcrumb}</strong></div></div>
+  return <div className={`app-shell workspace-shell${page === "settings" ? " settings-shell" : ""}${page === "group-detail" ? " group-detail-shell" : ""}`}><a className="workspace-skip" href="#workspace-main">跳至主内容</a><Sidebar page={page} onNavigate={onNavigate} /><main id="workspace-main" tabIndex={-1} className={`main-content${page === "dashboard" ? " main-content-dashboard" : ""}`} data-page={page}>
+    <div className="workspace-header"><nav className="breadcrumb" aria-label="当前位置"><button type="button" onClick={() => onNavigate("home")}>个人工作台</button><span aria-hidden="true">/</span>{monitoringPage && <><button type="button" aria-label="返回模块总览" onClick={() => onNavigate("dashboard")}>竞品监控</button><span aria-hidden="true">/</span></>}<strong aria-current="page">{breadcrumb}</strong></nav></div>
     {children}
   </main></div>;
 }
@@ -2089,8 +2099,37 @@ export function WorkspacePlaceholderPage({ page, title, description, note, icon,
 }
 
 export function HomePage({ onNavigate }: { onNavigate: (page: Page) => void }) {
-  return <WorkspacePlaceholderPage page="home" title="首页" description="个人工作台总览与快捷入口。" note="后续将在这里汇总竞品监控、全网比价、自动询价和自动上架等模块的关键状态与快捷入口。" icon="home" onNavigate={onNavigate} />;
+  return <AppShell page="home" breadcrumb="首页" onNavigate={onNavigate}>
+    <div className="workspace-home">
+      <header className="home-heading"><h1>首页</h1><p>从商品资料，到竞争判断。</p><span>整理产品信息，跟进竞品变化，在一个工作台开始日常工作。</span></header>
+      <div className="home-workspaces">
+        <section className="home-monitoring" aria-labelledby="home-monitoring-title">
+          <div className="home-tool-heading"><NavIcon name="monitoring" /><span>竞争情报</span></div>
+          <h2 id="home-monitoring-title">先看变化，再查证据</h2>
+          <p>从今日关注的商品组开始，进入组内比较，回到单品查看价格、库存与变化记录。</p>
+          <button type="button" className="primary-button" onClick={() => onNavigate("dashboard")}>进入竞品监控大屏</button>
+          <div className="home-monitoring-links" aria-label="竞品监控快捷入口">
+            <button type="button" onClick={() => onNavigate("own-products")}><strong>我方商品</strong><span>管理监控与分组</span><HomeArrow /></button>
+            <button type="button" onClick={() => onNavigate("competitors")}><strong>竞品列表</strong><span>查找商品与证据</span><HomeArrow /></button>
+            <button type="button" onClick={() => onNavigate("groups")}><strong>竞品分组</strong><span>组织同组商品比较</span><HomeArrow /></button>
+            <button type="button" onClick={() => onNavigate("collection-tasks")}><strong>采集记录</strong><span>核查采集过程与结果</span><HomeArrow /></button>
+          </div>
+        </section>
+        <section className="home-library" aria-labelledby="home-library-title">
+          <div className="home-tool-heading"><NavIcon name="library" /><span>商品资料</span></div>
+          <h2 id="home-library-title">让产品资料有处可查</h2>
+          <p>集中整理产品与厂家信息，查找规格、图片和报价资料，为后续工作准备可靠依据。</p>
+          <button type="button" className="secondary-button" onClick={() => onNavigate("product-library")}>打开产品库</button>
+          <div className="home-library-guide"><strong>从资料开始</strong><p>已有产品？进入产品库搜索查看。<br />需要整理新资料？在产品库导入并核对。</p></div>
+        </section>
+      </div>
+      <section className="home-task-section" aria-labelledby="home-task-title"><div><h2 id="home-task-title">开始之前</h2><p>让监控商品正确识别我方身份。</p></div><button type="button" className="home-settings-link" onClick={() => onNavigate("settings")}><NavIcon name="settings" /><span><strong>配置我方店铺与采集策略</strong><small>前往系统设置</small></span><HomeArrow /></button></section>
+      <section className="home-planned" aria-labelledby="home-planned-title"><div><h2 id="home-planned-title">后续工具</h2><span>规划中，尚未开放</span></div><ul><li>AI智能助手</li><li>全网比价</li><li>自动询价</li><li>自动上架</li></ul></section>
+    </div>
+  </AppShell>;
 }
+
+function HomeArrow() { return <svg className="home-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" /></svg>; }
 
 
 type AddInputSummary = { total: number; candidate_total: number | null; processed: number; remaining: number; pending: number; added: number; business_rejected: number; technical_failed: number; verification_required: number; interrupted: number; not_executed: number; anomaly_inputs: number };

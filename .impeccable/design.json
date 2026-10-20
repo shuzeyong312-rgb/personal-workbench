@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-20T12:07:11.7885211+08:00",
+  "title": "Design System: Personal Workbench",
+  "extensions": {
+    "shadows": [],
+    "motion": [
+      { "name": "home-action", "value": "background-color 140ms ease-out, border-color 140ms ease-out", "purpose": "首页操作反馈；reduced-motion 时取消过渡。" }
+    ],
+    "breakpoints": [
+      { "name": "home-compact-columns", "value": "1100px" },
+      { "name": "navigation-collapse", "value": "760px" }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "overview": "已实现首页与 Shell 的摘要；docs/ui-system.md 为最终视觉权威。中性浅灰、白色表面、石墨文字与克制品牌蓝，以文字和分隔线组织任务。",
+    "keyCharacteristics": ["任务入口", "克制表面", "明确导航层级"],
+    "dos": ["遵循 UI System 与业务 Feature Spec", "明确区分可用工具与规划工具"],
+    "donts": ["首页不展示模拟 KPI", "不将局部首页规则强加给业务页面", "不加载新字体或动画依赖"]
+  }
+}

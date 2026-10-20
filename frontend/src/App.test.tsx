@@ -1270,7 +1270,10 @@ test("renders workspace module placeholders", () => {
   const compare = renderToStaticMarkup(<WorkspacePlaceholderPage page="price-compare" title="全网比价" description="比价" note="待实现" icon="compare" onNavigate={noop} />);
   const collectionTasks = renderToStaticMarkup(<CollectionTasksPage onNavigate={noop} />);
   expect(home).toContain("<h1>首页</h1>");
-  expect(home).toContain("首页模块已预留");
+  expect(home).toContain("先看变化，再查证据");
+    expect(home).toContain("打开产品库");
+    expect(home).toContain("规划中，尚未开放");
+    expect(home).not.toContain("首页模块已预留");
   expect(compare).toContain("<h1>全网比价</h1>");
   expect(compare).toContain("全网比价模块已预留");
   expect(collectionTasks).toContain("<h1>采集记录</h1>");
