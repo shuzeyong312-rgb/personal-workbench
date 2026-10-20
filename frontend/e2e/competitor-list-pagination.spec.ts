@@ -9,6 +9,17 @@ async function openCompetitorList(page: Page) {
   await expect(page.getByText("共 23 个竞品").first()).toBeVisible();
 }
 
+test("opens competitor details from its title with no operations column", async ({ page }) => {
+  const mock = await installApiMock(page, { competitors: competitors23 });
+  await openCompetitorList(page);
+  await expect(page.getByRole("columnheader", { name: "操作", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "搜索目标竞品 01", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "竞品详情", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "返回竞品列表", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "竞品列表", exact: true })).toBeVisible();
+  await mock.expectNoUnexpectedApi();
+});
+
 test("A: paginates 23 competitors with correct boundaries and rows", async ({ page }) => {
   const mock = await installApiMock(page, { competitors: competitors23 });
   await openCompetitorList(page);

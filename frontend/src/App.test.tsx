@@ -295,12 +295,12 @@ test("real-time filtering keeps visible active selections and removes hidden sel
   expect(reconcileSelectedIds(new Set([10, 11]), [10])).toEqual(new Set([10]));
 });
 
-test("renders an accessible search input without a duplicate external label", () => {
+test("renders an accessible search input with the competitor workspace label", () => {
   const html = renderToStaticMarkup(<ListPage {...listProps} groups={filterGroups} competitors={filterCompetitorFixtures} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(html).toContain('id="search"');
   expect(html).toContain('aria-label="搜索商品名称 / offerId / 店铺"');
   expect(html).toContain('placeholder="搜索商品名称 / offerId / 店铺"');
-  expect(html).not.toContain('<label for="search">');
+  expect(html).toContain('<label for="search">搜索竞品</label>');
   expect(html).toContain('<button type="button" class="text-button">重置</button>');
   expect(html).toContain('value="active"');
   expect(html).toContain('value="offline"');
@@ -447,7 +447,9 @@ test("list keeps lifecycle actions out of the row", () => {
   const inactive = { ...competitor, is_active: false, title: "已停止商品" };
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[inactive]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
   expect(list).toContain("已停止");
-  expect(list).toContain(">详情</button>");
+  expect(list).toContain('class="competitor-title-link"');
+  expect(list).not.toContain(">详情</button>");
+  expect(list).not.toContain("<th>操作</th>");
   expect(list).not.toContain("更多");
   expect(list).not.toContain("删除竞品");
   expect(list).not.toMatch(/aria-label="选择 已停止商品"[^>]*disabled=""/);
@@ -473,8 +475,8 @@ test("keeps product and monitoring status in separate list columns", () => {
   expect(html).toContain("已下架");
   expect(html).toContain("监控中");
   expect(html).toContain("已停止");
-  expect((html.match(/<th(?:\s|>)/g) ?? [])).toHaveLength(11);
-  expect((html.match(/<td(?:\s|>)/g) ?? [])).toHaveLength(22);
+  expect((html.match(/<th(?:\s|>)/g) ?? [])).toHaveLength(10);
+  expect((html.match(/<td(?:\s|>)/g) ?? [])).toHaveLength(20);
 });
 
 test("does not keep completed collection messages in either product list", () => {
@@ -1200,11 +1202,15 @@ test("renders batch state with the dashboard collection action", () => {
   expect(addLinks).toContain("页面访问 1 · 未知 0");
 });
 
-test("renders detail entry actions on dashboard and competitor list", () => {
+test("opens competitor details from the product title", () => {
   const dashboard = renderDashboard();
   const list = renderToStaticMarkup(<ListPage {...listProps} competitors={[competitor]} status="ready" error={null} onRetry={noop} onAdd={noop} onOpenDetail={noop} />);
   expect(dashboard).toContain("进入组分析");
-  expect(list).toContain(">详情<");
+  expect(list).toContain('class="competitor-title-link"');
+  expect(list).toContain(">未采集</button>");
+  const ownList = renderToStaticMarkup(<ListPage {...listProps} ownership="self" competitors={[competitor]} status="ready" error={null} onRetry={noop} onAdd={noop} onOpenDetail={noop} />);
+  expect(ownList).toContain(">详情</button>");
+  expect(ownList).toContain("<th>操作</th>");
 });
 
 test.each([
@@ -1355,7 +1361,7 @@ test("renders group page loading, error, full empty, unassigned and normal state
   expect(normal).toContain("¥34.00 ~ ¥40.00");
   expect(normal).toContain("更多");
   expect(normal).toContain('class="group-directory-name"');
-  expect(normal).not.toContain(">组分析</button>");
+  expect(normal).toContain(">组分析</button>");
   expect(normal).toContain('class="filter-card group-directory-toolbar"');
   expect(normal).toContain('class="filter-field filter-search"');
   expect(normal).toContain("清除筛选");

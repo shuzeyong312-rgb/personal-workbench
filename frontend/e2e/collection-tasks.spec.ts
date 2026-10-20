@@ -112,8 +112,17 @@ test("one task table opens final product results and authentic attempt history",
   await expect(page.locator(".record-table tbody tr")).toContainText("5分10秒");
   await page.setViewportSize({ width: 1680, height: 1000 });
   await page.screenshot({ path: acceptanceScreenshot(testInfo, "collection-records.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.locator(".record-table")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("collection-records-390.png"), fullPage: true });
+  await page.setViewportSize({ width: 1680, height: 1000 });
   await page.getByRole("button", { name: "查看详情", exact: true }).click();
   await expect(page.getByRole("heading", { name: "批次详情", exact: true })).toBeVisible();
+  const summaryMetrics = page.getByRole("region", { name: "批次汇总" }).locator(".record-metric");
+  await expect(summaryMetrics.nth(3)).toHaveClass(/record-metric-neutral/);
+  await expect(summaryMetrics.nth(4)).toHaveClass(/record-metric-purple/);
+  await expect(summaryMetrics.nth(6)).toHaveClass(/record-metric-orange/);
   for (const title of batchItems.slice(0, 5).map(row => row.title)) await expect(page.getByText(title, { exact: true })).toBeVisible();
   await expect(page.getByText("商品已删除", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /展开/ })).toHaveCount(6);

@@ -27,33 +27,33 @@
 
 ## 2. 已确认的视觉方向
 
-当前视觉方向已经冻结，不再主动探索新风格。
+竞品列表视觉升级以 [V1.3 Spec](specs/competitor-list-visual-v1.3.md) 覆盖旧有蓝紫雾感、渐变和轻毛玻璃默认值。当前代码已迁移 App Shell 与竞品列表；其它页面按各自 Reference 逐页迁移前，不视为已换肤。V1.2 的列表结构和业务行为继续有效。
 
 关键词：
 
-> 浅色高级感 / 蓝紫雾感 / 柔和渐变 / 轻毛玻璃 / 清爽 SaaS / 中等信息密度 / 精致但克制
+> 中性浅灰 / 稳定白色表面 / 石墨文字 / 克制品牌蓝 / 高密度可扫描 / 精致但克制
 
 ### 2.1 背景
 
-- 整体为非常浅的冷白、淡蓝、淡紫雾感背景；
-- 可以存在柔和的大面积渐变光晕；
-- 背景只负责营造空间感，不与正文抢视觉；
-- 禁止高饱和大面积渐变、赛博朋克、纯深色大底。
+- 工作区使用中性浅灰背景，内容表面使用清晰白色；
+- 背景和导航不使用渐变、光晕、毛玻璃或装饰纹样；
+- 白色表面、细边线、留白、文字层级和对齐负责建立空间关系；
+- 禁止将蓝紫色雾感背景恢复为默认，禁止高饱和大面积渐变、赛博朋克和纯深色大底。
 
 ### 2.2 卡片
 
-- 主体内容使用白色或近白色半透明卡片；
-- 允许轻毛玻璃质感；
-- 使用非常轻的描边、柔和阴影和适度背景模糊；
-- 数据密集区域优先可读性，透明度不能过高；
-- 统计卡片可加入轻微局部渐变或柔和色彩光晕。
+- 主体内容使用白色不透明表面；
+- 以清晰细边线区分工作区和内容，不默认使用投影或模糊；
+- 数据密集区域优先可读性，表头与行分隔使用中性灰阶；
+- 统计项优先使用数字层级和分隔带，不默认增加独立卡片。
+- 同一视口避免连续嵌套卡片；优先用留白、分隔线和标题层级区分内容。
 
 ### 2.3 色彩
 
 主色：
 
-- 蓝色 / 电光蓝作为主要操作色和选中态；
-- 蓝紫可作为辅助科技感颜色。
+- 品牌蓝作为主要操作、链接、焦点和选中态；
+- 不再使用蓝紫作为装饰性科技色。
 
 辅助语义色：
 
@@ -77,6 +77,10 @@
 - 表格正文保持可快速扫描；
 - 不使用装饰性字体。
 
+沿用全局 `Noto Sans SC`、`Microsoft YaHei` 和系统无衬线回退，不从 CDN 加载字体。字号按 12 / 13 / 14 / 16 / 20 / 28 / 32px 建立层级，正文行高约 1.5，标题行高 1.2–1.35；中英文混排使用同一字体栈。金额、计数、库存、百分比和日期使用 `font-variant-numeric: tabular-nums`。未知值显示 `—`，不得格式化成 0。
+
+当前迁移页面采用 Token：画布 `#f3f4f6`、白色表面 `#ffffff`、浅表面 `#f6f7f8`、石墨文字 `#20242c`、次级文字 `#626b78`、边线 `#dde1e6`、操作蓝 `#2563eb`。成功绿 `#19805c`、提醒橙 `#d88332`、错误红 `#b04e5d` 作为语义色延续。尚未迁移的页面可能仍引用旧局部色值，迁移前核对该页 CSS；状态色必须配合文字或图标。
+
 ---
 
 ## 3. 全局页面骨架
@@ -93,9 +97,11 @@
 主内容区
 ```
 
-主内容区使用统一留白、圆角和卡片间距。
+主内容区使用统一留白和细边线。迁移页面采用白色表面与中性灰画布；圆角只区分控件和对话框，不以卡片重复制造层级。
 
 V1 不单独设计完整移动端系统，只保证基础响应式不崩坏。
+
+复用 `.main-content` 的最大宽度与流式内边距，不为单页叠加固定宽度容器。沿用 4 / 8 / 12 / 16 / 24 / 32px 间距刻度。按任务选结构：总览先呈现待处理信息，列表突出筛选和表格，详情按事实层次组织；不要让每个信息组都变成相同卡片。窄屏优先重排和换行，关键文案、状态及操作不得被裁切。
 
 ---
 
@@ -154,7 +160,7 @@ V1 不单独设计完整移动端系统，只保证基础响应式不崩坏。
 - 页面标题；
 - 一句简短页面说明；
 - 右侧主要操作；
-- 全局搜索 / 通知 / 用户入口可保留在统一位置。
+- 只在全局搜索、通知或用户入口已有实际功能时显示；不展示无行为的占位装饰。
 
 面包屑用于表达：
 
@@ -198,6 +204,10 @@ V1 优先统一：
 新页面优先组合现有组件。
 
 不要因为单个页面需求重新创建一套 Button / Card / Table / Badge 风格。
+
+主要、次要、危险按钮的视觉层级保持一致；Input / Select 保留可见标签、禁用态和焦点态；表格数字按列对齐，行高适合连续扫描；Badge 的文字说明与颜色并存。Dialog / Drawer 必须保持键盘可达并将焦点放在合理位置；Loading / Empty / Error 状态应给出真实状态或可执行的下一步。先复用原生控件和现有 CSS，不为单页引入组件库。
+
+延用现有尺寸基线：紧凑控件约 32px、常规控件 36–40px；输入框和按钮使用约 8px 圆角，内容卡片约 12px，Dialog 约 16px，状态 Badge 保持胶囊形。表格正文约 13px、辅助字段约 11–12px，垂直内边距通常 10–12px。只在新控件无法对应这些基线时才扩展尺寸。
 
 ---
 
@@ -359,7 +369,7 @@ PageHeader + 新增竞品组
 紧凑竞品组卡片 Grid（组名使用商品型号）
 ```
 
-卡片复用现有白色/近白卡片、蓝紫雾感背景、中等圆角和轻阴影，展示竞品数量、监控中、竞品价格区间、今日变化和最近变化。卡片提供组分析、查看竞品与更多操作，并展示我方基准的绑定/未绑定事实；未分组是 `group_id = NULL` 的虚拟分类，只在存在未分组竞品时显示，并只提供查看竞品。
+分组页面当前仍遵守其已实施布局；后续视觉迁移使用中性画布、白色表面和分隔线，不沿用蓝紫雾感背景或重复阴影。卡片展示竞品数量、监控中、竞品价格区间、今日变化和最近变化，提供组分析、查看竞品与更多操作，并展示我方基准的绑定/未绑定事实；未分组是 `group_id = NULL` 的虚拟分类，只在存在未分组竞品时显示，并只提供查看竞品。
 
 ---
 
@@ -502,7 +512,7 @@ V1 使用简单趋势图。
 - 坐标轴弱化；
 - Tooltip 简洁；
 - 蓝 / 绿 / 紫 / 橙等色彩语义在同一产品内保持一致；
-- 图表卡片与其他卡片使用相同圆角和阴影体系。
+- 图表表面使用白底和细边线；不以阴影或渐变区分图表类型。
 
 不使用复杂 3D 图表或装饰性图形。
 
@@ -524,7 +534,7 @@ medium
 large
 ```
 
-整体视觉偏柔和、大圆角，但不能过度卡通。
+控件采用小圆角，内容表面以边线和留白建立层级；避免所有元素套用同一大圆角。
 
 具体 token 在正式前端初始化时集中定义。
 
@@ -559,6 +569,8 @@ large
 - 复杂背景动画；
 - 炫技型交互。
 
+Hover / Focus / Active 过渡通常为 120–180ms，Dialog / Drawer 进出通常为 160–220ms，使用短促的 ease-out 进入与 ease-in 退出。只动画用户触发且能帮助理解的状态变化；结束后内容、语义状态和焦点必须正确。新增动效应提供 `prefers-reduced-motion: reduce` 回退，持续 Loading 在减少动态效果时显示静态状态。
+
 ---
 
 ## 17. AI / Codex 前端开发约束
@@ -569,7 +581,7 @@ AI / Codex 开发 UI 时必须：
 2. 判断当前页面属于哪一种 Reference Page；
 3. 优先复用已有布局和基础组件；
 4. 保持左侧导航、顶部区域和视觉 token 一致；
-5. 不自行引入新的主色、圆角、spacing 或阴影体系；
+5. 复用本文件的中性色、品牌蓝、控件圆角和 spacing；
 6. 不因为单页需求重做全局视觉；
 7. 不把示例图中的示例数据当成业务规则；
 8. 页面业务字段以对应 Feature Spec 为准。
@@ -582,7 +594,7 @@ AI / Codex 开发 UI 时必须：
 
 ## 18. 与 frontend-design Skill 的关系
 
-frontend-design 负责提高具体实现的视觉质量。
+各 Skill 只提供按需调用的方法，不创建第二套 UI 规范。`frontend/AGENTS.md` 是任务路由入口；新页面可由 UI UX Pro Max 提供方向，已有页面精修可由 Impeccable 主导，复杂动效由 Emil Design Engineering 主导，通用实现由 frontend-design 主导。一个具体设计决策只选一个主导 Skill。
 
 但优先级始终是：
 
@@ -593,10 +605,12 @@ Reference Page
 ↓
 已有组件
 ↓
-frontend-design
+本任务选定的单一 Skill
 ```
 
-frontend-design 不拥有重新定义产品视觉体系的权限。
+任何 Skill 都无权重新定义产品视觉体系；与本文件冲突时须显式指出并以本文件为准。
+
+React 数据流、渲染或性能改动按需使用 `.agents/skills/react-best-practices`；纯后端工作不加载前端 Skills。Emil Design Engineering 仅用于动效设计、复杂交互或动画审查，不要求普通 hover / focus 状态加载。无需为普通反馈引入动画依赖。
 
 ---
 
@@ -699,3 +713,29 @@ Reference Page 中出现的：
 - `docs/reference-ui/competitor-detail.png`：Detail Reference Page。
 
 这些图片是视觉参考，不是业务数据来源。实现页面时同时遵守本文件和对应 Reference Page；图片中的商品、价格、数量、日期等均为示例数据，不得写死到产品中。
+
+---
+
+## 24. 前端验收与 Skill 记录
+
+实施前确认页面 Reference 与业务 Spec。交付前按改动风险核验设计一致性、字体和数据层级、响应式布局、焦点与键盘交互、颜色之外的状态语义、减少动态效果、原有路由/API/操作流程，以及相关 TypeScript、构建、测试和真实浏览器截图。视觉明显变化时检查目标页面在桌面和窄屏的实际表现；截图不替代业务回归。
+
+当前 Codex 项目 Skill 核验记录（2026-10-19）：
+
+- `frontend-design`：路径 `.agents/skills/frontend-design/`；上游 `anthropics/skills/skills/frontend-design`；随本地项目提交 `99abcb5b6475bf36cbc439935b5775f921b272e0` 引入。Skill 文件没有上游版本或提交号，`skills-lock.json` 也未追踪它，因此无法从仓库证明其精确上游修订；保持现有文件，不重复安装。
+- `react-best-practices`：路径 `.agents/skills/react-best-practices/`；上游 `vercel-labs/agent-skills/skills/react-best-practices`；元数据版本 `1.0.0`；随本地项目提交 `99abcb5b6475bf36cbc439935b5775f921b272e0` 引入。`skills-lock.json` 未追踪该 Skill；该提交是本地引入记录，不是上游 pin。当前项目是 React 19 + Vite，因此仅在 React 渲染、数据流或性能任务中加载。
+- 上游核验提交（2026-10-19）：UI UX Pro Max `56ea9cf174ed86786187daa9de0e6247cb0747e4`；Impeccable `0665bd812ae0908fcab17b96fd4f840defb882d9`；Emil Skills `2d228630ba1446365f614a108cb8252f1feda202`。记录的是安装核验时的上游提交，不是自动更新机制。
+- UI UX Pro Max：已安装到 `.agents/skills/ui-ux-pro-max/`，来自 `nextlevelbuilder/ui-ux-pro-max-skill`，安装 CLI `ui-ux-pro-max-cli` 版本 `2.15.0`；实际检索数据与脚本随 Skill 文件安装。本轮通过 `scripts/search.py ... --design-system` 对 Dashboard 执行两次检索，均识别为 Real-Time / Operations 页面并建议暗色 OLED、Fira 字体、landing-page 结构。该输出已实际调用，但与既有浅色工作台、中文字体栈和业务页面职责冲突，不能直接采纳；可以从“真实状态与时间戳、错误可见、键盘和 reduced motion”约束中选择性借鉴。
+- Impeccable：已安装到 `.agents/skills/impeccable/`，来自官方 `pbakaus/impeccable` Codex 构建目录、提交 `0665bd812ae0908fcab17b96fd4f840defb882d9`；Skill metadata 版本 `4.6.0`，附带引擎 `scripts/VERSION` 为 `0.1.15`。官方 `npx impeccable install --providers=codex --scope=project --no-hooks --yes` 下载超时后，使用该提交内 Codex 目录的 62 个文件完成项目级安装；未复制 Hook，`.codex/hooks.json` 不存在。只读分析读取了 critique、layout、typeset 指引及 `docs/PRODUCT.md`、Dashboard JSX/CSS 和 POC 截图。`scripts/impeccable.cmd context --target frontend/src/App.tsx` 实际尝试后，Windows 启动器报告 `discard_staging` 标签错误且无法下载引擎；CLI context / detector 未验证。按 Skill 降级指引直接读取可用项目材料完成手工审查。
+- Emil Design Engineering：从官方 `emilkowalski/skills` 提交 `2d228630ba1446365f614a108cb8252f1feda202` 的 Web 相关项目 Skills 安装至 `.agents/skills/`：`emil-design-eng/`、`animate/`、`find-animation-opportunities/`、`review-animations/`。该仓库未提供可据此锁定的独立版本号，以上游提交标识来源。只读读取四项 Skill 的规则，并基于 ProductLibrary 当前选择、抽屉及导入预览交互给出三个微交互建议；没有修改业务页面。
+- 清理结果：UI UX Pro Max CLI 曾额外放入 `banner-design`、`brand`、`design`、`design-system`、`slides`、`ui-styling`；已从项目移除，并用 `npx skills list --agent codex --json` 确认不再注册。Skills CLI 移除结束时 Node/libuv 打印退出断言，但最终目录及注册清单均已核实干净。Skills CLI 为临时 `npx` 工具，未改前端依赖清单或引入运行时依赖。
+- Vercel React Best Practices：保留当前项目版本，不新增副本。项目是 React 19 + Vite，规则中部分 Next.js 服务端建议不适用；仅在 React 渲染、数据流、客户端取数或性能任务中读取相关规则。
+
+真实调用只读验证（2026-10-19）：
+
+- **UI UX Pro Max — 两个可执行方向：**①「运营扫描台」沿用冷白和蓝色语义，将四项 KPI 收紧为单行指标带；关注商品组作为唯一主内容，采集与趋势组成不对称次级区，并让真实状态/更新时间清晰可扫。②「编辑式工作区」减少重复面板边框，以标题、分隔线和行距组织关注组；Header 操作与店铺上下文收成工具行，数据数字使用现有 tabular 数字规则。两者均遵守本文件，不采用检索输出的 dark OLED、Fira/Google Fonts 或营销落地页分区。
+- **Impeccable — Dashboard 字体/布局/组件审查：**截图与 `App.css` 显示标题 28–35px、KPI 25px、正文/描述/元数据 12–13px，层级能区分但正文和辅助文字尺寸接近，长说明阅读密度需实际核验；四项 KPI 已用分隔带、关注组占主要宽度，符合业务优先级，但下方采集与趋势面板、采集摘要底色块形成多层容器；趋势为真实零值时绘图区留白明显，应确保零数据说明仍清楚；统一卡片阴影、背景模糊和多个局部渐变叠加后略偏装饰，可在后续局部优化中降低重复表面效果。该审查基于真实 POC 截图与 `.dashboard-*` CSS，没有声称 Impeccable CLI detector 通过。
+- **Emil Design Engineering — 商品资料库微交互建议（只读）：**① `.library-table` checkbox 按下时做轻微 `transform: scale(0.96) → scale(1)`，`transform 120ms ease-out`，只作操作反馈，不影响跨页选择语义；减少动态效果时去掉位移/缩放，仅保留 `opacity 120ms ease-out`。② 详情/编辑 Drawer 入场使用 `opacity 0 → 1` 与 `translateX(8px) → 0`，`opacity, transform 180ms ease-out`，表达空间切换；`prefers-reduced-motion` 下移除 translate，仅保留 120ms opacity 淡化，并维持现有焦点回归。③ 导入预览每行 `insert/update/skip` 选择后，仅新决策状态标记由 `opacity .5 → 1`，`opacity 160ms ease-out`；不移动表格/字段值，保留现有 `aria-live` 汇总播报，减少动态效果时降低为 120ms opacity 过渡。时间和 easing 对齐本文件已记录的 120–180ms 常规交互、160–220ms Drawer 与 ease-out；未新增动画库或改代码。
+- **Emil 审查中拒绝的候选：**整批新增/更新数字做弹跳（数字是用户操作数据，不应装饰性移动）；筛选输入每键触发结果列表进场动画（高频、干扰扫描）；表格行交替 stagger（密集数据加载不应制造等待感）。整体只建议低幅操作反馈。
+
+以上 Skill 调用仅提供设计参考；冲突按 `docs/ui-system.md` → 页面 Reference → 现有组件 → 单一选定 Skill 处理。Codex 前端任务入口见 [`frontend/AGENTS.md`](../frontend/AGENTS.md)，普通后端任务不加载前端 Skill。
