@@ -64,15 +64,21 @@ export function plannedCounts(rows: PreviewRow[], decisions: Record<number, Acti
   return counts;
 }
 
-export function LibraryDialog({ title, busy = false, onClose, children, returnFocus, side }: { title: string; busy?: boolean; onClose: () => void; children: ReactNode; returnFocus?: HTMLElement | null; side?: boolean }) {
+export function LibraryDialog({ title, busy = false, onClose, children, returnFocus, side, wide = false }: { title: string; busy?: boolean; onClose: () => void; children: ReactNode; returnFocus?: HTMLElement | null; side?: boolean; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const [opener] = useState(() => returnFocus ?? (typeof document === "undefined" ? null : document.activeElement as HTMLElement | null));
   useEffect(() => {
-    const previous = returnFocus ?? document.activeElement as HTMLElement | null;
-    ref.current?.showModal();
-    return () => { ref.current?.close(); previous?.focus(); };
+    const dialog = ref.current;
+    dialog?.showModal();
+    return () => { dialog?.close(); opener?.focus(); };
   }, []);
-  return <dialog ref={ref} className={`dialog library-dialog${side ? " library-side-panel" : ""}`} aria-label={title} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
-    <div className="dialog-header"><h2>{title}</h2><button type="button" className="close-button" aria-label="关闭" disabled={busy} onClick={onClose}>×</button></div>{children}
+  return <dialog ref={ref} className={`dialog library-dialog${side ? " library-side-panel" : ""}${wide ? " library-dialog-wide" : ""}`} aria-label={title} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onKeyDown={event => {
+    if (event.key !== "Tab") return;
+    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, [tabindex="0"]')).filter(node => node.getClientRects().length > 0);
+    const target = event.shiftKey ? controls.at(-1) : controls[0];
+    if (target && (event.shiftKey && document.activeElement === controls[0] || !event.shiftKey && document.activeElement === controls.at(-1))) { event.preventDefault(); target.focus(); }
+  }}>
+    <div className="dialog-header"><h2>{title}</h2><button type="button" className="close-button" aria-label="关闭" disabled={busy} onClick={onClose}>×</button></div><div className="library-dialog-body">{children}</div>
   </dialog>;
 }
 
@@ -82,6 +88,10 @@ export function ProductEditor({ product, onClose, onSaved, returnFocus }: { prod
   const [error, setError] = useState<ApiError | null>(null);
   const [allow, setAllow] = useState(false);
   const [uncertain, setUncertain] = useState(false);
+  const errorSummary = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (error) errorSummary.current?.focus(); }, [error]);
+  const dirty = (Object.keys(emptyProduct) as (keyof ProductFields)[]).some(key => fields[key] !== (product ?? emptyProduct)[key]);
+  function close() { if (!dirty || window.confirm(uncertain ? "保存结果待确认，请关闭后刷新列表核对。确认关闭？" : "有未保存的修改，确认放弃并关闭？")) onClose(); }
   async function save(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(null);
     try {
@@ -93,18 +103,21 @@ export function ProductEditor({ product, onClose, onSaved, returnFocus }: { prod
       if (failure.uncertain) setUncertain(true);
     } finally { setBusy(false); }
   }
-  return <LibraryDialog title={product ? "编辑产品" : "手动新增产品"} busy={busy} onClose={onClose} returnFocus={returnFocus}>
+  return <LibraryDialog wide title={product ? "编辑产品" : "手动新增产品"} busy={busy} onClose={close} returnFocus={returnFocus}>
     <form onSubmit={save} className="library-form">
-      {(Object.keys(labels) as (keyof ProductFields)[]).map(key => <label key={key}>{labels[key]}{(key === "manufacturer_name" || key === "name") && " *"}
-        {key === "parameters" || key === "selling_points" || key === "price_note" ? <textarea value={fields[key] ?? ""} maxLength={key === "price_note" ? 2000 : 10000} onChange={event => { setFields({ ...fields, [key]: event.target.value || null }); setAllow(false); setError(null); }} /> :
-          <input value={fields[key] ?? ""} required={key === "manufacturer_name" || key === "name"} maxLength={key === "wholesale_price" ? undefined : 200} inputMode={key === "wholesale_price" ? "decimal" : undefined} onChange={event => { setFields({ ...fields, [key]: event.target.value || (key === "manufacturer_name" || key === "name" ? "" : null) }); setAllow(false); setError(null); }} />}
-      </label>)}
-      <p>批发价单位为人民币元，最多两位小数。空字段保存为未提供。</p>
-      {error && <div role="alert" className="feedback feedback-server-error">{error.message}{error.errors?.map((item, index) => <p key={index}>{labels[item.field as keyof ProductFields] ?? item.field}：{item.message}</p>)}{error.candidates?.map(candidate => <p key={candidate.id}>候选 #{candidate.id} · {display(candidate.model)} · {candidate.name}</p>)}</div>}
+      <p className="library-intro">{product ? "更新产品原始资料，客户报价调整不会写回这里。" : "录入厂家产品资料，稍后可用于检索、复制与客户报价。"} 标有 * 的字段必填。</p>
+      {([{ title: "基本信息", fields: ["manufacturer_name", "model", "name"] }, { title: "客户产品资料", fields: ["parameters", "selling_points"] }, { title: "内部价格信息", fields: ["wholesale_price", "price_note"] }] as { title: string; fields: (keyof ProductFields)[] }[]).map(group => <fieldset className="library-fieldset" key={group.title}><legend>{group.title}</legend><div className="library-field-grid">
+        {group.fields.map(key => <label className={`library-field library-field-${key}`} key={key}>{labels[key]}{(key === "manufacturer_name" || key === "name") && " *"}
+          {key === "parameters" || key === "selling_points" || key === "price_note" ? <textarea id={`library-field-${key}`} disabled={busy || uncertain} aria-describedby={error?.errors?.some(item => item.field === key) ? `library-error-${key}` : undefined} aria-invalid={error?.errors?.some(item => item.field === key) || undefined} value={fields[key] ?? ""} maxLength={key === "price_note" ? 2000 : 10000} rows={key === "price_note" ? 2 : 5} onChange={event => { setFields({ ...fields, [key]: event.target.value || null }); setAllow(false); setError(null); }} /> :
+            <input id={`library-field-${key}`} disabled={busy || uncertain} aria-describedby={error?.errors?.some(item => item.field === key) ? `library-error-${key}` : undefined} aria-invalid={error?.errors?.some(item => item.field === key) || undefined} value={fields[key] ?? ""} required={key === "manufacturer_name" || key === "name"} maxLength={key === "wholesale_price" ? undefined : 200} inputMode={key === "wholesale_price" ? "decimal" : undefined} onChange={event => { setFields({ ...fields, [key]: event.target.value || (key === "manufacturer_name" || key === "name" ? "" : null) }); setAllow(false); setError(null); }} />}
+          {error?.errors?.some(item => item.field === key) && <span className="library-field-error" id={`library-error-${key}`}>{error.errors.filter(item => item.field === key).map(item => item.message).join("；")}</span>}
+        </label>)}
+      </div>{group.title === "内部价格信息" && <p className="library-hint">批发价单位为人民币元，最多两位小数。空字段保存为未提供。批发价与价格备注不进入客户 Excel。</p>}</fieldset>)}
+      {error && <div ref={errorSummary} tabIndex={-1} role="alert" className="feedback feedback-server-error">{error.message}{error.errors?.map((item, index) => <p key={index}><a href={`#library-field-${item.field}`} onClick={event => { event.preventDefault(); document.getElementById(`library-field-${item.field}`)?.focus(); }}>{labels[item.field as keyof ProductFields] ?? item.field}：{item.message}</a></p>)}{error.candidates?.map(candidate => <p key={candidate.id}>候选 #{candidate.id} · {display(candidate.model)} · {candidate.name}</p>)}</div>}
       {error?.code === "product_exists" && <p>请关闭表单，在列表中查看或编辑现有型号。</p>}
       {error?.code === "suspected_duplicate" && <label className="library-check"><input type="checkbox" checked={allow} onChange={event => setAllow(event.target.checked)} />已核对同名候选，仍保存为独立产品</label>}
       {uncertain && <p role="alert">保存结果待确认。请关闭后刷新列表核对，避免重复创建或覆盖；本表单已停止重发。</p>}
-      <div className="dialog-actions"><button type="button" className="secondary-button" disabled={busy} onClick={onClose}>取消</button><button className="primary-button" disabled={busy || uncertain || (error?.code === "suspected_duplicate" && !allow)}>{busy ? "保存中…" : "保存"}</button></div>
+      <div className="dialog-actions library-sticky-actions"><span>{dirty ? "有未保存的修改" : product ? "当前资料已载入" : "填写完成后保存"}</span><button type="button" className="secondary-button" disabled={busy} onClick={close}>取消</button><button className="primary-button" disabled={busy || uncertain || (error?.code === "suspected_duplicate" && !allow)}>{busy ? "保存中…" : "保存"}</button></div>
     </form>
   </LibraryDialog>;
 }
@@ -127,7 +140,7 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     if (preview && !window.confirm("当前预览尚未保存，关闭将放弃选择。")) return;
     onClose();
   }
-  function reset() { setReceipt(null); setDecisions({}); setRetryDecisions(null); setStale(false); setError(null); setPage(1); }
+  function reset() { if (preview && !window.confirm("返回将放弃当前预览和逐行选择，确认返回？")) return; setReceipt(null); setFile(null); setDecisions({}); setRetryDecisions(null); setStale(false); setError(null); setPage(1); }
   async function upload(event: FormEvent) {
     event.preventDefault(); if (!file) return;
     if (!/\.xlsx$/i.test(file.name)) { setError("仅支持 .xlsx 文件"); return; }
@@ -173,13 +186,14 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const expired = !!preview && Date.parse(preview.expires_at) <= Date.now();
   const [, tick] = useState(0);
   useEffect(() => { if (!preview) return; const timer = setInterval(() => tick(value => value + 1), 1000); return () => clearInterval(timer); }, [preview]);
-  return <LibraryDialog title={`批量导入 · 步骤 ${receipt?.status === "committed" ? 3 : preview ? 2 : 1}/3`} busy={busy} onClose={close}>
+  return <LibraryDialog wide title={`批量导入 · 步骤 ${receipt?.status === "committed" ? 3 : preview ? 2 : 1}/3`} busy={busy} onClose={close}>
+    <ol className="library-steps" aria-label="导入进度">{["上传文件", "核对与决策", "导入结果"].map((label, index) => <li key={label} aria-current={(receipt?.status === "committed" ? 2 : preview ? 1 : 0) === index ? "step" : undefined}><span>{index + 1}</span>{label}</li>)}</ol>
     {error && <div className="feedback feedback-server-error" role="alert">{error}</div>}
     {!receipt && <form className="library-form" onSubmit={upload}>
       <p>仅 .xlsx，最多 5 MiB、1000 行。使用固定六列表头；文本列须为文本，禁止公式。确认前不写入产品。</p>
       <TemplateDownload />
       <label>厂家名称 *<input required maxLength={200} value={manufacturer} onChange={event => setManufacturer(event.target.value)} /></label>
-      <label>Excel 文件 *<input required type="file" accept=".xlsx" onChange={event => setFile(event.target.files?.[0] ?? null)} /></label>
+      <label>Excel 文件 *<span className="library-file-control"><span className="library-file-button" aria-hidden="true">选择 Excel 文件</span><span aria-hidden="true">{file?.name ?? "尚未选择文件 · .xlsx · 最多 5 MiB"}</span><input required type="file" accept=".xlsx" onChange={event => setFile(event.target.files?.[0] ?? null)} /></span></label>
       <div className="dialog-actions"><button className="primary-button" disabled={busy}>{busy ? "校验中…" : "上传并预览"}</button></div>
     </form>}
     {preview && <>
@@ -200,7 +214,7 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
       </article>)}</div>
       <div className="dialog-actions library-sticky-actions"><span>整批：新增 {plan!.insert} · 更新 {plan!.update} · 跳过 {plan!.skip - preview.counts.invalid} · 错误 {preview.counts.invalid} · {expired ? "已过期" : `有效至 ${new Date(preview.expires_at).toLocaleTimeString()}`}</span><button className="secondary-button" disabled={busy || uncertain || (retryDecisions !== null && !stale)} onClick={reset}>返回修改文件或厂家（放弃选择）</button>{uncertain ? <button className="primary-button" disabled={busy} onClick={() => void lookup()}>查询原导入结果</button> : <button className="primary-button" disabled={busy || stale || expired || !plan || plan.insert + plan.update === 0} onClick={() => void confirm()}>{busy ? "确认中…" : retryDecisions ? "按原决策重试" : "确认导入"}</button>}</div>
     </>}
-    {receipt?.status === "committed" && <><p role="status">导入完成：新增 {receipt.inserted} · 更新 {receipt.updated} · 跳过 {receipt.skipped} · 错误 {receipt.invalid}</p><div className="library-preview">{(rows as Result["rows"]).map(row => <p key={row.row_number}>第 {row.row_number} 行 · {({ inserted: "已新增", updated: "已更新", skipped: "已按选择跳过", invalid: "校验错误，未写入" } as Record<string, string>)[row.outcome]} · {row.product_id == null ? "未写入" : `产品 #${row.product_id}`}</p>)}</div><div className="dialog-actions"><button className="primary-button" onClick={onClose}>返回列表</button></div></>}
+    {receipt?.status === "committed" && <><p role="status">导入完成：新增 {receipt.inserted} · 更新 {receipt.updated} · 跳过 {receipt.skipped} · 错误 {receipt.invalid}</p><div className="library-preview">{(rows as Result["rows"]).map(row => <p key={row.row_number}>第 {row.row_number} 行 · {({ inserted: "已新增", updated: "已更新", skipped: "已按选择跳过", invalid: "校验错误，未写入" } as Record<string, string>)[row.outcome]}{row.product_id == null ? "" : ` · 产品 #${row.product_id}`}</p>)}</div><div className="dialog-actions"><button className="primary-button" onClick={onClose}>返回列表</button></div></>}
     {receipt && <div className="pagination-bar"><button disabled={page === 1 || busy} onClick={() => setPage(page - 1)}>上一页</button><span>第 {page} / {Math.max(1, Math.ceil(receipt.rows.length / 20))} 页</span><button disabled={page * 20 >= receipt.rows.length || busy} onClick={() => setPage(page + 1)}>下一页</button></div>}
   </LibraryDialog>;
 }
@@ -268,23 +282,29 @@ export function ProductLibrary() {
     finally { setBusy(false); }
   }
   return <div className="library-page">
-    <header className="page-header"><div><p className="eyebrow">PRODUCT LIBRARY</p><h1>产品库</h1><p className="page-description">厂家产品资料</p></div><div className="library-actions"><button className="primary-button" onClick={() => setEditor("new")}>手动新增</button><button className="secondary-button" onClick={() => setImporting(true)}>批量导入</button><TemplateDownload /><button className="secondary-button" onClick={() => setQuoting(true)}>客户报价 Excel</button></div></header>
+    <header className="page-header"><div><h1>产品库</h1><p className="page-description">集中管理厂家资料，快速检索产品与制作客户报价。</p></div><div className="library-actions"><button className="primary-button" onClick={() => setEditor("new")}>手动新增</button><button className="secondary-button" onClick={() => setImporting(true)}>批量导入</button><button className="secondary-button library-quote-entry" onClick={() => setQuoting(true)}>客户报价 Excel</button></div></header>
     {notice && <p role="status" className="feedback feedback-success">{notice}</p>}{error && <p role="alert" className="feedback feedback-server-error">{error}</p>}
     <section className="table-card">
-      <div className="library-toolbar"><label>关键词<input aria-label="产品库关键词" maxLength={200} placeholder="型号、名称、参数、卖点、厂家" value={q} onChange={event => { setQ(event.target.value); clearForFilter(); }} /></label><label>厂家筛选<select value={manufacturer} onChange={event => { setManufacturer(event.target.value); clearForFilter(); }}><option value="">全部厂家</option>{manufacturers.map(name => <option key={name}>{name}</option>)}</select></label><label>排序<select aria-label="排序" value={sort} onChange={event => { setSort(event.target.value); setPage(1); }}><option value="updated_desc">最近更新</option><option value="price_asc">批发价从低到高</option><option value="price_desc">批发价从高到低</option></select></label><label>报价状态<select aria-label="报价状态" value={priceStatus} onChange={event => { setPriceStatus(event.target.value); clearForFilter(); }}><option value="all">全部报价状态</option><option value="quoted">有报价</option><option value="unquoted">未报价</option></select></label><label>价格条件<select aria-label="价格条件" value={priceMode} onChange={event => { setPriceMode(event.target.value); clearForFilter(); }}><option value="">不限价格</option><option value="below">小于</option><option value="above">大于</option><option value="between">指定区间（含端点）</option></select></label>
+      <div className="library-toolbar"><label className="library-search">关键词<input aria-label="产品库关键词" maxLength={200} placeholder="型号、名称、参数、卖点、厂家" value={q} onChange={event => { setQ(event.target.value); clearForFilter(); }} /></label><label>厂家筛选<select value={manufacturer} onChange={event => { setManufacturer(event.target.value); clearForFilter(); }}><option value="">全部厂家</option>{manufacturers.map(name => <option key={name}>{name}</option>)}</select></label><label>排序<select aria-label="排序" value={sort} onChange={event => { setSort(event.target.value); setPage(1); }}><option value="updated_desc">最近更新</option><option value="price_asc">批发价从低到高</option><option value="price_desc">批发价从高到低</option></select></label><label>报价状态<select aria-label="报价状态" value={priceStatus} onChange={event => { setPriceStatus(event.target.value); clearForFilter(); }}><option value="all">全部报价状态</option><option value="quoted">有报价</option><option value="unquoted">未报价</option></select></label><label>价格条件<select aria-label="价格条件" value={priceMode} onChange={event => { setPriceMode(event.target.value); clearForFilter(); }}><option value="">不限价格</option><option value="below">小于</option><option value="above">大于</option><option value="between">指定区间（含端点）</option></select></label>
       {priceMode && priceMode !== "below" && <label>最低价<input aria-label="最低价" inputMode="decimal" value={priceMin} onChange={event => { setPriceMin(event.target.value); clearForFilter(); }} /></label>}
       {priceMode && priceMode !== "above" && <label>最高价<input aria-label="最高价" inputMode="decimal" value={priceMax} onChange={event => { setPriceMax(event.target.value); clearForFilter(); }} /></label>}
       <button className="secondary-button" onClick={() => { setSelected({}); setBatchResults([]); setReload(value => value + 1); }}>刷新</button></div>
-      <div className="library-selection"><span>跨页已选 {Object.keys(selected).length} 款</span><button className="text-button" onClick={() => { setSelected({}); setBatchResults([]); }}>清空选择</button><button className="danger-button" disabled={!Object.keys(selected).length} onClick={() => { setBatchConfirm(true); setDeleteError(null); }}>批量删除</button></div>
+      <div className={`library-selection${Object.keys(selected).length ? " has-selection" : ""}`}><span role="status">跨页已选 {Object.keys(selected).length} 款</span><button className="text-button" disabled={!Object.keys(selected).length} onClick={() => { setSelected({}); setBatchResults([]); }}>清空选择</button><button className="danger-button" disabled={!Object.keys(selected).length} onClick={() => { setBatchConfirm(true); setDeleteError(null); }}>批量删除</button></div>
       {batchResults.filter(row => row.outcome !== "deleted").map(row => <p role="status" key={row.id}>产品 #{row.id}：{row.outcome === "missing" ? "已不存在" : "版本已变化"}，请刷新后重新选择</p>)}
       {status === "loading" && <p role="status" className="state-panel">正在加载产品…</p>}
-      {status === "error" && <div className="state-panel state-error"><p>产品列表加载失败</p><button onClick={() => setReload(value => value + 1)}>重试</button></div>}
-      {status === "ready" && data && <>{data.items.length === 0 ? <p className="state-panel">没有符合条件的产品</p> : <div className="table-scroll"><table className="library-table"><thead><tr><th><input aria-label="选择本页" type="checkbox" checked={!!data.items.length && data.items.every(item => selected[item.id])} onChange={event => { const checked = event.target.checked; setSelected(current => { const next = { ...current }; for (const item of data.items) { if (checked) { if (!next[item.id]) next[item.id] = { id: item.id, version: item.version }; } else delete next[item.id]; } return next; }); }} /></th><th>厂家</th><th>型号</th><th>名称</th><th>批发价</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{data.items.map(product => <tr key={product.id}><td><input aria-label={`选择产品 ${product.id}`} type="checkbox" checked={!!selected[product.id]} onChange={event => toggle(product, event.target.checked)} /></td><td>{product.manufacturer_name}</td><td>{display(product.model)}</td><td>{product.name}{q.trim() && <small className="library-match">{searchSummary(product, q)}</small>}</td><td>{product.wholesale_price == null ? "未提供" : `¥${product.wholesale_price}`}</td><td>{new Date(product.updated_at).toLocaleString()}</td><td><div className="library-actions"><button className="detail-button" disabled={detailBusy} onClick={() => void openProduct(product.id, false)}>查看</button><button className="detail-button" disabled={detailBusy} onClick={() => void openProduct(product.id, true)}>编辑</button><button className="text-button" onClick={() => { setDeleteError(null); setDeleting(product); }}>删除</button></div></td></tr>)}</tbody></table></div>}
+      {status === "error" && <div className="state-panel state-error"><p>产品列表加载失败</p><button className="secondary-button" onClick={() => setReload(value => value + 1)}>重试</button></div>}
+      {status === "ready" && data && <>{data.items.length === 0 ? <div className="state-panel"><h2>没有符合条件的产品</h2><p>调整搜索和筛选条件，或通过手动新增、批量导入建立产品资料。</p></div> : <div className="table-scroll"><table className="library-table"><thead><tr><th><input aria-label="选择本页" type="checkbox" ref={node => { if (node) node.indeterminate = data.items.some(item => selected[item.id]) && !data.items.every(item => selected[item.id]); }} checked={!!data.items.length && data.items.every(item => selected[item.id])} onChange={event => { const checked = event.target.checked; setSelected(current => { const next = { ...current }; for (const item of data.items) { if (checked) { if (!next[item.id]) next[item.id] = { id: item.id, version: item.version }; } else delete next[item.id]; } return next; }); }} /></th><th>厂家</th><th>型号</th><th>名称</th><th>批发价</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{data.items.map(product => <tr key={product.id}><td><input aria-label={`选择产品 ${product.id}`} type="checkbox" checked={!!selected[product.id]} onChange={event => toggle(product, event.target.checked)} /></td><td>{product.manufacturer_name}</td><td>{display(product.model)}</td><td>{product.name}{q.trim() && <small className="library-match">{searchSummary(product, q)}</small>}</td><td className={`library-price${product.wholesale_price == null ? " library-price-unknown" : ""}`}>{product.wholesale_price == null ? "未提供" : `¥${product.wholesale_price}`}</td><td className="library-updated">{new Date(product.updated_at).toLocaleString()}</td><td><div className="library-actions"><button className="detail-button" disabled={detailBusy} onClick={() => void openProduct(product.id, false)}>查看</button><button className="detail-button" disabled={detailBusy} onClick={() => void openProduct(product.id, true)}>编辑</button><button className="text-button" onClick={() => { setDeleteError(null); setDeleting(product); }}>删除</button></div></td></tr>)}</tbody></table></div>}
         <PaginationBar total={data.total} itemLabel="款产品" pageSize={20} page={page} totalPages={Math.max(1, Math.ceil(data.total / 20))} onPrevious={() => setPage(page - 1)} onNext={() => setPage(page + 1)} previousDisabled={page === 1} nextDisabled={page * 20 >= data.total} /></>}
     </section>
     {detailBusy && <p role="status">正在加载产品详情…</p>}
     {editor && <ProductEditor product={editor === "new" ? null : editor} returnFocus={editor === "new" ? undefined : detailOpener.current} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); refresh(); }} />}
-    {detail && <LibraryDialog side title="产品详情" returnFocus={detailOpener.current} onClose={() => setDetail(null)}><div className="library-actions"><button onClick={() => void copyProduct("parameters")}>复制参数</button><button onClick={() => void copyProduct("selling_points")}>复制卖点</button><button onClick={() => void copyProduct("full")}>复制完整资料</button></div>{copyStatus && <p role="status">{copyStatus}</p>}<dl className="library-details">{(Object.keys(labels) as (keyof ProductFields)[]).map(key => <div key={key}><dt>{labels[key]}</dt><dd>{display(detail[key])}</dd></div>)}</dl><p>创建：{new Date(detail.created_at).toLocaleString()} · 更新：{new Date(detail.updated_at).toLocaleString()}</p></LibraryDialog>}
+    {detail && <LibraryDialog side title="产品详情" returnFocus={detailOpener.current} onClose={() => setDetail(null)}>
+      <div className="library-detail-identity"><p>{detail.manufacturer_name}</p><h3>{detail.name}</h3><span>{display(detail.model)}</span></div>
+      <section className="library-detail-section"><h3>客户产品资料</h3><p className="library-hint">完整资料仅复制型号、名称、参数和卖点。</p><div className="library-actions library-copy-actions"><button className="secondary-button" onClick={() => void copyProduct("parameters")}>复制参数</button><button className="secondary-button" onClick={() => void copyProduct("selling_points")}>复制卖点</button><button className="primary-button" onClick={() => void copyProduct("full")}>复制完整资料</button></div>{copyStatus && <p role="status" className="library-copy-status">{copyStatus}</p>}
+      <dl className="library-details">{(["parameters", "selling_points"] as const).map(key => <div key={key}><dt>{labels[key]}</dt><dd>{display(detail[key])}</dd></div>)}</dl></section>
+      <section className="library-detail-section"><h3>内部价格信息</h3><p className="library-hint">以下字段不包含在完整资料复制和客户 Excel 中。</p><dl className="library-details library-details-price">{(["wholesale_price", "price_note"] as const).map(key => <div key={key}><dt>{labels[key]}</dt><dd>{key === "wholesale_price" && detail[key] != null ? `¥${detail[key]}` : display(detail[key])}</dd></div>)}</dl></section>
+      <p className="library-hint">创建：{new Date(detail.created_at).toLocaleString()}<br />更新：{new Date(detail.updated_at).toLocaleString()}</p>
+    </LibraryDialog>}
     {deleting && <LibraryDialog title="永久删除产品" busy={busy} onClose={() => setDeleting(null)}><p>厂家：{deleting.manufacturer_name}</p><p>型号：{display(deleting.model)}</p><p>名称：{deleting.name}</p><p>此产品将永久删除，无法恢复。</p>{deleteError && <p role="alert">{deleteError}</p>}<div className="dialog-actions"><button className="secondary-button" disabled={busy} onClick={() => setDeleting(null)}>取消</button><button className="danger-button" disabled={busy} onClick={() => void remove()}>确认删除</button></div></LibraryDialog>}
     {batchConfirm && <LibraryDialog title="批量永久删除" busy={busy} onClose={() => setBatchConfirm(false)}><p>将永久删除已选择的 {Object.keys(selected).length} 款产品，产品资料不可恢复。版本变化或已不存在的项将跳过。</p>{deleteError && <p role="alert">{deleteError}</p>}<div className="dialog-actions"><button className="secondary-button" disabled={busy} onClick={() => setBatchConfirm(false)}>取消</button><button className="danger-button" disabled={busy} onClick={() => void batchRemove()}>确定删除</button></div></LibraryDialog>}
     {quoting && <ProductQuotation selected={Object.values(selected)} filters={filters} onClose={() => setQuoting(false)} />}

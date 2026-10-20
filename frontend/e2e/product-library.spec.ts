@@ -192,9 +192,11 @@ test("template → preview → explicit diff update → partial import; edit and
   const mock = await setup(page);
   await page.screenshot({ path: "test-results/product-library-list.png", fullPage: true });
   await page.route("**/api/product-library/template", route => route.fulfill({ contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers: { "Content-Disposition": "attachment; filename=template.xlsx" }, body: Buffer.from("mock-template") }));
+  await page.getByRole("button", { name: "批量导入", exact: true }).click();
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载 Excel 模板" }).click();
   expect((await download).suggestedFilename()).toBe("产品库导入模板.xlsx");
+  await page.keyboard.press("Escape");
   await page.route("**/api/product-library/imports/preview?*", async route => { expect(decodeURIComponent(route.request().headers()["x-filename"])).toBe("厂家.xlsx"); await route.fulfill({ status: 201, json: preview }); });
   await page.route(`**/api/product-library/imports/${importId}/confirm`, async route => {
     expect(route.request().postDataJSON()).toEqual({ decisions: [{ row_number: 2, action: "insert" }, { row_number: 3, action: "update" }, { row_number: 5, action: "skip" }] });
