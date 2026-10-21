@@ -20,3 +20,5 @@ playwright-report/
 /backend/data/*.db-wal
 /backend/data/*.db-shm
 /backend/data/*.db-journal
+/docs/qa/
+/frontend/test-results-settings/

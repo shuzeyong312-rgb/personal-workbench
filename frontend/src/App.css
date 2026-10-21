@@ -380,66 +380,100 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 
 .group-own-product { display: flex; align-items: baseline; gap: 8px; margin-top: 12px; padding: 9px 11px; border-radius: 8px; background: #f7f9ff; }.group-own-product span { flex: 0 0 auto; color: #8494ac; font-size: 11px; }.group-own-product strong { min-width: 0; overflow: hidden; color: #405778; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.own-role-badge { display: inline-flex; margin-left: 6px; padding: 2px 6px; border-radius: 999px; color: #2877e5; background: #edf5ff; font-size: 10px; font-weight: 700; vertical-align: middle; }.own-product-dialog { max-height: min(88vh, 760px); overflow-y: auto; }.own-product-candidates { display: grid; max-height: 330px; gap: 8px; margin: -7px 0 18px; overflow-y: auto; }.own-product-candidate { display: flex; align-items: flex-start; gap: 10px; margin: 0 !important; padding: 10px 11px; border: 1px solid #e0e8f5; border-radius: 8px; cursor: pointer; }.own-product-candidate input { width: auto !important; margin-top: 4px; }.own-product-candidate span, .own-product-candidate small { display: block; }.own-product-candidate strong { color: #344d73; font-size: 12px; }.own-product-candidate small { margin-top: 4px; color: #8494ac; font-size: 11px; font-weight: 400; }.own-product-empty { margin: -6px 0 18px; color: #71839f; font-size: 12px; line-height: 1.6; }
 
-/* Auto-collection deliberately reuses the existing Settings control column. */
-/* Local settings pilot; the shared workspace chrome keeps its existing styles. */
-.settings-shell { background: #f7f9fc; }
-.settings-shell .settings-layout { flex-shrink: 0; display: grid; grid-template-columns: 192px minmax(0, 1fr); gap: 0; max-width: 1240px; min-height: 560px; border: 1px solid #e2e7ef; border-radius: 8px; background: #fff; }
-.settings-shell .settings-nav { align-content: start; padding: 24px 12px; border-right: 1px solid #e2e7ef; background: #fafbfd; }
-.settings-shell .settings-nav button { display: grid; gap: 4px; width: 100%; margin-bottom: 8px; padding: 12px; border: 0; border-left: 2px solid transparent; border-radius: 4px; color: #53647b; background: transparent; text-align: left; }
-.settings-shell .settings-nav strong { font-size: 14px; }
-.settings-shell .settings-nav span { font-size: 12px; color: #68788e; }
-.settings-shell .settings-nav .settings-module-active { border-left-color: #2878e8; color: #216fd6; background: #edf4ff; }
-.settings-shell .settings-nav button:hover { background: #f0f4fa; }
-.settings-shell .settings-card { min-width: 0; width: 100%; max-width: none; border: 0; border-radius: 0; box-shadow: none; background: #fff; backdrop-filter: none; }
-.settings-shell .table-heading, .settings-shell .settings-monitoring-heading { display: block; padding: 24px 32px; border-bottom: 1px solid #e2e7ef; background: none; }
-.settings-shell .settings-card h2 { margin: 0; color: #26364d; font-size: 20px; }
-.settings-shell .settings-monitoring-heading p { margin: 8px 0 0; color: #68788e; font-size: 13px; line-height: 1.7; }
-.settings-shell .table-heading span, .settings-shell .settings-monitoring-heading > span { display: block; margin-top: 8px; color: #68788e; font-size: 12px; line-height: 1.7; }
-.settings-shell .settings-form, .settings-shell .monitoring-settings-form { padding: 0 32px 24px; }
+/* Settings stays within the workbench palette; only the main pane scrolls. */
+.settings-shell { background: var(--ui-canvas, #f3f4f6); }
+.settings-shell .main-content { scroll-padding-block: 24px 132px; }
+.settings-shell .settings-layout input { scroll-margin-block: 24px 132px; }
+.settings-shell .settings-layout { flex-shrink: 0; min-width: 0; border: 1px solid #dde1e6; border-radius: 12px; background: #fff; }
+.settings-shell .settings-nav { display: flex; align-items: stretch; gap: 8px; padding: 8px 24px 0; border-bottom: 1px solid #dde1e6; }
+.settings-shell .settings-nav button { position: relative; display: grid; gap: 4px; padding: 16px; border: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; color: #626b78; background: transparent; text-align: left; }
+.settings-shell .settings-nav strong { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.settings-shell .settings-nav span, .settings-shell .settings-nav p { font-size: 12px; line-height: 1.6; color: #626b78; }
+.settings-shell .settings-nav p { margin: auto 0 auto auto; text-align: right; }
+.settings-shell .settings-nav em { font-size: 12px; font-style: normal; font-weight: 400; color: #626b78; }
+.settings-shell .settings-nav .settings-module-active { color: #2563eb; border-bottom-color: #2563eb; }
+.settings-shell .settings-nav button:hover { background: #f6f7f8; }
+.settings-shell .settings-card { min-width: 0; border: 0; border-radius: 0 0 12px 12px; box-shadow: none; background: #fff; backdrop-filter: none; overflow: visible; }
+.settings-shell .table-heading, .settings-shell .settings-monitoring-heading { display: block; padding: 24px 32px 16px; border: 0; background: none; }
+.settings-shell .settings-card h2 { margin: 0; color: #20242c; font-size: 20px; line-height: 1.35; font-weight: 650; }
+.settings-shell .settings-monitoring-heading p, .settings-shell .table-heading span { display: block; margin: 8px 0 0; color: #626b78; font-size: 13px; line-height: 1.6; }
+.settings-shell .settings-form, .settings-shell .monitoring-settings-form { padding: 0 32px; }
+.settings-shell .settings-effect-note { display: flex; gap: 16px; padding: 12px 16px; background: #f6f7f8; border-radius: 6px; font-size: 12px; color: #626b78; line-height: 1.7; }
+.settings-shell .settings-effect-note strong { flex-shrink: 0; color: #20242c; font-weight: 500; }
+.settings-shell .settings-monitoring-columns { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 32px; }
+.settings-shell .settings-automation { border-left: 1px solid #dde1e6; padding-left: 32px; }
 .settings-shell .monitoring-setting-group { padding-top: 24px; }
-.settings-shell .monitoring-setting-group + .monitoring-setting-group { border-top: 1px solid #e2e7ef; }
+.settings-shell .monitoring-setting-group + .monitoring-setting-group { border-top: 1px solid #dde1e6; }
 .settings-shell .monitoring-setting-group header { margin-bottom: 12px; }
-.settings-shell .monitoring-setting-group h3 { margin: 0; color: #26364d; font-size: 15px; }
-.settings-shell .monitoring-setting-group header span { display: block; margin-top: 4px; color: #68788e; font-size: 12px; }
-.settings-shell .monitoring-setting-row { display: grid; grid-template-columns: minmax(200px, .85fr) minmax(0, 1.15fr); gap: 24px; align-items: start; padding: 16px 0; border-top: 1px solid #edf0f5; }
-.settings-shell .monitoring-setting-copy { display: grid; gap: 4px; padding-top: 4px; }
-.settings-shell .monitoring-setting-copy strong { color: #33445b; font-size: 14px; font-weight: 600; }
-.settings-shell .monitoring-setting-copy small { color: #68788e; font-size: 12px; line-height: 1.7; }
+.settings-shell .settings-card h3 { margin: 0; color: #20242c; font-size: 16px; font-weight: 600; }
+.settings-shell .monitoring-setting-group header span { display: block; margin-top: 4px; color: #626b78; font-size: 12px; line-height: 1.6; }
+.settings-shell .monitoring-setting-row { display: grid; grid-template-columns: minmax(0, 1fr) 116px; column-gap: 16px; padding: 14px 0; border-top: 1px solid #edf0f2; align-items: start; }
+.settings-shell .monitoring-setting-copy { display: grid; gap: 4px; min-width: 0; }
+.settings-shell .monitoring-setting-copy strong { color: #20242c; font-size: 13px; font-weight: 500; line-height: 1.6; }
+.settings-shell .monitoring-setting-copy small, .settings-shell .monitoring-setting-meta, .settings-shell .settings-help { color: #626b78; font-size: 12px; line-height: 1.7; }
 .settings-shell .monitoring-setting-input { display: flex; gap: 8px; align-items: center; }
-.settings-shell .monitoring-setting-input b { color: #68788e; font-size: 12px; font-weight: 400; }
-.settings-shell input:not([type="radio"]):not([type="checkbox"]) { box-sizing: border-box; min-height: 36px; padding: 7px 10px; border: 1px solid #cfd7e3; border-radius: 4px; color: #33445b; background: #fff; font: inherit; font-size: 14px; }
-.settings-shell input[type="number"] { width: 88px; }
+.settings-shell .monitoring-setting-input b { color: #626b78; font-size: 12px; font-weight: 400; white-space: nowrap; }
+.settings-shell .monitoring-setting-control { display: contents; }
+.settings-shell .monitoring-setting-meta { grid-column: 1 / -1; margin-top: 6px; }
+.settings-shell .monitoring-setting-meta small { font-size: inherit; }
+.settings-shell input:not([type="radio"]):not([type="checkbox"]) { box-sizing: border-box; min-height: 36px; padding: 7px 10px; border: 1px solid #b9c0ca; border-radius: 6px; color: #20242c; background: #fff; font: inherit; font-size: 14px; font-variant-numeric: tabular-nums; caret-color: #2563eb; }
+.settings-shell input[type="number"] { width: 76px; }
 .settings-shell input[type="time"] { width: 144px; }
-.settings-shell #own-shop-name { width: 100%; max-width: 360px; }
-.settings-shell .monitoring-setting-meta { display: block; margin-top: 4px; color: #68788e; font-size: 12px; line-height: 1.7; }
-.settings-shell .monitoring-auto-control { min-width: 0; padding-top: 4px; }
-.settings-shell .settings-radio-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.settings-shell input::placeholder { color: #626b78; }
+.settings-shell input:user-invalid { border-color: #b04e5d; background: #fff6f7; }
+.settings-shell #own-shop-name { width: 100%; margin-top: 16px; }
+.settings-shell .monitoring-auto-row { grid-template-columns: 1fr; gap: 12px; }
+.settings-shell .monitoring-auto-row:first-of-type { grid-template-columns: minmax(0, 1fr) auto; }
+.settings-shell .monitoring-auto-control { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.settings-shell .settings-switch-state { font-size: 12px; color: #626b78; white-space: nowrap; }
+.settings-shell .settings-radio-group { display: grid; gap: 8px; min-width: 0; width: 100%; margin: 0; padding: 0; border: 0; }
 .settings-shell .settings-radio-group legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.settings-shell .settings-radio-option { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 16px; cursor: pointer; }
-.settings-shell .settings-radio-option:last-child { margin-bottom: 0; }
-.settings-shell input[type="radio"] { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; accent-color: #2878e8; }
-.settings-shell .settings-radio-option strong { color: #33445b; font-size: 14px; font-weight: 500; }
-.settings-shell .settings-radio-option small { display: block; margin-top: 4px; color: #68788e; font-size: 12px; line-height: 1.7; }
-.settings-shell .monitoring-switch { appearance: none; position: relative; width: 40px; height: 22px; margin: 0; border: 1px solid #bac5d4; border-radius: 16px; background: #cfd7e3; cursor: pointer; }
-.settings-shell .monitoring-switch::after { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; content: ""; }
-.settings-shell .monitoring-switch:checked { border-color: #2878e8; background: #2878e8; }
-.settings-shell .monitoring-switch:checked::after { transform: translateX(18px); }
-.settings-shell .settings-card :is(input, button):focus-visible, .settings-shell .settings-nav button:focus-visible { outline: 2px solid #2878e8; outline-offset: 3px; }
-.settings-shell .settings-card :is(input, button):disabled { opacity: .55; cursor: not-allowed; }
-.settings-shell .settings-save-bar, .settings-shell .settings-form .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 16px 0 0; padding-top: 16px; border-top: 1px solid #e2e7ef; }
-.settings-shell .settings-card :is(.primary-button, .secondary-button) { min-height: 36px; padding: 8px 16px; border-radius: 4px; box-shadow: none; font-size: 13px; }
-.settings-shell .settings-card .primary-button { background: #2878e8; }
-@media (max-width: 1100px) {
-  .settings-shell .settings-layout { grid-template-columns: 160px minmax(0, 1fr); }
-  .settings-shell .monitoring-setting-row { grid-template-columns: minmax(160px, .8fr) minmax(0, 1.2fr); gap: 16px; }
-  .settings-shell .table-heading, .settings-shell .settings-monitoring-heading { padding: 24px; }
-  .settings-shell .settings-form, .settings-shell .monitoring-settings-form { padding-right: 24px; padding-left: 24px; }
+.settings-shell .settings-radio-option { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid #dde1e6; border-radius: 6px; cursor: pointer; }
+.settings-shell .settings-radio-option:has(:checked) { border-color: #2563eb; background: #f5f8ff; }
+.settings-shell .settings-radio-option:hover { border-color: #8c9ab0; }
+.settings-shell input[type="radio"] { flex: 0 0 auto; width: 16px; height: 16px; margin: 3px 0 0; accent-color: #2563eb; }
+.settings-shell .settings-radio-option strong { color: #20242c; font-size: 13px; font-weight: 500; }
+.settings-shell .settings-radio-option small { display: block; margin-top: 4px; color: #626b78; font-size: 12px; line-height: 1.7; }
+.settings-shell .monitoring-switch { appearance: none; position: relative; flex-shrink: 0; width: 40px; height: 24px; margin: 0; border: 1px solid #8c96a4; border-radius: 16px; background: #8c96a4; cursor: pointer; }
+.settings-shell .monitoring-switch::after { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; content: ""; transition: transform 160ms ease-out; }
+.settings-shell .monitoring-switch:checked { border-color: #2563eb; background: #2563eb; }
+.settings-shell .monitoring-switch:checked::after { transform: translateX(16px); }
+.settings-shell .settings-layout :is(input, button):focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.settings-shell .settings-layout :is(input, button):disabled { opacity: .55; cursor: not-allowed; }
+.settings-shell .settings-save-bar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; padding: 16px 0; border-top: 1px solid #dde1e6; background: #fff; }
+.settings-shell .settings-save-state { margin-right: auto; color: #626b78; font-size: 12px; line-height: 1.6; }
+.settings-shell .settings-card :is(.primary-button, .secondary-button) { min-height: 36px; padding: 8px 16px; border-radius: 6px; box-shadow: none; font-size: 13px; }
+.settings-shell .settings-card .primary-button { background: #2563eb; }
+.settings-shell .settings-card .primary-button:hover:not(:disabled) { background: #1d4ed8; }
+.settings-shell .settings-basic-content { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 48px; padding: 16px 0 24px; }
+.settings-shell .settings-explanation { border-left: 1px solid #dde1e6; padding-left: 32px; }
+.settings-shell .settings-explanation h3 { font-size: 14px; }
+.settings-shell .settings-explanation p { margin: 12px 0 0; font-size: 13px; color: #626b78; line-height: 1.8; }
+.settings-shell .settings-help { margin: 8px 0 0; }
+.settings-shell .settings-validation { color: #b04e5d; font-size: 13px; }
+@media (max-width: 1180px) {
+  .settings-shell .settings-monitoring-columns { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .settings-shell .settings-automation { border-left: 0; border-top: 1px solid #dde1e6; padding-left: 0; }
+  .settings-shell .monitoring-auto-row { grid-template-columns: minmax(160px, .8fr) minmax(0, 1.2fr); }
 }
-@media (max-width: 800px) {
-  .settings-shell .settings-layout { grid-template-columns: 1fr; }
-  .settings-shell .settings-nav { display: flex; gap: 8px; padding: 12px; border-right: 0; border-bottom: 1px solid #e2e7ef; }
-  .settings-shell .settings-nav button { margin: 0; }
-  .settings-shell .monitoring-setting-row { grid-template-columns: 1fr; gap: 8px; }
+@media (max-width: 760px) {
+  .settings-shell .settings-nav { padding: 0 8px; gap: 0; }
+  .settings-shell .settings-nav button { flex: 1; min-width: 0; padding: 16px 8px; }
+  .settings-shell .settings-nav p, .settings-shell .settings-nav span { display: none; }
+  .settings-shell .settings-nav strong { flex-wrap: wrap; gap: 4px; }
+  .settings-shell .table-heading, .settings-shell .settings-monitoring-heading { padding: 24px 16px 16px; }
+  .settings-shell .settings-form, .settings-shell .monitoring-settings-form { padding: 0 16px; }
+  .settings-shell .settings-effect-note { display: block; }
+  .settings-shell .settings-effect-note strong { display: block; margin-bottom: 4px; }
+  .settings-shell .monitoring-auto-row { grid-template-columns: 1fr; }
+  .settings-shell .settings-basic-content { grid-template-columns: 1fr; gap: 24px; }
+  .settings-shell .settings-explanation { padding: 24px 0 0; border-left: 0; border-top: 1px solid #dde1e6; }
+  .settings-shell .settings-save-bar { flex-wrap: wrap; }
+  .settings-shell .settings-save-state { flex: 1 0 100%; }
+  .settings-shell .settings-card button { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-shell .monitoring-switch::after { transition: none; }
 }
 .position-workbench { min-width: 0; }
 .position-context { color: var(--text-muted, #7484a3); font-size: 11px; line-height: 1.6; margin: 8px 0; padding: 0 12px; }

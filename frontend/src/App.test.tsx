@@ -888,9 +888,9 @@ test("renders group-first KPI and keeps backend group order and Attention levels
   expect(order).toEqual([...order].sort((left, right) => left - right));
   expect(html).toContain("一般变化");
   expect(html).toContain("建议查看");
-  expect(html).not.toContain("重点关注");
-  expect(html).not.toContain("我方重点款");
-  expect(html).not.toContain("旗舰店");
+  expect(html).toContain("重点关注");
+  expect(html).toContain("我方重点款");
+  expect(html).toContain("旗舰店");
   expect(html).toContain("今日变化竞品");
   expect(html).toContain("进入组分析");
   expect(html).not.toContain("attention_score");
@@ -901,22 +901,14 @@ test("renders group-first KPI and keeps backend group order and Attention levels
   expect(html).toContain("近 7 天竞品变化趋势");
 });
 
-test("limits dashboard Attention groups to the first two by default", () => {
-  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
+test("shows up to five dashboard groups and preserves backend order", () => {
+  const groups = Array.from({ length: 7 }, (_, index) => ({ ...attentionData.groups[index % 3], group_id: index + 1, group_name: `商品组${index + 1}` }));
   const html = renderDashboard({ attention: { ...attentionData, groups } });
-  const order = groups.slice(0, 2).map((group) => html.indexOf(group.group_name));
-  expect(order.every((index) => index >= 0)).toBe(true);
-  expect(order).toEqual([...order].sort((left, right) => left - right));
-  expect(html).not.toContain("第三组");
-  expect(html).not.toContain("第四组");
-  expect(html).not.toContain("第五组");
-  expect(html).toContain("还有 3 个需要关注的商品组");
-  expect(html).toContain("展开全部");
-  expect(html).toContain('class="dashboard-attention-toggle"');
-
-  const twoGroups = renderDashboard({ attention: { ...attentionData, groups: groups.slice(0, 2) } });
-  expect(twoGroups).not.toContain("展开全部");
-  expect(twoGroups).not.toContain("收起");
+  expect((html.match(/class="dashboard-attention-card"/g) || []).length).toBe(5);
+  expect(html).toContain("商品组5");
+  expect(html).not.toContain("商品组6");
+  expect(html).toContain("还有 2 个需要关注的商品组");
+  expect(renderDashboard()).not.toContain("展开全部");
 });
 
 test("expands and collapses dashboard Attention groups without changing their order", async () => {
@@ -925,7 +917,7 @@ test("expands and collapses dashboard Attention groups without changing their or
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
-  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
+  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组", "第六组", "第七组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
   const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/api/**", async (route) => {
     const key = `${route.request().method()} ${new URL(route.request().url()).pathname}`;
@@ -941,15 +933,16 @@ test("expands and collapses dashboard Attention groups without changing their or
     const baseUrl = server.resolvedUrls?.local[0];
     if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
     await page.goto(baseUrl);
+    await page.getByRole("button", { name: "竞品监控大屏", exact: true }).click();
     await playwrightExpect(page.getByRole("heading", { name: "竞品监控大屏" })).toBeVisible();
-    await playwrightExpect(page.locator(".dashboard-attention-card h3")).toHaveText(["第一组", "第二组"]);
-    await playwrightExpect(page.getByText("第四组", { exact: true })).toHaveCount(0);
-    await playwrightExpect(page.locator(".dashboard-attention-toggle")).toHaveText("还有 3 个需要关注的商品组展开全部⌄");
+    await playwrightExpect(page.locator(".dashboard-attention-card h3")).toHaveText(groups.slice(0, 5).map(group => group.group_name));
+    await playwrightExpect(page.getByText("第六组", { exact: true })).toHaveCount(0);
+    await playwrightExpect(page.locator(".dashboard-attention-toggle")).toHaveText("还有 2 个需要关注的商品组展开全部⌄");
     await page.getByRole("button", { name: "展开全部" }).click();
     await playwrightExpect(page.locator(".dashboard-attention-card h3")).toHaveText(groups.map((group) => group.group_name));
-    await playwrightExpect(page.locator(".dashboard-attention-toggle")).toHaveText("已展示全部 5 个商品组收起⌃");
+    await playwrightExpect(page.locator(".dashboard-attention-toggle")).toHaveText("已展示全部 7 个商品组收起⌃");
     await page.getByRole("button", { name: "收起" }).click();
-    await playwrightExpect(page.locator(".dashboard-attention-card h3")).toHaveText(["第一组", "第二组"]);
+    await playwrightExpect(page.locator(".dashboard-attention-card h3")).toHaveText(groups.slice(0, 5).map(group => group.group_name));
     await page.getByRole("button", { name: "进入组分析" }).first().click();
     await playwrightExpect(page.getByRole("heading", { name: "组竞争分析" })).toBeVisible();
   } finally {
@@ -997,6 +990,7 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
       batchState = state;
       await page.setViewportSize(state.status === "running" ? { width: 1440, height: 1000 } : { width: 1440, height: 900 });
       await page.goto(baseUrl);
+    await page.getByRole("button", { name: "竞品监控大屏", exact: true }).click();
       const overview = page.locator(".collection-overview");
       await playwrightExpect(overview).toBeVisible();
       await playwrightExpect(overview.locator(".collection-batch")).toBeVisible();
@@ -1026,18 +1020,11 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
       batchState = idleBatchState;
       await page.setViewportSize(viewport);
       await page.goto(baseUrl);
-      const lowerLayout = await page.locator(".dashboard-lower-grid").evaluate((element) => {
-        const main = element.closest(".main-content")!.getBoundingClientRect();
-        const grid = element.getBoundingClientRect();
-        const cards = Array.from(element.querySelectorAll<HTMLElement>(":scope > .table-card")).map((card) => card.getBoundingClientRect().height);
-        const chart = element.querySelector<HTMLElement>(".dashboard-trend-chart")!.getBoundingClientRect().height;
-        return { remainingBelow: main.bottom - grid.bottom, cards, chart, grid: grid.height, chartWidth: element.querySelector<HTMLElement>(".dashboard-trend-chart")!.getBoundingClientRect().width };
-      });
-      expect(Math.abs(lowerLayout.cards[0] - lowerLayout.cards[1])).toBeLessThanOrEqual(1);
-      expect(lowerLayout.chart).toBeGreaterThanOrEqual(160);
-      expect(lowerLayout.chart).toBeLessThan(300);
-      expect(lowerLayout.grid).toBeLessThan(430);
-      if (viewport.height === 1080) expect(lowerLayout.remainingBelow).toBeGreaterThan(100);
+    await page.getByRole("button", { name: "竞品监控大屏", exact: true }).click();
+      const work = page.locator(".dashboard-work-grid");
+      expect(await work.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await page.locator(".dashboard-history summary").click();
+      await playwrightExpect(page.locator(".dashboard-trend-chart")).toBeVisible();
       await page.locator(".chart-hit-area").last().hover();
       await playwrightExpect(page.locator(".dashboard-trend-tooltip")).toContainText("09/20");
       await playwrightExpect(page.locator(".dashboard-trend-tooltip")).toContainText("变价 2");
@@ -1048,6 +1035,7 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
     }
     await page.setViewportSize({ width: 1440, height: 680 });
     await page.goto(baseUrl);
+    await page.getByRole("button", { name: "竞品监控大屏", exact: true }).click();
     const shortDimensions = await page.locator(".main-content-dashboard").evaluate((element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
     expect(shortDimensions.scrollHeight).toBeGreaterThan(shortDimensions.clientHeight);
     await page.locator(".collection-overview").scrollIntoViewIfNeeded();
@@ -1056,7 +1044,7 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
     expect(await mainContent.evaluate((element) => getComputedStyle(element).scrollbarGutter)).toBe("stable");
     expect(await mainContent.evaluate((element) => getComputedStyle(element, "::-webkit-scrollbar").width)).toBe("7px");
     const collapsedWidth = await mainContent.evaluate((element) => element.getBoundingClientRect().width);
-    await page.getByRole("button", { name: "展开全部" }).click();
+    await page.locator(".dashboard-history summary").click();
     const expandedDimensions = await page.locator(".main-content-dashboard").evaluate((element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
     expect(expandedDimensions.scrollHeight).toBeGreaterThan(expandedDimensions.clientHeight);
     expect(await mainContent.evaluate((element) => element.getBoundingClientRect().width)).toBe(collapsedWidth);
@@ -1091,7 +1079,7 @@ test("wires Dashboard collection action and keeps it out of list pages", () => {
 
 test("limits rendered reasons to the backend-provided list and shows the no-change state", () => {
   const html = renderDashboard();
-  expect((html.match(/dashboard-attention-reasons/g) || []).length).toBe(2);
+  expect((html.match(/dashboard-attention-reasons/g) || []).length).toBe(3);
   const empty = renderDashboard({ attention: { ...attentionData, groups: [], kpis: { ...attentionData.kpis, changed_product_groups_today: 0, changed_competitors_today: 0 } } });
   expect(empty).toContain("今日暂无需要关注的竞争变化");
   expect(empty).not.toContain("一般组");
@@ -1126,7 +1114,7 @@ test("wires Attention retry and renders Group Detail actions", () => {
 test("shows an independent dashboard/today error while preserving Attention results", () => {
   const html = renderDashboard({ status: "error", error: "今日数据暂不可用" });
   expect(html).toContain("今日数据暂不可用");
-  expect(html).not.toContain("重点组");
+  expect(html).toContain("重点组");
   expect(html).toContain("今日需要关注的商品组");
 });
 
@@ -1134,7 +1122,7 @@ test("renders the collection batch status and Group Detail action", () => {
   const running = renderDashboard({ batchState: { ...idleBatchState, status: "running", total: 9, completed: 3, succeeded: 3, runner_active: true } });
   expect(running).toContain("采集中 3 / 9");
   expect(running).toContain('style="width:33.33333333333333%"');
-  expect(running).toContain('class="secondary-button" disabled="">立即采集</button>');
+  expect(running).toContain('class="primary-button" disabled="">立即采集</button>');
   expect(running).toContain("进入组分析");
   const verification = renderDashboard({ batchState: { ...idleBatchState, status: "verification_required", total: 9, completed: 3 } });
   expect(verification).toContain("需要人工验证");
@@ -1143,6 +1131,24 @@ test("renders the collection batch status and Group Detail action", () => {
 test("formats collection durations", () => {
   expect(formatDuration(72)).toBe("1 分 12 秒");
   expect(formatDuration(null)).toBe("—");
+});
+
+test("distinguishes collection evidence from a zero Attention count", () => {
+  const attention = { ...attentionData, groups: [], kpis: { ...attentionData.kpis, changed_product_groups_today: 0, changed_competitors_today: 0 } };
+  const empty = (success_runs: number, failed_runs: number) => renderDashboard({ attention, data: { ...dashboardData, collection_summary: { ...dashboardData.collection_summary, success_runs, failed_runs } } });
+  expect(empty(0, 0)).toContain("今日尚无已完成采集记录");
+  expect(empty(0, 0)).not.toContain("今日暂无需要关注的竞争变化");
+  expect(empty(0, 3)).toContain("今日采集尚未成功");
+  expect(empty(2, 3)).toContain("今日部分采集失败");
+  expect(empty(2, 3)).not.toContain("今日暂无需要关注的竞争变化");
+  expect(empty(2, 0)).toContain("今日暂无需要关注的竞争变化");
+  expect(empty(2, 0)).toContain("成功次数不代表所有监控商品均已采集");
+  const unavailable = renderDashboard({ attention, data: null, status: "error" });
+  expect(unavailable).toContain("暂无关注事件，采集情况待确认");
+  expect(unavailable).not.toContain("暂无采集记录");
+  const loading = renderDashboard({ attention, data: null, status: "loading" });
+  expect(loading).toContain("加载中…");
+  expect(loading).not.toContain("暂无采集记录");
 });
 
 test("renders the seven trend labels and keeps zero-valued chart points valid", () => {
@@ -1654,7 +1660,7 @@ test("reports refresh failure through the real batch delete flow", async () => {
     const baseUrl = server.resolvedUrls?.local[0];
     if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
     await page.goto(baseUrl);
-    await page.getByRole("button", { name: "竞品列表" }).click();
+    await page.getByRole("button", { name: "竞品列表", exact: true }).click();
     await playwrightExpect(page.getByRole("heading", { name: "竞品列表" })).toBeVisible();
     await page.getByRole("checkbox", { name: "选择 待删除商品" }).check();
     await page.getByRole("button", { name: "批量操作（1）" }).click();
@@ -1715,7 +1721,7 @@ test("polls cooling batches through retry and refreshes authoritative data once 
     const baseUrl = server.resolvedUrls?.local[0];
     if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
     await page.goto(baseUrl);
-    await page.getByRole("button", { name: "竞品列表" }).click();
+    await page.getByRole("button", { name: "竞品列表", exact: true }).click();
     await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("17 秒");
     await playwrightExpect(page.getByRole("button", { name: /批量操作/ })).toBeDisabled();
     await page.waitForTimeout(500);
@@ -1775,7 +1781,7 @@ test("refreshes after cooling_down completes directly and ignores historical com
     const baseUrl = server.resolvedUrls?.local[0];
     if (!baseUrl) throw new Error("Vite test server did not expose a local URL");
     await page.goto(baseUrl);
-    await page.getByRole("button", { name: "竞品列表" }).click();
+    await page.getByRole("button", { name: "竞品列表", exact: true }).click();
     await playwrightExpect(page.locator(".batch-status-cooling_down")).toContainText("17 秒");
     const refreshBaseline = { competitorReads, todayReads, attentionReads };
     await playwrightExpect.poll(() => competitorReads, { timeout: 3000 }).toBe(refreshBaseline.competitorReads + 1);
@@ -1784,6 +1790,7 @@ test("refreshes after cooling_down completes directly and ignores historical com
     await playwrightExpect(page.locator(".toast")).toHaveCount(1);
     await playwrightExpect(page.locator(".batch-status-panel")).toHaveCount(0);
     await page.reload();
+    await page.getByRole("button", { name: "竞品监控大屏", exact: true }).click();
     await playwrightExpect(page.locator(".collection-batch")).toContainText("最近批次完成");
     await playwrightExpect(page.locator(".toast")).toHaveCount(0);
   } finally {
