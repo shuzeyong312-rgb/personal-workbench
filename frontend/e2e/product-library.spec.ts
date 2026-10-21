@@ -6,10 +6,10 @@ const product: LibraryProduct = { id: 1, version: 1, manufacturer_name: "厂家 
 const importId = "d0053c5b-5cb1-40b1-ad50-d29dcb4df123";
 const previewRows: PreviewRow[] = [
   { row_number: 2, name: "新增灯", model: "N01", category: "new", errors: [], candidate: [], file_candidates: [], diff: {}, allowed_actions: ["insert", "skip"], default_action: "insert" },
-  { row_number: 3, name: "更新灯", model: "M01", category: "conflict", errors: [], candidate: [{ id: 1, name: "测试灯", model: "M01" }], file_candidates: [], diff: { name: { old: "测试灯", incoming: "更新灯", effective: "更新灯", changed: true }, parameters: { old: "3.7V", incoming: null, effective: "3.7V", changed: false } }, allowed_actions: ["update", "skip"], default_action: "skip" },
+  { row_number: 3, name: "测试灯", model: "M01", wholesale_price: "15.00", category: "duplicate", existing_id: 1, version: 1, errors: [], candidate: [{ id: 1, name: "测试灯", model: "M01", version: 1, can_update: true, diff: { name: { old: "测试灯", incoming: "测试灯", effective: "测试灯", changed: false }, parameters: { old: "3.7V", incoming: null, effective: "3.7V", changed: false }, wholesale_price: { old: "12.30", incoming: "15.00", effective: "15.00", changed: true } } }], file_candidates: [], diff: { name: { old: "测试灯", incoming: "测试灯", effective: "测试灯", changed: false }, parameters: { old: "3.7V", incoming: null, effective: "3.7V", changed: false }, wholesale_price: { old: "12.30", incoming: "15.00", effective: "15.00", changed: true } }, allowed_actions: ["update", "skip"], default_action: "skip" },
   { row_number: 5, category: "invalid", errors: [{ field: "name", code: "required", message: "产品名称不能为空" }], candidate: [], file_candidates: [], diff: {}, allowed_actions: ["skip"], default_action: "skip" },
 ];
-const preview = { import_id: importId, status: "ready", expires_at: "2030-10-18T01:30:00Z", manufacturer_name: "厂家 A", counts: { total_rows: 3, new: 1, existing: 0, conflict: 1, suspected: 0, invalid: 1, ignored_blank_rows: 1 }, rows: previewRows };
+const preview = { import_id: importId, status: "ready", identity_rule_version: 3, expires_at: "2030-10-18T01:30:00Z", manufacturer_name: "厂家 A", counts: { total_rows: 3, new: 1, duplicate: 1, invalid: 1, ignored_blank_rows: 1 }, rows: previewRows };
 const result = { import_id: importId, status: "committed", inserted: 1, updated: 1, skipped: 0, invalid: 1, rows: [{ row_number: 2, outcome: "inserted", product_id: 2, reason_code: "inserted" }, { row_number: 3, outcome: "updated", product_id: 1, reason_code: "updated" }, { row_number: 5, outcome: "invalid", product_id: null, reason_code: "invalid" }] };
 
 async function setup(page: Page) {
@@ -89,7 +89,7 @@ test("V1.1 quotation retains manual prices, requires text review and recovers st
   const rules = { markup_mode: "none", markup_value: "0.00", tax_mode: "excluded", tax_value: "0.00", freight_mode: "separate", freight_value: "0.00", rounding: "cents" };
   await page.route("**/api/product-library/customer-quotations/preview", async route => {
     const body = route.request().postDataJSON(); previews++;
-    await route.fulfill({ json: { items: body.items, rules: { ...rules, ...body.rules }, digest: "controlled-digest", note: "以上报价为未税单价，税费另计。运费另计，金额以订单确认为准。", rows: [{ ...product, final_price: body.overrides["1"] ?? "12.30", manual: !!body.overrides["1"], risks: [], error: null, text_risks: [{ field: "parameters", word: "成本", snippet: "成本需核查" }] }] } });
+    await route.fulfill({ json: { items: body.items, rules: { ...rules, ...body.rules }, digest: "controlled-digest", moq: 1, note_risks: [], terms: "未税单价，运费另计。", note: "以上报价为未税单价，税费另计。运费另计，金额以订单确认为准。", rows: [{ ...product, original_price: product.wholesale_price, final_price: body.overrides["1"] ?? "12.30", manual: !!body.overrides["1"], risks: [], error: null, text_risks: [{ field: "parameters", word: "成本", snippet: "成本需核查" }] }] } });
   });
   await page.route("**/api/product-library/customer-quotations/export", async route => {
     const body = route.request().postDataJSON(); expect(body.overrides).toEqual({ "1": "20.00" }); expect(body.confirmed_risk_ids).toEqual([1]); expect(body.confirmed_all_text).toBe(true);
@@ -97,27 +97,29 @@ test("V1.1 quotation retains manual prices, requires text review and recovers st
     else await route.fulfill({ contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: Buffer.from("controlled-xlsx-download") });
   });
   await page.getByRole("button", { name: "客户报价 Excel", exact: true }).click();
-  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
-  await page.getByLabel("人工报价 1", { exact: true }).fill("20.00");
+  await page.getByRole("button", { name: /生成报价预览|重新核算报价/ }).click();
+  await page.getByLabel("最终报价 1", { exact: true }).fill("20.00");
   await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();
+  await page.getByText("报价配置", { exact: false }).click();
   await page.getByLabel("加价方式").selectOption("percent");
   await page.getByLabel("加价百分点（10表示10%）").fill("10");
-  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
-  await expect(page.getByText("最终报价：20.00 · 人工报价")).toBeVisible();
+  await page.getByRole("button", { name: /生成报价预览|重新核算报价/ }).click();
+  await page.getByRole("button", { name: "查看客户可见参数和卖点" }).click();
+  await expect(page.getByText("最终报价：20.00 · MOQ 1")).toBeVisible();
   await page.getByLabel("已核对全部客户可见产品文本").check();
   await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();
   await page.getByLabel("已逐项核查此产品客户文本", { exact: false }).check();
   await page.getByRole("button", { name: "下载客户 Excel" }).click();
   await expect(page.getByRole("alert").filter({ hasText: "需刷新并复核的产品" })).toBeVisible();
-  await expect(page.getByLabel("人工报价 1", { exact: true })).toHaveValue("20.00");
+  await expect(page.getByLabel("最终报价 1", { exact: true })).toHaveValue("20.00");
   await page.route("**/api/product-library/products/1", route => route.fulfill({ json: { ...product, version: 2 } }));
-  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await page.getByRole("button", { name: /生成报价预览|重新核算报价/ }).click();
   await page.getByLabel("已核对全部客户可见产品文本").check();
   await page.getByLabel("已逐项核查此产品客户文本", { exact: false }).check();
   const download = page.waitForEvent("download"); await page.getByRole("button", { name: "下载客户 Excel" }).click();
   expect((await download).suggestedFilename()).toBe("客户报价.xlsx"); expect(previews).toBe(3);
   await page.getByRole("button", { name: "恢复自动计算", exact: true }).click();
-  await expect(page.getByLabel("人工报价 1", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("最终报价 1", { exact: true })).toHaveValue("20.00");
   await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();
   await page.screenshot({ path: "test-results/product-library-v11-quotation.png", fullPage: true });
   await mock.expectNoUnexpectedApi();
@@ -129,7 +131,7 @@ test("V1.1 dense 193+8 import keeps whole-batch actions visible across pages", a
     ...Array.from({ length: 193 }, (_, i) => ({ ...previewRows[0], row_number: i + 2, model: `N${i}`, name: `普通产品${i}` })),
     ...Array.from({ length: 8 }, (_, i) => ({ ...previewRows[2], row_number: i + 195 })),
   ];
-  const receipt = { ...preview, rows, counts: { total_rows: 201, new: 193, existing: 0, conflict: 0, suspected: 0, invalid: 8, ignored_blank_rows: 0 } };
+  const receipt = { ...preview, rows, counts: { total_rows: 201, new: 193, duplicate: 0, invalid: 8, ignored_blank_rows: 0 } };
   await page.route("**/api/product-library/imports/preview?*", route => route.fulfill({ status: 201, json: receipt }));
   await page.route(`**/api/product-library/imports/${importId}/confirm`, async route => {
     const choices = route.request().postDataJSON().decisions;
@@ -141,13 +143,13 @@ test("V1.1 dense 193+8 import keeps whole-batch actions visible across pages", a
   await expect(dialog.locator(".library-preview-row").first()).toContainText("第 195 行");
   await expect(dialog.locator(".library-preview-row").nth(7)).toContainText("第 202 行");
   await expect(dialog.getByLabel("第 195 行操作")).toBeDisabled();
-  await expect(dialog.locator(".library-preview-row").nth(8).locator("details")).not.toHaveAttribute("open");
+  await expect(dialog.getByRole("button", { name: "核对第 2 行", exact: true })).toHaveAttribute("aria-expanded", "false");
   const confirmButton = dialog.getByRole("button", { name: "确认导入", exact: true });
   await expect(confirmButton).toBeInViewport();
   await dialog.evaluate(element => { element.scrollTop = element.scrollHeight; });
   await expect(confirmButton).toBeInViewport();
   await dialog.getByRole("button", { name: "下一页", exact: true }).click();
-  await expect(dialog.getByText("计划新增 193 · 更新 0 · 错误 8 · 合法跳过 0", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("计划新增 193 · 更新 0 · 异常 8 · 合法跳过 0", { exact: true })).toBeVisible();
   await expect(confirmButton).toBeInViewport();
   await page.screenshot({ path: "test-results/product-library-v11-dense-import.png", fullPage: true });
   await confirmButton.click();
@@ -163,17 +165,17 @@ for (const scope of ["filtered", "all"]) test(`V1.1 stale ${scope} refresh prese
     if (previews === 1) expect(body.scope).toBe(scope);
     else { expect(body.scope).toBe("selected"); expect(body.items).toEqual([{ id: 1, version: 2 }]); }
     const items = previews > 1 && body.scope !== "selected" ? [{ id: 1, version: 2 }, { id: 2, version: 1 }] : [{ id: 1, version: previews > 1 ? 2 : 1 }];
-    await route.fulfill({ json: { items, rules, digest: "controlled-digest", note: "未税单价，运费另计。", rows: items.map(item => ({ ...product, ...item, name: item.id === 2 ? "不应混入的新产品" : product.name, final_price: "12.30", manual: false, risks: [], text_risks: [], error: null })) } });
+    await route.fulfill({ json: { items, rules, digest: "controlled-digest", moq: 1, note_risks: [], terms: "未税单价，运费另计。", note: "未税单价，运费另计。", rows: items.map(item => ({ ...product, ...item, name: item.id === 2 ? "不应混入的新产品" : product.name, final_price: "12.30", manual: false, risks: [], text_risks: [], error: null })) } });
   });
   await page.route("**/api/product-library/customer-quotations/export", route => route.fulfill({ status: 409, json: { code: "quotation_stale", message: "产品已变化，请重新预览", items: [{ id: 1, version: 1, reason: "stale" }] } }));
   await page.getByRole("button", { name: "客户报价 Excel", exact: true }).click();
   await page.getByLabel("导出范围", { exact: false }).selectOption(scope);
-  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await page.getByRole("button", { name: /生成报价预览|重新核算报价/ }).click();
   await page.getByLabel("已核对全部客户可见产品文本").check();
   await page.getByRole("button", { name: "下载客户 Excel" }).click();
   await expect(page.getByRole("alert").filter({ hasText: "需刷新并复核的产品" })).toBeVisible();
   await page.route("**/api/product-library/products/1", route => route.fulfill({ json: { ...product, version: 2 } }));
-  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await page.getByRole("button", { name: /生成报价预览|重新核算报价/ }).click();
   await expect(page.getByText("不应混入的新产品")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();
   expect(previews).toBe(2);
@@ -199,16 +201,17 @@ test("template → preview → explicit diff update → partial import; edit and
   await page.keyboard.press("Escape");
   await page.route("**/api/product-library/imports/preview?*", async route => { expect(decodeURIComponent(route.request().headers()["x-filename"])).toBe("厂家.xlsx"); await route.fulfill({ status: 201, json: preview }); });
   await page.route(`**/api/product-library/imports/${importId}/confirm`, async route => {
-    expect(route.request().postDataJSON()).toEqual({ decisions: [{ row_number: 2, action: "insert" }, { row_number: 3, action: "update" }, { row_number: 5, action: "skip" }] });
+    expect(route.request().postDataJSON()).toEqual({ decisions: [{ row_number: 2, action: "insert" }, { row_number: 3, action: "update", target_id: 1, target_version: 1 }, { row_number: 5, action: "skip" }] });
     await route.fulfill({ json: result });
   });
   await upload(page);
   await expect(page.getByLabel("第 3 行操作")).toHaveValue("skip");
   await expect(page.getByLabel("第 5 行操作")).toBeDisabled();
-  await expect(page.getByText("3.7V（保留原值）", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "核对第 3 行", exact: true }).click();
   page.once("dialog", dialog => dialog.accept());
   await page.getByLabel("第 3 行操作").selectOption("update");
-  await expect(page.getByText("计划新增 1 · 更新 1 · 错误 1 · 合法跳过 0")).toBeVisible();
+  await expect(page.getByText("3.7V（保留原值）", { exact: true })).toBeVisible();
+  await expect(page.getByText("计划新增 1 · 更新 1 · 异常 1 · 合法跳过 0")).toBeVisible();
   await page.screenshot({ path: "test-results/product-library-preview.png", fullPage: true });
   await page.getByRole("button", { name: "确认导入", exact: true }).click();
   await expect(page.getByText("导入完成：新增 1 · 更新 1 · 跳过 0 · 错误 1")).toBeVisible();
@@ -244,27 +247,27 @@ test("lost confirm response queries the original receipt and never resubmits", a
   await mock.expectNoUnexpectedApi();
 });
 
-test("manual suspected duplicate requires explicit consent; failed deletion preserves confirmation", async ({ page }) => {
+test("manual partial matches are allowed and exact duplicates are rejected; deletion preserves confirmation", async ({ page }) => {
   const mock = await setup(page); let creates = 0;
   await page.route("**/api/product-library/products", async route => {
     creates++;
     const payload = route.request().postDataJSON();
-    if (!payload.allow_suspected_duplicate) await route.fulfill({ status: 409, json: { code: "suspected_duplicate", message: "存在同名产品，请确认", candidates: [product] } });
-    else { expect(payload.model).toBeNull(); expect(payload.wholesale_price).toBeNull(); await route.fulfill({ status: 201, json: { ...product, id: 2, model: null } }); }
+    expect(payload.model).toBeNull(); expect(payload.wholesale_price).toBeNull();
+    if (creates === 2) await route.fulfill({ status: 409, json: { code: "product_exists", message: "同厂家同型号同名称产品已存在，请编辑已有产品", candidates: [{ ...product, id: 2, model: null }] } });
+    else await route.fulfill({ status: 201, json: { ...product, id: 2 + creates, model: null, name: payload.name } });
   });
   await page.getByRole("button", { name: "手动新增", exact: true }).click();
   await page.getByLabel("厂家名称", { exact: false }).fill("厂家 A");
   await page.getByLabel("产品名称", { exact: false }).fill("测试灯");
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByRole("dialog")).toContainText("候选 #1");
-  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
-  await page.getByLabel("产品名称", { exact: false }).fill("修正后的名称");
-  await expect(page.getByText("候选 #1", { exact: false })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "手动新增", exact: true }).click();
+  await page.getByLabel("厂家名称", { exact: false }).fill("厂家 A");
   await page.getByLabel("产品名称", { exact: false }).fill("测试灯");
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
-  await page.getByLabel("已核对同名候选，仍保存为独立产品").check();
+  await expect(page.getByRole("dialog")).toContainText("精确重复不能新增");
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+  await page.getByLabel("产品名称", { exact: false }).fill("修正后的名称");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(creates).toBe(3);

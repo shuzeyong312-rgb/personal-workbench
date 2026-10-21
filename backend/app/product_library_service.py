@@ -14,8 +14,8 @@ from xml.etree import ElementTree as ET
 from fastapi import HTTPException
 from fastapi.responses import Response
 from openpyxl import load_workbook
-from sqlalchemy import or_, select, text
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy import inspect, or_, select, text
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 
 from app.models import LibraryImport, LibraryProduct
 
@@ -36,6 +36,7 @@ LIMITS = {
     "selling_points": 10000,
     "price_note": 2000,
 }
+IDENTITY_RULE_VERSION = 3
 MIB = 1024 * 1024
 
 
@@ -145,6 +146,8 @@ def begin_write(db):
 
 def database_error(db, exc, code):
     db.rollback()
+    if isinstance(exc, IntegrityError) and "UNIQUE constraint failed: library_products.manufacturer_name, library_products.model, library_products.name" in str(exc):
+        error(409, "identity_conflict", "精确产品身份已存在，本次未保存，全部回滚；请重新预览核对")
     if isinstance(exc, OperationalError) and (
         "locked" in str(exc).lower() or "busy" in str(exc).lower()
     ):
@@ -161,19 +164,19 @@ def product_or_404(db, product_id):
     return product
 
 
+def require_identity_schema(db):
+    indexes = inspect(db.connection()).get_indexes("library_products")
+    exact = next((index for index in indexes if index["name"] == "uq_library_products_manufacturer_model_name"), None)
+    collations = [row[4] for row in db.execute(text("PRAGMA index_xinfo(\"uq_library_products_manufacturer_model_name\")")) if row[5]]
+    if (collations != ["BINARY", "BINARY", "BINARY"] or any(index["unique"] and index["column_names"] == ["manufacturer_name", "model"] for index in indexes)
+        or not exact or not exact["unique"] or exact["column_names"] != ["manufacturer_name", "model", "name"]
+        or str(exact.get("dialect_options", {}).get("sqlite_where", "")).strip().upper() != "MODEL IS NOT NULL"):
+        error(503, "identity_schema_required", "产品身份规则尚未启用：数据库需完成授权迁移；本次未写入")
+
+
 def candidates_for(db, values, exclude=None):
-    products = db.scalars(
-        select(LibraryProduct)
-        .where(LibraryProduct.manufacturer_name == values["manufacturer_name"])
-        .order_by(LibraryProduct.id)
-    ).all()
-    products = [p for p in products if p.id != exclude]
-    same_model = [
-        p
-        for p in products
-        if values["model"] is not None and p.model == values["model"]
-    ]
-    return same_model, [p for p in products if p.name == values["name"]]
+    products = [p for p in manufacturer_products(db, values["manufacturer_name"]) if p.id != exclude]
+    return [p for p in products if p.model == values["model"] and p.name == values["name"]]
 
 
 def manual_payload(payload, editing=False):
@@ -202,21 +205,14 @@ def version_value(payload):
     return version
 
 
-def check_duplicates(db, values, payload, exclude=None):
-    exact, suspected = candidates_for(db, values, exclude)
+def check_duplicates(db, values, exclude=None):
+    exact = candidates_for(db, values, exclude)
     if exact:
         error(
             409,
             "product_exists",
-            "同厂家同型号产品已存在",
+            "同厂家同型号同名称产品已存在，请编辑已有产品",
             candidates=[product_view(p) for p in exact],
-        )
-    if suspected and not payload.get("allow_suspected_duplicate", False):
-        error(
-            409,
-            "suspected_duplicate",
-            "存在同名产品，请明确确认仍新增或保存",
-            candidates=[product_view(p) for p in suspected],
         )
 
 
@@ -399,89 +395,50 @@ def baseline(products):
     return digest([product_view(product) for product in products])
 
 
+def field_diff(row, product):
+    old = product_view(product)
+    return {field: {"old": old[field], "incoming": row[field],
+                    "effective": row[field] if row[field] is not None else old[field],
+                    "changed": row[field] is not None and row[field] != old[field],
+                    "preserved": row[field] is None} for field in FIELDS}
+
+
 def preview_rows(rows, products):
     valid = [row for row in rows if not row["errors"]]
-    model_groups, no_model_names = defaultdict(list), defaultdict(list)
+    groups = defaultdict(list)
     for row in valid:
-        (
-            model_groups[row["model"]] if row["model"] else no_model_names[row["name"]]
-        ).append(row)
-    for group in [*model_groups.values(), *no_model_names.values()]:
-        if len(group) > 1:
-            for row in group:
-                others = [item["row_number"] for item in group if item is not row]
-                row["errors"].append(
-                    {
-                        "field": "model" if row["model"] else "name",
-                        "code": "duplicate_in_file",
-                        "message": f"文件内重复，相关行：{others}",
-                        "row_numbers": others,
-                    }
-                )
+        groups[(row["model"], row["name"])].append(row)
+    file_duplicates = {}
+    for group in groups.values():
+        for row in group[1:]:
+            file_duplicates[row["row_number"]] = group[0]
     for row in rows:
-        row.update(
-            candidate=[],
-            file_candidates=[],
-            existing_id=None,
-            version=None,
-            diff={},
-            allowed_actions=["skip"],
-            default_action="skip",
-        )
+        row.update(candidate=[], file_candidates=[], existing_id=None, version=None, diff={}, allowed_actions=["skip"], default_action="skip", identity_reason="")
         if row["errors"]:
             row["category"] = "invalid"
             continue
-        exact = [
-            p for p in products if row["model"] is not None and p.model == row["model"]
-        ]
-        named = [p for p in products if p.name == row["name"]]
-        file_named = (
-            [
-                r
-                for r in valid
-                if r is not row and not r["errors"] and r["name"] == row["name"]
-            ]
-            if row["model"] is None
-            else []
-        )
-        row["file_candidates"] = [
-            {field: r[field] for field in ("row_number", "name", "model")}
-            for r in file_named
-        ]
-        if exact:
-            product = exact[0]
-            old = product_view(product)
-            row.update(
-                category="existing" if product.name == row["name"] else "conflict",
-                existing_id=product.id,
-                version=product.version,
-            )
-            row["candidate"] = [
-                {"id": p.id, "name": p.name, "model": p.model} for p in exact
-            ]
-            for field in FIELDS:
-                effective = row[field] if row[field] is not None else old[field]
-                row["diff"][field] = {
-                    "old": old[field],
-                    "incoming": row[field],
-                    "effective": effective,
-                    "changed": effective != old[field],
-                    "preserved": row[field] is None,
-                }
-            if any(value["changed"] for value in row["diff"].values()):
-                row["allowed_actions"].append("update")
-        elif named or file_named:
-            row["category"] = "suspected"
-            row["candidate"] = [
-                {"id": p.id, "name": p.name, "model": p.model} for p in named
-            ]
-            row["allowed_actions"].append("insert")
+        exact = [p for p in products if p.model == row["model"] and p.name == row["name"]]
+        duplicate_of = file_duplicates.get(row["row_number"])
+        if duplicate_of:
+            row["file_candidates"] = [{field: duplicate_of[field] for field in ("row_number", "name", "model")}]
+        for product in exact:
+            diff = field_diff(row, product)
+            can_update = any(value["changed"] for value in diff.values())
+            row["candidate"].append({"id": product.id, "version": product.version, "name": product.name, "model": product.model,
+                                     "reason": "同厂家、同型号、同名称", "can_update": can_update, "diff": diff})
+        update_candidates = [c for c in row["candidate"] if c["can_update"]]
+        if exact or duplicate_of:
+            reason = "同厂家、同型号、同名称已存在" if exact else f"与文件第 {duplicate_of['row_number']} 行重复"
+            row.update(category="duplicate", identity_reason=reason)
+            if exact:
+                row.update(existing_id=exact[0].id, version=exact[0].version, diff=field_diff(row, exact[0]))
         else:
-            row.update(
-                category="new",
-                allowed_actions=["insert", "skip"],
-                default_action="insert",
-            )
+            row.update(category="new", identity_reason="同厂家、同型号、同名称不存在", allowed_actions=["insert", "skip"], default_action="insert")
+        if update_candidates:
+            row["allowed_actions"].append("update")
+            if len(update_candidates) == 1:
+                candidate = update_candidates[0]
+                row.update(existing_id=candidate["id"], version=candidate["version"], diff=candidate["diff"])
     return rows
 
 
@@ -493,6 +450,8 @@ def receipt(db, import_id):
     item = db.get(LibraryImport, import_id)
     if item is None:
         error(404, "import_not_found", "导入预览不存在")
+    if item.status == "ready" and (item.preview or {}).get("identity_rule_version") != IDENTITY_RULE_VERSION:
+        error(409, "preview_rule_changed", "预览使用旧身份规则，不能继续确认；请重新上传并核对")
     if item.status == "ready" and utc(item.expires_at) <= now():
         error(410, "preview_expired", "预览已过期，请重新上传")
     return item
@@ -503,16 +462,16 @@ def decisions(payload):
         error(422, "invalid_decisions", "必须提供逐行决策")
     result = {}
     for decision in payload["decisions"]:
-        if (
-            not isinstance(decision, dict)
-            or set(decision) != {"row_number", "action"}
-            or type(decision["row_number"]) is not int
-            or not isinstance(decision["action"], str)
-            or decision["action"] not in ("insert", "update", "skip")
-            or decision["row_number"] in result
-        ):
+        if (not isinstance(decision, dict) or not {"row_number", "action"}.issubset(decision)
+            or set(decision) - {"row_number", "action", "target_id", "target_version"}
+            or type(decision["row_number"]) is not int or decision["row_number"] < 1
+            or not isinstance(decision["action"], str) or decision["action"] not in ("insert", "update", "skip")
+            or decision["row_number"] in result):
             error(422, "invalid_decisions", "决策行号或动作无效/重复")
-        result[decision["row_number"]] = decision["action"]
+        target = {key: decision[key] for key in ("target_id", "target_version") if key in decision}
+        if target and (decision["action"] != "update" or set(target) != {"target_id", "target_version"} or any(type(value) is not int or value < 1 for value in target.values())):
+            error(422, "invalid_decisions", "更新目标ID和版本必须为正整数，且仅限更新操作")
+        result[decision["row_number"]] = {"action": decision["action"], **target}
     return result
 
 
@@ -645,7 +604,8 @@ def create_product_service(payload, db):
     values = manual_payload(payload)
     try:
         begin_write(db)
-        check_duplicates(db, values, payload)
+        require_identity_schema(db)
+        check_duplicates(db, values)
         product = LibraryProduct(created_at=now(), updated_at=now(), version=1)
         assign(product, values)
         db.add(product)
@@ -665,10 +625,11 @@ def update_product_service(product_id, payload, db):
     version = version_value(payload)
     try:
         begin_write(db)
+        require_identity_schema(db)
         product = product_or_404(db, product_id)
         if product.version != version:
             error(409, "product_stale", "产品已变化，请重新读取")
-        check_duplicates(db, values, payload, product_id)
+        check_duplicates(db, values, product_id)
         old = product_view(product)
         if any((old[field] != value for field, value in values.items())):
             assign(product, values)
@@ -712,6 +673,7 @@ def preview_import_service(content, manufacturer_name, db):
     rows, blank = read_excel(bytes(content))
     try:
         db.execute(text("BEGIN"))
+        require_identity_schema(db)
         products = manufacturer_products(db, manufacturer)
         stamp = baseline(products)
         rows = preview_rows(rows, products)
@@ -720,7 +682,7 @@ def preview_import_service(content, manufacturer_name, db):
         import_id = str(uuid4())
         counts = {
             key: sum((row["category"] == key for row in rows))
-            for key in ("new", "existing", "conflict", "suspected", "invalid")
+            for key in ("new", "duplicate", "invalid")
         }
         counts.update(
             total_rows=len(rows),
@@ -731,6 +693,7 @@ def preview_import_service(content, manufacturer_name, db):
         result = {
             "import_id": import_id,
             "status": "ready",
+            "identity_rule_version": IDENTITY_RULE_VERSION,
             "expires_at": (created + timedelta(minutes=30)).isoformat(),
             "manufacturer_name": manufacturer,
             "counts": counts,
@@ -750,6 +713,9 @@ def preview_import_service(content, manufacturer_name, db):
         )
         db.commit()
         return result
+    except HTTPException:
+        db.rollback()
+        raise
     except SQLAlchemyError as exc:
         database_error(db, exc, "import_save_failed")
 
@@ -766,26 +732,58 @@ def confirm_import_service(import_id, payload, db):
         begin_write(db)
         item = receipt(db, import_id)
         if item.status == "committed":
+            if (item.result or {}).get("identity_rule_version") != IDENTITY_RULE_VERSION:
+                if (item.result or {}).get("identity_rule_version") == 2:
+                    pass
+                else:
+                    if any(set(value) != {"action"} for value in selected.values()):
+                        error(409, "idempotency_conflict", "历史回执不能改变更新目标")
+                    decision_hash = digest(sorted((number, value["action"]) for number, value in selected.items()))
             if item.decision_digest != decision_hash:
                 error(409, "idempotency_conflict", "同一导入已按不同决策提交")
             result = item.result
             db.rollback()
             return result
+        require_identity_schema(db)
         rows = item.preview["rows"]
         if set(selected) != {row["row_number"] for row in rows} or any(
-            (selected[row["row_number"]] not in row["allowed_actions"] for row in rows)
+            (selected[row["row_number"]]["action"] not in row["allowed_actions"] for row in rows)
         ):
             error(422, "invalid_decisions", "必须对全部行提供合法决策")
-        if not any((action != "skip" for action in selected.values())):
+        if not any((value["action"] != "skip" for value in selected.values())):
             error(422, "no_changes_selected", "没有选择新增或更新")
         if (
             baseline(manufacturer_products(db, item.manufacturer_name))
             != item.baseline_digest
         ):
             error(409, "preview_stale", "该厂家产品已变化，请重新上传并确认")
+        # Validate the whole plan against the immutable preview, before any writes.
+        used_targets = set()
+        reserved = {(p.model, p.name) for p in manufacturer_products(db, item.manufacturer_name)}
+        for row in rows:
+            choice = selected[row["row_number"]]
+            if choice["action"] == "skip":
+                continue
+            if choice["action"] == "update":
+                candidate = next((c for c in row["candidate"] if c["id"] == choice.get("target_id") and c["version"] == choice.get("target_version") and c["can_update"]), None)
+                if candidate is None:
+                    error(422, "invalid_update_target", "请明确选择预览中的可更新产品及版本")
+                if candidate["id"] in used_targets:
+                    error(409, "duplicate_update_target", "多行更新同一产品，请保留一行后重新预览")
+                used_targets.add(candidate["id"])
+                # An unchanged key belongs to this target; other keys remain reserved.
+                same_key = row["model"] == candidate["model"] and row["name"] == candidate["name"]
+            else:
+                same_key = False
+            if not same_key:
+                key = (row["model"], row["name"])
+                if key in reserved:
+                    error(409, "identity_conflict", "本批计划与已有或其他计划产品精确重复，全部未写入；请重新核对")
+                reserved.add(key)
         result = {
             "import_id": import_id,
             "status": "committed",
+            "identity_rule_version": IDENTITY_RULE_VERSION,
             "inserted": 0,
             "updated": 0,
             "skipped": 0,
@@ -793,7 +791,8 @@ def confirm_import_service(import_id, payload, db):
             "rows": [],
         }
         for row in rows:
-            action = selected[row["row_number"]]
+            choice = selected[row["row_number"]]
+            action = choice["action"]
             product_id = None
             if row["category"] == "invalid":
                 outcome, reason = ("invalid", "invalid_row")
@@ -812,7 +811,9 @@ def confirm_import_service(import_id, payload, db):
                     db.add(product)
                     outcome = "inserted"
                 else:
-                    product = db.get(LibraryProduct, row["existing_id"])
+                    product = db.get(LibraryProduct, choice["target_id"])
+                    if product is None or product.version != choice["target_version"]:
+                        error(409, "preview_stale", "更新目标已变化，请重新预览")
                     assign(
                         product,
                         {
@@ -833,6 +834,9 @@ def confirm_import_service(import_id, payload, db):
                     "outcome": outcome,
                     "product_id": product_id,
                     "reason_code": reason,
+                    "model": row["model"],
+                    "name": row["name"],
+                    "errors": row["errors"],
                 }
             )
         item.status = "committed"

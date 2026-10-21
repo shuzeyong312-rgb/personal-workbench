@@ -4,15 +4,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { plannedCounts, emptyProduct, ProductEditor, customerCopy, sensitiveText, searchSummary, prioritizedRows, type LibraryProduct, type PreviewRow } from "./ProductLibrary";
 
 describe("产品库导入选择", () => {
-  it("默认只新增 new，逐行更新与疑似新增纳入计划，错误跳过", () => {
+  it("新增默认入计划，重复默认跳过，异常固定跳过", () => {
     const rows = [
       { row_number: 2, category: "new", default_action: "insert" },
-      { row_number: 3, category: "conflict", default_action: "skip" },
-      { row_number: 4, category: "suspected", default_action: "skip" },
+      { row_number: 3, category: "duplicate", default_action: "skip" },
       { row_number: 5, category: "invalid", default_action: "skip" },
     ] as PreviewRow[];
-    expect(plannedCounts(rows, {})).toEqual({ insert: 1, update: 0, skip: 3 });
-    expect(plannedCounts(rows, { 3: "update", 4: "insert" })).toEqual({ insert: 2, update: 1, skip: 1 });
+    expect(plannedCounts(rows, {})).toEqual({ insert: 1, update: 0, skip: 2 });
   });
   it("表单未知价和空型号不填造值", () => {
     expect(emptyProduct.wholesale_price).toBeNull();
@@ -56,4 +54,12 @@ describe("产品库导入选择", () => {
     expect(html).toContain('value="001"');
     expect(html).toContain("3.7V\n1000mAh");
   });
+});
+
+it("价格草稿保留原有金额范围、精度与含端点区间", async () => {
+  const { validPriceFilter } = await import("./ProductLibrary");
+  expect(validPriceFilter("", "", "")).toBe(true);
+  expect(validPriceFilter("between", "0", "999999999.99")).toBe(true);
+  expect(validPriceFilter("between", "10", "10")).toBe(true);
+  for (const [mode, min, max] of [["below", "", ""], ["above", "1.", ""], ["above", "1.001", ""], ["above", "-1", ""], ["above", "1000000000", ""], ["between", "2", "1"], ["above", "1e2", ""]]) expect(validPriceFilter(mode, min, max)).toBe(false);
 });

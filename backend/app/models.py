@@ -357,7 +357,7 @@ class LibraryProduct(Base):
     __table_args__ = (
         CheckConstraint("wholesale_price_cents IS NULL OR (wholesale_price_cents >= 0 AND wholesale_price_cents <= 99999999999)", name="ck_library_products_price"),
         CheckConstraint("version >= 1", name="ck_library_products_version"),
-        Index("uq_library_products_manufacturer_model", "manufacturer_name", "model", unique=True, sqlite_where=text("model IS NOT NULL")),
+        Index("uq_library_products_manufacturer_model_name", "manufacturer_name", "model", "name", unique=True, sqlite_where=text("model IS NOT NULL")),
         {"sqlite_autoincrement": True},
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

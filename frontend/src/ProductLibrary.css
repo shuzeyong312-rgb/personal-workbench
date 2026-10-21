@@ -18,7 +18,7 @@
 :is(.library-page, .library-dialog) button:disabled { opacity: .5; cursor: default; }
 :is(.library-page, .library-dialog) :is(button, input, textarea, select, summary):focus-visible { outline: 2px solid var(--ui-accent, #2563eb); outline-offset: 3px; }
 :is(.library-page, .library-dialog) input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; accent-color: var(--ui-accent, #2563eb); flex: 0 0 auto; }
-.library-toolbar { display: grid; grid-template-columns: minmax(210px, 2fr) repeat(4, minmax(120px, 1fr)) auto; gap: 12px; padding: 20px 24px; align-items: end; }
+.library-toolbar { display: grid; grid-template-columns: minmax(210px, 2fr) repeat(3, minmax(130px, 1fr)); gap: 12px; padding: 20px 24px; align-items: end; }
 .library-toolbar label, .library-form label { display: grid; min-width: 0; gap: 6px; font-size: 13px; color: var(--ui-muted, #626b78); font-weight: 500; margin: 0; }
 .library-toolbar .library-search { grid-column: auto; }
 .library-toolbar > button { justify-self: end; }
@@ -56,7 +56,7 @@
 .library-page .pagination-bar { display: flex; align-items: center; gap: 12px; padding: 16px 24px; flex-wrap: wrap; }
 .library-page .state-panel { padding: 48px 24px; color: var(--ui-muted, #626b78); background: #fff; text-align: center; }
 .library-page .state-panel h2 { font-size: 16px; color: var(--ui-ink, #20242c); }
-.library-dialog { width: min(520px, calc(100vw - 40px)); max-width: none; max-height: calc(100dvh - 48px); margin: auto; padding: 0; overflow: hidden; background: #fff; border: 1px solid var(--ui-border, #dde1e6); border-radius: 16px; box-shadow: none; }
+.library-dialog { width: min(520px, calc(100vw - 40px)); max-width: none; max-height: calc(100dvh - 48px); margin: auto; padding: 0; overflow: clip; background: #fff; border: 1px solid var(--ui-border, #dde1e6); border-radius: 16px; box-shadow: none; }
 .library-dialog[open] { display: flex; flex-direction: column; }
 .library-dialog-wide { width: min(960px, calc(100vw - 48px)); }
 .library-dialog::backdrop { background: rgba(20, 27, 39, .4); backdrop-filter: none; }
@@ -118,7 +118,7 @@
 .library-text { white-space: pre-wrap; }
 :is(.library-page, .library-dialog) ::selection { color: #163873; background: #dbe8ff; }
 .library-dialog-body { scrollbar-width: thin; scrollbar-color: #aeb5c0 transparent; }
-@media (max-width: 1250px) { .library-toolbar { grid-template-columns: minmax(200px, 2fr) repeat(2, minmax(130px, 1fr)); }.library-toolbar .library-search { grid-column: span 2; } }
+@media (max-width: 1100px) { .library-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }.library-toolbar .library-search { grid-column: 1 / -1; } }
 @media (max-width: 1100px) { .library-page .page-header { align-items: start; flex-direction: column; gap: 16px; } }
 @media (max-width: 680px) {
   .library-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; gap: 12px; }
@@ -136,3 +136,174 @@
   .library-dialog :is(button, input:not([type="checkbox"]), select) { min-height: 40px; }
 }
 @media (prefers-reduced-motion: reduce) { :is(.library-page, .library-dialog) button { transition: none; } }
+
+/* Batch workspaces share the existing list vocabulary and keep detail out of scan rows. */
+.library-price-filter { grid-column: span 3; display: flex; align-items: end; gap: 8px; min-width: 0; max-width: 760px; }
+.library-price-filter > label { flex: 0 1 240px; min-width: 0; }
+.library-price-filter > label:first-child { flex: 0 1 230px; }
+.library-review-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 16px 0; }
+.library-review-toolbar label { display: grid; gap: 6px; flex: 1 1 180px; font-size: 12px; }
+.library-review-toolbar > span { color: var(--ui-muted); font-size: 12px; }
+.library-audit-scroll { max-height: min(48dvh, 520px); overflow: auto; scrollbar-gutter: stable; }
+.library-audit-table { width: 100%; min-width: 740px; border-collapse: collapse; table-layout: fixed; }
+.library-audit-table > thead > tr > th { position: sticky; top: 0; z-index: 1; background: #f6f7f8; color: #626b78; font-weight: 500; }
+.library-audit-table > :is(thead, tbody) > tr > :is(th, td) { text-align: left; padding: 10px 12px; border-bottom: 1px solid #dde1e6; font-size: 12px; vertical-align: top; overflow-wrap: anywhere; }
+.library-audit-table > thead > tr > th:first-child { width: 80px; }
+.library-audit-table > thead > tr > th:nth-child(2) { width: 24%; }
+.library-audit-table > tbody > tr:hover { background: #fafbfc; }
+.library-audit-table .library-preview-row { padding: 0; border: 0; }
+.library-row-error { display: block; color: #a33344; margin-top: 4px; }
+.library-row-detail { padding: 8px; background: #f6f7f8; }
+.library-row-detail > p { max-width: 75ch; }
+.library-money { font-variant-numeric: tabular-nums; font-weight: 650; }
+.quotation-audit-table { min-width: 0; width: 100%; table-layout: fixed; }
+.quotation-audit-table > thead > tr > th:first-child { width: 45%; }
+.quotation-audit-table > thead > tr > th:nth-child(2) { width: 20%; text-align: right; }
+.quotation-audit-table > thead > tr > th:nth-child(3) { width: 35%; }
+.quotation-audit-table input { max-width: 100%; }
+.library-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 680px) {
+  .library-price-filter { grid-column: 1 / -1; flex-wrap: wrap; }
+  .library-price-filter > label:first-child { flex-basis: 100%; }
+  .library-audit-scroll { max-height: 45dvh; }
+}
+
+.quotation-audit-table button { max-width: 100%; white-space: normal; }
+
+.library-filter-actions { display: flex; justify-content: end; gap: 8px; align-self: end; }
+
+/* Step two owns its scrolling; pagination and the batch plan stay outside the list. */
+.library-import-review { width: min(1280px, calc(100vw - 48px)); height: min(960px, calc(100dvh - 48px)); }
+.library-import-review .library-dialog-body { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow-x: hidden; overflow-y: auto; padding: 0 24px; }
+.library-import-review .library-dialog-body > :not(.library-audit-scroll) { flex: 0 0 auto; }
+.library-import-review .library-steps { margin: 0; padding-block: 14px; }
+.library-review-overview { padding: 16px 0 0; }
+.library-review-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+.library-review-heading > div { min-width: 0; }
+.library-review-heading > .library-hint { flex: 0 0 auto; }
+.library-review-heading h3 { margin: 0 0 6px; font-size: 20px; color: var(--ui-ink); }
+.library-review-heading p { margin: 0; }
+.library-review-heading p > span { margin-left: 16px; color: var(--ui-muted); }
+.library-review-categories { display: flex; gap: 8px; margin-top: 16px; }
+.library-dialog .library-review-categories button { display: flex; align-items: center; gap: 12px; min-width: 104px; background: var(--ui-surface-subtle); }
+.library-review-categories strong { font-size: 16px; font-weight: 650; }
+.library-dialog .library-review-categories button[aria-pressed="true"] { color: #1d4ed8; background: #edf3ff; border-color: #2563eb; }
+.library-review-guidance { margin: 12px 0 0; color: var(--ui-ink); font-size: 12px; }
+.library-review-guidance > span { color: var(--ui-muted); }
+.library-import-review .library-review-toolbar { margin: 14px 0 10px; gap: 12px; }
+.library-import-review .library-review-toolbar > label:first-child { flex: 2 1 240px; }
+.library-import-review .library-review-toolbar > label:not(:first-child) { flex: 1 1 140px; }
+.library-review-bulk { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 0 12px; }
+.library-review-bulk > span { color: var(--ui-muted); margin-right: auto; font-size: 12px; }
+.library-dialog .library-review-bulk button { min-height: 32px; padding: 5px 10px; font-size: 12px; }
+.library-import-review .library-audit-scroll { position: relative; flex: 1 1 auto; min-height: 120px; max-height: none; border-block: 1px solid var(--ui-border); margin: 0; overscroll-behavior: contain; scroll-padding-top: 48px; }
+.library-import-review .library-audit-table { min-width: 900px; }
+.library-import-review .library-audit-table > thead > tr > th:nth-child(2) { width: 26%; }
+.library-import-review .library-audit-table > thead > tr > th:nth-child(3) { width: 23%; }
+.library-import-review .library-audit-table > thead > tr > th:nth-child(4) { width: 27%; }
+.library-import-review .library-audit-table > thead > tr > th:last-child { width: 116px; }
+.library-import-review .library-audit-table > :is(thead, tbody) > tr > :is(th, td) { padding: 12px; font-size: 13px; }
+.library-import-review .library-audit-table > tbody > tr > td:first-child { color: var(--ui-muted); white-space: nowrap; }
+.library-review-name, .library-import-review .library-match { display: block; margin-top: 5px; }
+.library-import-review .library-match { color: var(--ui-muted); line-height: 1.6; }
+.library-import-review .library-preview-row.is-expanded > tr:first-child { background: #edf3ff; }
+.library-review-badge { display: inline-flex; padding: 2px 8px; border-radius: 20px; font-size: 12px; font-weight: 500; color: #19805c; background: #edf7f1; }
+.library-review-badge.is-duplicate { color: #626b78; background: #f0f1f3; }
+.library-review-badge.is-invalid { color: #a33344; background: #fff0f1; }
+.library-import-review .library-row-detail { padding: 16px; }
+.library-import-review .library-row-detail label { display: grid; gap: 6px; max-width: 600px; }
+.library-import-review .library-row-detail .table-scroll { max-height: none; overflow: visible; }
+.library-import-review .library-diff { margin-top: 16px; }
+.library-import-review .library-diff caption { padding: 0 0 12px; text-align: left; font-weight: 650; color: var(--ui-ink); }
+.library-review-footer { position: sticky; bottom: 0; z-index: 2; display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; background: var(--ui-surface); }
+.library-import-review .library-review-footer { margin-bottom: 0; }
+.library-review-footer .pagination-bar { grid-column: 1 / -1; justify-content: end; margin: 0; padding: 10px 0; border-bottom: 1px solid var(--ui-border); }
+.library-review-footer .pagination-bar > span:first-child { margin-right: auto; }
+.library-review-plan { padding: 12px 0; min-width: 0; }
+.library-review-plan p { margin: 0; font-weight: 650; }
+.library-review-plan > span { display: block; margin-top: 4px; font-size: 12px; color: var(--ui-muted); overflow-wrap: anywhere; }
+.library-dialog .library-review-footer .dialog-actions { margin: 0; padding: 12px 0; border: 0; align-content: center; justify-content: end; }
+@media (min-width: 681px) and (min-height: 651px) and (max-height: 850px) {
+  .library-import-review .dialog-header { padding-block: 12px; }
+  .library-import-review .library-steps { padding-block: 8px; }
+  .library-review-overview { padding-top: 10px; }
+  .library-review-heading h3 { display: none; }
+  .library-review-categories { margin-top: 10px; }
+  .library-review-guidance { margin-top: 8px; }
+  .library-import-review .library-review-toolbar { margin-block: 8px; }
+  .library-import-review .library-review-toolbar label { margin-bottom: 0; }
+  .library-review-bulk { padding-bottom: 8px; }
+  .library-review-footer .pagination-bar { padding-block: 6px; }
+  .library-review-plan { padding-block: 8px; }
+}
+@media (max-width: 1000px) {
+  .library-review-footer { grid-template-columns: 1fr; }
+  .library-review-plan { padding-bottom: 0; }
+  .library-dialog .library-review-footer .dialog-actions { padding-top: 8px; }
+}
+@media (max-width: 680px), (max-height: 650px) {
+  .library-import-review { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
+  .library-import-review .library-dialog-body { display: block; overflow-y: auto; padding-inline: 16px; scroll-padding-bottom: 220px; }
+  .library-import-review .library-audit-scroll { min-height: 0; max-height: none; overflow: auto; }
+  .library-review-heading { display: block; }
+  .library-review-heading h3 { display: none; }
+  .library-review-heading > .library-hint { display: none; }
+  .library-review-heading p > span { display: inline; margin-left: 8px; font-size: 12px; }
+  .library-review-overview { padding-top: 10px; }
+  .library-import-review .library-steps { padding-block: 10px; }
+  .library-review-categories { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .library-dialog .library-review-categories button { min-width: 0; padding: 6px 4px; gap: 4px; flex-wrap: wrap; justify-content: center; font-size: 12px; }
+  .library-review-categories { margin-top: 8px; }
+  .library-review-categories strong { font-size: 14px; }
+  .library-review-guidance { margin-top: 8px; }
+  .library-review-guidance > span { display: none; }
+  .library-import-review .library-review-toolbar { gap: 6px 10px; margin-top: 10px; }
+  .library-import-review .library-review-toolbar label { margin-bottom: 0; }
+  .library-import-review .library-review-toolbar > label:first-child { flex-basis: 100%; }
+  .library-import-review .library-review-toolbar > label:not(:first-child) { flex-basis: 120px; }
+  .library-review-bulk > span { flex-basis: 100%; }
+  .library-review-footer { position: sticky; bottom: 0; margin-inline: -16px; padding-inline: 16px; border-top: 1px solid var(--ui-border); z-index: 2; }
+  .library-review-footer .pagination-bar { gap: 8px; }
+  .library-review-footer .pagination-bar > span:first-child { flex-basis: 100%; }
+  .library-review-plan > span { font-size: 12px; }
+  .library-dialog .library-review-footer .dialog-actions > button:first-child { flex: 1 1 170px; }
+}
+@media (max-width: 680px) {
+  .library-import-review .library-audit-table { display: block; min-width: 0; }
+  .library-import-review .library-audit-table > thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .library-import-review .library-preview-row { display: block; border-bottom: 1px solid var(--ui-border); }
+  .library-import-review .library-preview-row > tr:first-child { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 12px 0; gap: 8px; }
+  .library-import-review .library-audit-table > tbody.library-preview-row > tr > td { display: block; padding: 0; border: 0; min-width: 0; }
+  .library-import-review .library-preview-row > tr:first-child > td:nth-child(-n+3) { grid-column: 1 / -1; }
+  .library-import-review .library-preview-row > tr:first-child > td:first-child { font-size: 12px; }
+  .library-import-review .library-preview-row > tr:first-child > td:nth-child(4)::before { content: "计划操作"; display: block; margin-bottom: 4px; color: var(--ui-muted); font-size: 12px; }
+  .library-import-review .library-preview-row > tr:first-child > td:last-child { align-self: end; }
+  .library-import-review .library-preview-row > tr:not(:first-child) { display: block; }
+  .library-import-review .library-row-detail { padding: 12px; }
+  .library-import-review .library-row-detail .table-scroll { overflow-x: auto; }
+  .library-import-review .library-audit-scroll { overflow: clip; }
+}
+.library-audit-scroll:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+@media (max-width: 1100px) { .library-price-filter, .library-filter-actions { grid-column: 1 / -1; } }
+
+/* Quotation review uses the dialog body as its single vertical scroll surface. */
+.quotation-config { margin-block: 16px 24px; border-block: 1px solid var(--ui-border); }
+.quotation-config > summary { cursor: pointer; padding-block: 16px; font-weight: 600; }
+.quotation-config > summary:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+.quotation-config textarea { display: block; width: 100%; resize: vertical; }
+.quotation-summary { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.quotation-summary span, .quotation-audit-table th small { color: var(--ui-muted); font-size: 12px; font-weight: 400; }
+.quotation-note-preview { padding-block: 16px; border-block: 1px solid var(--ui-border); }
+.quotation-audit-table th { white-space: normal; }
+.quotation-audit-table th small { display: block; margin-top: 4px; }
+.quotation-audit-table > tbody > tr > td.library-money { text-align: right; }
+.quotation-audit-table td { overflow-wrap: anywhere; }
+.quotation-audit-table td p { margin-block: 4px; }
+.quotation-preview { overflow: clip; }
+.quotation-audit-table input { font-variant-numeric: tabular-nums; text-align: right; }
+@media (max-width: 600px) {
+  .quotation-audit-table > thead > tr > th:first-child { width: 38%; }
+  .quotation-audit-table > thead > tr > th:nth-child(2) { width: 24%; }
+  .quotation-audit-table > thead > tr > th:nth-child(3) { width: 38%; }
+  .quotation-audit-table :is(td, th) { padding: 10px 6px; }
+}

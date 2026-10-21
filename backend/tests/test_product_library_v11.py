@@ -39,7 +39,7 @@ def test_quotation_decimal_and_customer_workbook(library):
     assert response.status_code == 200
     wb = load_workbook(io.BytesIO(response.content))
     assert len(wb.worksheets) == 1
-    assert list(wb.active.values)[0] == ("产品型号", "产品名称", "完整参数", "卖点", "最终报价", "报价说明")
+    assert list(wb.active.values)[0] == ("产品型号", "产品名称", "完整参数", "卖点", "最终报价", "MOQ", "报价说明")
     assert wb.active["B2"].value == "=客户文本" and wb.active["B2"].data_type == "s"
     assert Decimal(str(wb.active["E2"].value)) == Decimal("1.01")
     assert not any(c.data_type == "f" or c.comment for row in wb.active for c in row)
@@ -194,7 +194,8 @@ def test_notes_and_complete_workbook_isolation(library, tax, freight):
         xml = b"".join(archive.read(name) for name in archive.namelist()).decode("utf-8", errors="replace")
     for sentinel in ["PRIVATE_SUPPLIER_417", "PRIVATE_NOTE_417", "937.41", "17.13", "6.37", "23.49", "wholesale_price", ">version<", "markup_value", "tax_value", "freight_value"]:
         assert sentinel not in xml and sentinel not in response.headers["content-disposition"]
-    assert ws["F2"].value == data["note"]
+    assert ws["F2"].value == data["moq"]
+    assert (ws["G2"].value or "") == data["note"]
     assert "法定税率" not in data["note"] and "整单分摊" not in data["note"]
 
 
@@ -209,4 +210,33 @@ def test_excel_illegal_text_reports_product_and_field_without_rewriting(library,
     assert response.status_code == 422
     assert response.json()["code"] == "customer_text_invalid"
     assert response.json()["errors"] == [{"id": p["id"], "fields": [field]}]
+    assert client.get(BASE + f"/products/{p['id']}").json() == p
+
+def test_vnext_receipt_retains_source_identity_and_error_after_preview_purged(library):
+    client, _ = library
+    data = preview(client, [["A", "新增名称", None, None, "12.34"], ["B", None], ["C", "跳过名称"]]).json()
+    result = confirm(client, data, {4: "skip"}).json()
+    assert (result["inserted"], result["skipped"], result["invalid"]) == (1, 1, 1)
+    receipt = client.get(BASE + f"/imports/{data['import_id']}").json()
+    assert receipt == result
+    assert [(row["row_number"], row["model"], row["name"], row["outcome"]) for row in receipt["rows"]] == [(2, "A", "新增名称", "inserted"), (3, "B", None, "invalid"), (4, "C", "跳过名称", "skipped")]
+    assert receipt["rows"][1]["errors"]
+    assert client.get(BASE + "/products").json()["total"] == 1
+    assert confirm(client, data, {4: "skip"}).json() == receipt
+
+
+def test_vnext_auto_manual_and_excel_share_authoritative_decimal_calculation(library):
+    client, _ = library
+    p = product(client, wholesale_price="10.01", name="=客户名称", parameters="客户参数", selling_points="客户卖点", price_note="PRIVATE_COST")
+    overrides = {str(p["id"]): "8.21"}
+    rules = {"markup_mode": "percent", "markup_value": "10", "tax_mode": "adjust", "tax_value": "5", "freight_mode": "fixed", "freight_value": "2", "rounding": "integer"}
+    data = quote(client, overrides=overrides, rules=rules)
+    assert data["rows"][0]["automatic_price"] == "14.00"
+    assert data["rows"][0]["final_price"] == "9.00"
+    response = export(client, data, overrides=overrides)
+    wb = load_workbook(io.BytesIO(response.content))
+    assert Decimal(str(wb.active['E2'].value)) == Decimal(data['rows'][0]['final_price'])
+    assert wb.active['B2'].value == '=客户名称' and wb.active['B2'].data_type == 's'
+    automatic = quote(client, rules=rules)
+    assert automatic["rows"][0]["final_price"] == data["rows"][0]["automatic_price"]
     assert client.get(BASE + f"/products/{p['id']}").json() == p

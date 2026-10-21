@@ -5,7 +5,7 @@ import { installApiMock } from "./support/api-mock";
 const product = { id: 1, version: 1, manufacturer_name: "受控验收样本（非真实商品）", model: "LX-120", name: "便携式充电工作灯", parameters: "额定电压：3.7V\n电池容量：2000mAh\n充电接口：USB Type-C\n三档亮度，支持桌面与悬挂使用。", selling_points: "轻巧便携，适用于室内与户外照明。\n可调照明角度，独立开关。", wholesale_price: "28.50", price_note: "整箱采购价格，运费另计。", created_at: "2026-10-18T01:00:00Z", updated_at: "2026-10-20T02:30:00Z" };
 const rows = [{ row_number: 2, name: "便携式充电工作灯", model: "LX-121", category: "new", errors: [], candidate: [], file_candidates: [], diff: {}, allowed_actions: ["insert", "skip"], default_action: "insert" }, { row_number: 3, name: null, model: "LX-122", category: "invalid", errors: [{ field: "name", message: "产品名称不能为空" }], candidate: [], file_candidates: [], diff: {}, allowed_actions: ["skip"], default_action: "skip" }];
 const before = process.env.LIBRARY_BEFORE === "1";
-const directory = `../docs/qa/product-library-ui-v1/${before ? "before" : "after"}`;
+const directory = process.env.LIBRARY_UI_DIRECTORY ?? `../docs/qa/product-library-ui-v1/${before ? "before" : "after"}`;
 async function shot(page: Page, name: string) { await page.screenshot({ path: `${directory}/${name}.png`, fullPage: await page.getByRole("dialog").count() === 0 }); }
 async function setup(page: Page) {
   const mock = await installApiMock(page, { competitors: [] });
@@ -14,7 +14,7 @@ async function setup(page: Page) {
   await page.route("**/api/product-library/products/1", route => route.fulfill({ json: product }));
   await page.route("**/api/product-library/imports/preview?*", route => route.fulfill({ json: { import_id: "ui-fixture", status: "ready", manufacturer_name: product.manufacturer_name, expires_at: "2030-01-01T12:00:00Z", counts: { total_rows: 2, new: 1, invalid: 1, ignored_blank_rows: 0 }, rows } }));
   await page.route("**/api/product-library/imports/ui-fixture/confirm", route => route.fulfill({ json: { import_id: "ui-fixture", status: "committed", inserted: 1, updated: 0, skipped: 0, invalid: 1, rows: [{ row_number: 2, outcome: "inserted", product_id: 3 }, { row_number: 3, outcome: "invalid", product_id: null }] } }));
-  await page.route("**/api/product-library/customer-quotations/preview", route => route.fulfill({ json: { items: [{ id: 1, version: 1 }], rules: route.request().postDataJSON().rules, digest: "fixture", rows: [{ ...product, final_price: "31.35", manual: false, risks: [], text_risks: [], error: null }], note: "以上报价为未税单价，税费另计。运费另计，金额以订单确认为准。" } }));
+  await page.route("**/api/product-library/customer-quotations/preview", route => route.fulfill({ json: { items: [{ id: 1, version: 1 }], rules: route.request().postDataJSON().rules, digest: "fixture", moq: 1, note_risks: [], terms: "未税单价，运费另计。", rows: [{ ...product, original_price: product.wholesale_price, final_price: "31.35", manual: false, risks: [], text_risks: [], error: null }], note: "以上报价为未税单价，税费另计。运费另计，金额以订单确认为准。" } }));
   await page.goto("/");
   await page.getByRole("button", { name: "产品库", exact: true }).click();
   await expect(page.getByRole("cell", { name: product.name, exact: true })).toBeVisible();
@@ -56,7 +56,7 @@ test("whole module visual evidence and modal keyboard geometry", async ({ page, 
   await page.getByLabel("加价方式").selectOption("percent");
   await page.getByLabel("加价百分点（10表示10%）").fill("10");
   await shot(page, "08-quotation-config");
-  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await page.getByRole("button", { name: /生成报价预览|重新核算报价/ }).click();
   await page.getByLabel("已核对全部客户可见产品文本").check();
   await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeEnabled();
   await shot(page, "09-quotation-preview");
@@ -177,14 +177,14 @@ test("narrow long content, import abandonment and quotation risk gates", async (
   await expect(page.getByRole("heading", { name: "批量导入 · 步骤 2/3" })).toBeVisible();
   page.once("dialog", event => event.accept());
   await page.keyboard.press("Escape");
-  await page.route("**/api/product-library/customer-quotations/preview", route => route.fulfill({ json: { items: [{ id: 1, version: 1 }], rules: route.request().postDataJSON().rules, digest: "fixture", rows: [{ ...product, parameters: "采购价需核查", final_price: "20.00", manual: false, risks: ["低于采购成本"], text_risks: [{ field: "parameters", word: "采购价", snippet: "采购价需核查" }], error: null }], note: "以上报价为未税单价，税费另计。运费另计。" } }));
+  await page.route("**/api/product-library/customer-quotations/preview", route => route.fulfill({ json: { items: [{ id: 1, version: 1 }], rules: route.request().postDataJSON().rules, digest: "fixture", moq: 1, note_risks: [], terms: "未税单价，运费另计。", rows: [{ ...product, parameters: "采购价需核查", final_price: "20.00", manual: false, risks: ["低于采购成本"], text_risks: [{ field: "parameters", word: "采购价", snippet: "采购价需核查" }], error: null }], note: "以上报价为未税单价，税费另计。运费另计。" } }));
   await page.route("**/api/product-library/customer-quotations/export", async route => {
     expect(route.request().postDataJSON().confirmed_risk_ids).toEqual([1]);
     expect(route.request().postDataJSON().confirmed_all_text).toBe(true);
     await route.fulfill({ contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: Buffer.from("controlled-download") });
   });
   await page.getByRole("button", { name: "客户报价 Excel", exact: true }).click();
-  await page.getByRole("button", { name: "生成报价预览", exact: true }).click();
+  await page.getByRole("button", { name: /生成报价预览|重新核算报价/ }).click();
   await page.getByText("查看客户可见参数和卖点").click();
   await page.getByLabel("已核对全部客户可见产品文本").check();
   await expect(page.getByRole("button", { name: "下载客户 Excel" })).toBeDisabled();

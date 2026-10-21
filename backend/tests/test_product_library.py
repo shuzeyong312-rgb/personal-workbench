@@ -66,6 +66,7 @@ def confirm(client, receipt, overrides=None):
         {
             "row_number": row["row_number"],
             "action": (overrides or {}).get(row["row_number"], row["default_action"]),
+            **({"target_id": row["existing_id"], "target_version": row["version"]} if (overrides or {}).get(row["row_number"], row["default_action"]) == "update" else {}),
         }
         for row in receipt["rows"]
     ]
@@ -117,9 +118,9 @@ def test_update_diff_blank_zero_and_manual_clear(library):
     original = product(
         client, parameters="旧参数", selling_points="旧卖点", wholesale_price="30.00"
     )
-    data = preview(client, [["M1", "新名称", None, None, "0", None]]).json()
+    data = preview(client, [["M1", "风扇", None, None, "0", None]]).json()
     row = data["rows"][0]
-    assert row["category"] == "conflict" and row["default_action"] == "skip"
+    assert row["category"] == "duplicate" and row["default_action"] == "skip"
     assert row["diff"]["parameters"] == {
         "old": "旧参数",
         "incoming": None,
@@ -172,11 +173,11 @@ def test_no_change_existing_and_independent_manufacturers(library):
 @pytest.mark.parametrize(
     "rows,categories",
     [
-        ([["A", "同名"], ["A", "异名"], ["B", "合法"]], ["invalid", "invalid", "new"]),
-        ([["A", "同名"], ["B", "同名"], [None, "同名"]], ["new", "new", "suspected"]),
+        ([["A", "同名"], ["A", "异名"], ["B", "合法"]], ["new", "new", "new"]),
+        ([["A", "同名"], ["B", "同名"], [None, "同名"]], ["new", "new", "new"]),
         (
             [[None, "同名"], [None, "同名"], ["A", "同名"]],
-            ["invalid", "invalid", "new"],
+            ["new", "duplicate", "new"],
         ),
         ([[123, "同名"], ["123", "同名"]], ["invalid", "new"]),
     ],
@@ -185,28 +186,28 @@ def test_file_duplicate_rules(library, rows, categories):
     client, _ = library
     data = preview(client, rows).json()
     assert [row["category"] for row in data["rows"]] == categories
-    result = confirm(client, data).json()
-    assert result["inserted"] == categories.count("new")
+    response = confirm(client, data)
+    assert response.status_code == 200
+    assert response.json()["inserted"] == categories.count("new")
     for row in data["rows"]:
         assert all("id" not in item for item in row["file_candidates"])
 
 
-def test_suspected_manual_and_excel(library):
+def test_partial_identity_matches_are_allowed_but_exact_null_model_is_duplicate(library):
     client, _ = library
     product(client)
     response = client.post(
         "/api/product-library/products",
         json={"manufacturer_name": "厂家", "name": "风扇"},
     )
-    assert (
-        response.status_code == 409 and response.json()["code"] == "suspected_duplicate"
-    )
-    second = product(client, model=None, allow_suspected_duplicate=True)
+    assert response.status_code == 201
+    assert client.post(
+        "/api/product-library/products",
+        json={"manufacturer_name": "厂家", "name": "风扇"},
+    ).json()["code"] == "product_exists"
     data = preview(client, [[None, "风扇"]]).json()
-    assert data["rows"][0]["category"] == "suspected"
-    assert "update" not in data["rows"][0]["allowed_actions"]
-    assert confirm(client, data, {2: "insert"}).json()["inserted"] == 1
-    assert second["id"] != 1
+    assert data["rows"][0]["category"] == "duplicate"
+    assert data["rows"][0]["allowed_actions"] == ["skip"]
 
 
 @pytest.mark.parametrize(
