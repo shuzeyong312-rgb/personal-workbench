@@ -52,13 +52,23 @@ def quotation_rules(raw):
     return rules
 
 
-def quotation_digest(items, rules):
-    return hashlib.sha256(json.dumps({"items": items, "rules": rules}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+def quotation_options(payload):
+    moq = payload.get("moq", 1)
+    if type(moq) is not int or not 1 <= moq <= 999999999:
+        error(422, "invalid_quotation", "MOQ 必须为1～999999999的整数", field="moq")
+    note = payload.get("note", "")
+    if not isinstance(note, str) or len(note) > 2000 or INVALID_EXCEL_TEXT.search(note):
+        error(422, "invalid_quotation", "报价说明最多2000字符，且不能含 Excel 不支持的字符", field="note")
+    return moq, note.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def text_risks(product):
+def quotation_digest(items, rules, overrides=None, moq=1, note=""):
+    return hashlib.sha256(json.dumps({"items": items, "rules": rules, "overrides": overrides or {}, "moq": moq, "note": note}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def text_risks(product, fields=CUSTOMER_FIELDS):
     risks = []
-    for field in CUSTOMER_FIELDS:
+    for field in fields:
         value = product[field] or ""
         for word in RISK_WORDS:
             for match in re.finditer(re.escape(word), value):
@@ -100,7 +110,7 @@ def quote_row(product, rules, override=None):
     invalid_fields = [field for field in CUSTOMER_FIELDS if INVALID_EXCEL_TEXT.search(product[field] or "")]
     if invalid_fields:
         calculation_error = "客户文本含 Excel 不支持的字符，请在产品资料中核查字段：" + "、".join(invalid_fields)
-    return {"id": product["id"], "version": product["version"], **{field: product[field] for field in CUSTOMER_FIELDS}, "final_price": final, "risks": risks, "text_risks": text_risks(product), "invalid_text_fields": invalid_fields, "error": calculation_error, "manual": override is not None}
+    return {"id": product["id"], "version": product["version"], **{field: product[field] for field in CUSTOMER_FIELDS}, "original_price": product["wholesale_price"], "final_price": final, "risks": risks, "text_risks": text_risks(product), "invalid_text_fields": invalid_fields, "error": calculation_error, "manual": override is not None}
 
 
 def quotation_overrides(raw, items):
@@ -118,8 +128,9 @@ def quotation_overrides(raw, items):
 
 
 def preview_quotation_service(payload, db):
-    if set(payload) - {"scope", "items", "filters", "rules", "include_unquoted", "overrides"}:
+    if set(payload) - {"scope", "items", "filters", "rules", "include_unquoted", "overrides", "moq", "note"}:
         error(422, "invalid_quotation", "预览含未知字段")
+    moq, note = quotation_options(payload)
     scope = payload.get("scope")
     if scope not in ("selected", "filtered", "all") or type(payload.get("include_unquoted", False)) is not bool:
         error(422, "invalid_quotation", "报价范围无效")
@@ -144,7 +155,13 @@ def preview_quotation_service(payload, db):
     if not isinstance(raw, dict):
         error(422, "invalid_quotation", "人工报价格式无效")
     overrides = quotation_overrides({key: value for key, value in raw.items() if key in {str(item["id"]) for item in items}}, items)
-    return {"items": items, "rules": rules, "digest": quotation_digest(items, rules), "rows": [quote_row(product, rules, overrides.get(str(product["id"]))) for product in products], "note": TAX_NOTES[rules["tax_mode"]] + FREIGHT_NOTES[rules["freight_mode"]]}
+    rows = []
+    for product in products:
+        automatic = quote_row(product, rules)
+        row = quote_row(product, rules, overrides[str(product["id"])]) if str(product["id"]) in overrides else automatic.copy()
+        row["automatic_price"] = automatic["final_price"]
+        rows.append(row)
+    return {"items": items, "rules": rules, "digest": quotation_digest(items, rules, overrides, moq, note), "rows": rows, "moq": moq, "note": note, "note_risks": text_risks({"note": note}, ("note",)), "terms": TAX_NOTES[rules["tax_mode"]] + FREIGHT_NOTES[rules["freight_mode"]]}
 
 
 def read_snapshot(items, db):
@@ -156,14 +173,15 @@ def read_snapshot(items, db):
 
 
 def export_quotation_service(payload, db):
-    if set(payload) != {"items", "rules", "digest", "overrides", "confirmed_risk_ids", "confirmed_all_text"}:
+    if set(payload) - {"moq", "note", "confirmed_note"} != {"items", "rules", "digest", "overrides", "confirmed_risk_ids", "confirmed_all_text"}:
         error(422, "invalid_quotation", "导出字段缺失或含未知字段")
     items = product_versions(payload["items"])
     rules = quotation_rules(payload["rules"])
-    if payload["digest"] != quotation_digest(items, rules):
+    moq, note = quotation_options(payload)
+    overrides = quotation_overrides(payload["overrides"], items)
+    if payload["digest"] != quotation_digest(items, rules, overrides, moq, note):
         error(409, "quotation_preview_mismatch", "产品集合或规则已变化，请重新预览")
     products = read_snapshot(items, db)
-    overrides = quotation_overrides(payload["overrides"], items)
     rows = [quote_row(product, rules, overrides.get(str(product["id"]))) for product in products]
     invalid = [{"id": row["id"], "fields": row["invalid_text_fields"]} for row in rows if row["invalid_text_fields"]]
     if invalid:
@@ -173,22 +191,23 @@ def export_quotation_service(payload, db):
     if (payload["confirmed_all_text"] is not True or not isinstance(confirmations, list)
             or any(type(value) is not int for value in confirmations) or not required.issubset(confirmations)):
         error(422, "customer_text_unconfirmed", "请逐项核查敏感产品，并确认已核对全部客户可见文本")
+    if any(word in note for word in RISK_WORDS) and payload.get("confirmed_note") is not True:
+        error(422, "customer_text_unconfirmed", "请核查报价说明中的敏感文本")
     if any(row["error"] for row in rows):
         error(422, "quotation_overflow", "存在超限报价，请调整后重新预览")
     wb = Workbook()
     ws = wb.active
     ws.title = "客户报价"
-    ws.append(["产品型号", "产品名称", "完整参数", "卖点", "最终报价", "报价说明"])
-    note = TAX_NOTES[rules["tax_mode"]] + FREIGHT_NOTES[rules["freight_mode"]]
+    ws.append(["产品型号", "产品名称", "完整参数", "卖点", "最终报价", "MOQ", "报价说明"])
     for row in rows:
-        values = [row[field] or "" for field in CUSTOMER_FIELDS] + [Decimal(row["final_price"]) if row["final_price"] is not None else "待报价", note]
+        values = [row[field] or "" for field in CUSTOMER_FIELDS] + [Decimal(row["final_price"]) if row["final_price"] is not None else "待报价", moq, note]
         ws.append(values)
         for cell in ws[ws.max_row]:
             if isinstance(cell.value, str):
                 cell.data_type = "s"
             cell.alignment = Alignment(wrap_text=True, vertical="top")
         ws.cell(ws.max_row, 5).number_format = "0.00"
-    for column, width in zip("ABCDEF", (20, 28, 55, 45, 18, 65)):
+    for column, width in zip("ABCDEFG", (20, 28, 55, 45, 18, 16, 65)):
         ws.column_dimensions[column].width = width
         ws[f"{column}1"].font = Font(bold=True)
     ws.freeze_panes = "A2"
