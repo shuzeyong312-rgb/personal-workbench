@@ -893,3 +893,5 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .breadcrumb { color: #737b87; }
 .breadcrumb span { color: #aab0b8; }
 .breadcrumb strong { color: #343b45; }
+.group-name-dialog { max-width: calc(100vw - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; }
+.group-name-dialog::backdrop { background: rgba(31, 48, 85, .28); backdrop-filter: blur(7px); }

@@ -5,6 +5,7 @@ const group = { id: 19, name: "A19", created_at: "2026-09-01T00:00:00Z" };
 
 async function addFromDashboard(page: Page, url: string) {
   await page.goto("/");
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品监控大屏", exact: true }).click();
   await expect(page.getByRole("heading", { name: "竞品监控大屏" })).toBeVisible();
   await page.getByRole("button", { name: "添加监控商品" }).click();
   await page.getByLabel("1688 商品链接").fill(url);
@@ -32,6 +33,7 @@ test("loads competitor groups when opening the add dialog on the first Dashboard
     }
   });
   await page.goto("/");
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品监控大屏", exact: true }).click();
   const firstResponse = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === "/api/competitor-groups", { timeout: 5000 });
   await page.getByRole("button", { name: "添加监控商品" }).click();
   const groupSelect = page.getByLabel("竞品组", { exact: true });
@@ -63,6 +65,7 @@ test("shows a group loading error and retries the list request", async ({ page }
     else await route.fulfill({ json: [group] });
   });
   await page.goto("/");
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品监控大屏", exact: true }).click();
   await page.getByRole("button", { name: "添加监控商品" }).click();
   const groupSelect = page.getByLabel("竞品组", { exact: true });
   await expect(page.getByRole("alert")).toContainText("暂时无法获取竞品组");
@@ -83,6 +86,7 @@ test("empty groups permit an ungrouped add and creating a group still selects it
     else await route.fulfill({ json: [] });
   });
   await page.goto("/");
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品监控大屏", exact: true }).click();
   await page.getByRole("button", { name: "添加监控商品" }).click();
   const groupSelect = page.getByLabel("竞品组", { exact: true });
   await expect(groupSelect).toBeEnabled();
@@ -113,6 +117,7 @@ test("pending add dialog keeps its original group selection until groups load", 
   });
   await page.addInitScript(() => localStorage.setItem("workbench.add-submission.v1", JSON.stringify({ submission_id: "submission-pending", inputs: [{ text: "https://detail.1688.com/offer/1001.html", source_line: 1 }], group_id: 19, draft_text: "https://detail.1688.com/offer/1001.html" })));
   await page.goto("/");
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品监控大屏", exact: true }).click();
   const groupsResponse = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === "/api/competitor-groups");
   await page.getByRole("button", { name: "添加监控商品" }).click();
   const groupSelect = page.getByLabel("竞品组", { exact: true });
@@ -130,6 +135,7 @@ test("adds self from Dashboard, lists it under own products, and binds it to one
   const mock = await installApiMock(page, { competitors: [], groups: [group], addProducts: { "1001": "self" }, activeMonitoredProducts: 1 });
   const collectRequest = page.waitForRequest((candidate) => candidate.method() === "POST" && candidate.url().endsWith("/api/competitors/collect-batch"));
   await page.goto("/");
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品监控大屏", exact: true }).click();
   await expect(page.getByRole("button", { name: "立即采集" })).toBeVisible();
   await page.getByRole("button", { name: "立即采集" }).click();
   expect((await collectRequest).postDataJSON()).toEqual({ mode: "all_active" });
@@ -173,6 +179,7 @@ test("adds competitor from Dashboard and keeps it in the competitor list", async
 test("pauses and resumes collection from the Dashboard overview", async ({ page }) => {
   const mock = await installApiMock(page, { competitors: [], batchStatus: { status: "running", outcome_code: null, total: 2, completed: 0, succeeded: 0, failed: 0, remaining: 2, verification_required: 0, current_competitor_id: null, browser_open: true, runner_active: true, auto_resume_attempt: 0, auto_resume_max: 2, cooldown_remaining_seconds: 0, resting_remaining_seconds: 0, operating_metrics_counts: { not_attempted: 0, success: 0, partial: 0, no_values: 0, failed: 0, blocked: 0 }, items: [] } });
   await page.goto("/");
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品监控大屏", exact: true }).click();
   const overview = page.locator(".collection-overview");
   await expect(overview.getByRole("button", { name: "暂停采集" })).toBeVisible();
   await overview.getByRole("button", { name: "暂停采集" }).click();

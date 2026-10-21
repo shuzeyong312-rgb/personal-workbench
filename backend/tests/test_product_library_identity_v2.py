@@ -219,6 +219,25 @@ def test_noncanonical_legacy_data_is_blocked_without_rewriting(tmp_path):
     assert snapshot(url)["products"] == before["products"]
     assert snapshot(url)["revision"] == OLD
 
+
+def test_legacy_null_model_exact_duplicates_block_migration_without_changes(tmp_path):
+    url = f"sqlite:///{(tmp_path/'null-model-duplicates.db').as_posix()}"
+    seed_old(url)
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        for _ in range(2):
+            connection.execute(text("INSERT INTO library_products(manufacturer_name,model,name,created_at,updated_at,version) VALUES ('厂家',NULL,'无型号同名','2026-10-18','2026-10-18',1)"))
+    engine.dispose()
+    before = snapshot(url)
+    with pytest.raises(RuntimeError, match="Exact duplicate product identity"):
+        run_command(url, NEW)
+    after = snapshot(url)
+    assert after["products"] == before["products"] and after["revision"] == OLD
+    for state in (before, after):
+        for index in state["indexes"]:
+            index["dialect_options"]["sqlite_where"] = str(index["dialect_options"]["sqlite_where"])
+    assert after["indexes"] == before["indexes"]
+
 @pytest.mark.parametrize("replacement", [
     "CREATE INDEX uq_library_products_manufacturer_model_name ON library_products(manufacturer_name,model,name) WHERE model IS NOT NULL",
     "CREATE UNIQUE INDEX uq_library_products_manufacturer_model_name ON library_products(manufacturer_name,model) WHERE model IS NOT NULL",

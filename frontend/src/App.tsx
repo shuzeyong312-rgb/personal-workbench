@@ -1602,11 +1602,24 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
 
 export function GroupNameDialog({ mode, name, submitting, error, onChange, onClose, onSubmit }: { mode: "create" | "rename"; name: string; submitting: boolean; error: string | null; onChange: (name: string) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
   const isRename = mode === "rename";
-  return <div className="dialog-backdrop" role="presentation"><section className="dialog group-name-dialog" role="dialog" aria-modal="true" aria-labelledby="group-name-dialog-title">
+  const ref = useRef<HTMLDialogElement>(null);
+  const [opener] = useState(() => typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
+  useEffect(() => {
+    const dialog = ref.current;
+    dialog?.showModal();
+    dialog?.querySelector("input")?.focus();
+    return () => { dialog?.close(); opener?.focus(); };
+  }, []);
+  return <dialog ref={ref} className="dialog group-name-dialog" aria-modal="true" aria-labelledby="group-name-dialog-title" onCancel={event => { event.preventDefault(); if (!submitting) onClose(); }} onKeyDown={event => {
+    if (event.key !== "Tab") return;
+    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)"));
+    const target = event.shiftKey ? controls.at(-1) : controls[0];
+    if (target && (event.shiftKey && document.activeElement === controls[0] || !event.shiftKey && document.activeElement === controls.at(-1))) { event.preventDefault(); target.focus(); }
+  }}>
     <div className="dialog-header"><div><p className="eyebrow">竞品监控</p><h2 id="group-name-dialog-title">{isRename ? "重命名竞品组" : "新增竞品组"}</h2></div><button className="close-button" onClick={onClose} aria-label="关闭" disabled={submitting}>×</button></div>
     <p className="dialog-description">{isRename ? "修改竞品组名称，不影响竞品及历史监控数据。" : "竞品组使用我方商品型号命名，用于归集该商品对应的竞品。"}</p>
     <form onSubmit={onSubmit}><label htmlFor="group-name">竞品组名称</label><input id="group-name" value={name} onChange={(event) => onChange(event.target.value)} placeholder="使用商品型号命名，例如 A19、X6" maxLength={64} autoComplete="off" disabled={submitting} />{error && <div className="feedback feedback-server-error" role="alert">{error}</div>}<div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button type="submit" className="primary-button" disabled={submitting || !name.trim()}>{submitting ? "保存中…" : isRename ? "保存" : "新增竞品组"}</button></div></form>
-  </section></div>;
+  </dialog>;
 }
 
 export function GroupAssignmentDialog({ groupId, groups, submitting, error, onChange, onClose, onSubmit }: { groupId: number | null; groups: CompetitorGroup[]; submitting: boolean; error: string | null; onChange: (groupId: number | null) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
@@ -2479,6 +2492,8 @@ function App() {
   const [dashboardAttention, setDashboardAttention] = useState<GroupAttentionData | null>(null);
   const [dashboardAttentionStatus, setDashboardAttentionStatus] = useState<DashboardStatus>("loading");
   const [dashboardAttentionError, setDashboardAttentionError] = useState<string | null>(null);
+  const dashboardRequestId = useRef(0);
+  const dashboardAttentionRequestId = useRef(0);
   const [listStatus, setListStatus] = useState<ListStatus>("ready");
   const [listError, setListError] = useState<string | null>(null);
   const [listLoaded, setListLoaded] = useState(false);
@@ -2612,28 +2627,38 @@ function App() {
     finally { monitoringLoadInFlight.current = false; }
   }
   async function loadDashboardAttention(): Promise<boolean> {
+    const requestId = ++dashboardAttentionRequestId.current;
     setDashboardAttentionStatus("loading"); setDashboardAttentionError(null);
     try {
       const response = await fetch("/api/dashboard/group-attention");
       if (!response.ok) throw new Error("request failed");
-      setDashboardAttention(await response.json() as GroupAttentionData);
+      const attention = await response.json() as GroupAttentionData;
+      if (requestId !== dashboardAttentionRequestId.current) return true;
+      setDashboardAttention(attention);
       setDashboardAttentionStatus("ready");
       return true;
     } catch {
+      if (requestId !== dashboardAttentionRequestId.current) return true;
       setDashboardAttentionError("暂时无法获取商品组关注信息。"); setDashboardAttentionStatus("error");
       return false;
     }
   }
   async function loadDashboard(): Promise<boolean> {
+    const requestId = ++dashboardRequestId.current;
     setDashboardStatus("loading"); setDashboardError(null);
     const attentionRequest = loadDashboardAttention();
     let dashboardLoaded = false;
     try {
       const response = await fetch("/api/dashboard/today");
       if (!response.ok) throw new Error("request failed");
-      setDashboard(await response.json() as DashboardData); setDashboardStatus("ready");
+      const data = await response.json() as DashboardData;
+      if (requestId !== dashboardRequestId.current) return true;
+      setDashboard(data); setDashboardStatus("ready");
       dashboardLoaded = true;
-    } catch { setDashboardError("暂时无法获取今日变化，请检查服务是否正常运行。"); setDashboardStatus("error"); }
+    } catch {
+      if (requestId !== dashboardRequestId.current) return true;
+      setDashboardError("暂时无法获取今日变化，请检查服务是否正常运行。"); setDashboardStatus("error");
+    }
     const attentionLoaded = await attentionRequest;
     return dashboardLoaded && attentionLoaded;
   }

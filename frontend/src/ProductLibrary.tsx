@@ -285,6 +285,9 @@ export function ProductLibrary() {
   const [batchConfirm, setBatchConfirm] = useState(false); const [quoting, setQuoting] = useState(false);
   const [batchResults, setBatchResults] = useState<{ id: number; outcome: string }[]>([]);
   const [appliedPrice, setAppliedPrice] = useState({ mode: "", min: "", max: "" });
+  const appliedPriceLabel = appliedPrice.mode === "below" ? `小于${appliedPrice.max}`
+    : appliedPrice.mode === "above" ? `大于${appliedPrice.min}`
+    : appliedPrice.mode === "between" ? `${appliedPrice.min}～${appliedPrice.max}（含端点）` : "不限价格";
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const filters: Record<string, string> = { q: q.trim(), sort, price_status: priceStatus };
   if (manufacturer) filters.manufacturer = manufacturer;
@@ -349,6 +352,7 @@ export function ProductLibrary() {
       {priceMode && priceMode !== "below" && <label>最低价<input aria-label="最低价" inputMode="decimal" value={priceMin} onChange={event => { changePrice(priceMode, event.target.value, priceMax); }} /></label>}
       {priceMode && priceMode !== "above" && <label>最高价<input aria-label="最高价" inputMode="decimal" value={priceMax} onChange={event => { changePrice(priceMode, priceMin, event.target.value); }} /></label>}
       </div><div className="library-filter-actions"><button className="secondary-button" onClick={resetFilters}>清空筛选</button><button className="secondary-button" onClick={() => { setSelected({}); setBatchResults([]); setReload(value => value + 1); }}>刷新</button></div></div>
+      {!validPriceFilter(priceMode, priceMin, priceMax) && <p role="status" className="library-price-notice">价格条件尚未生效，请输入完整有效的金额和范围。仍使用上次有效条件：{appliedPriceLabel}；列表和“当前筛选全部结果”报价均按此条件。</p>}
       <div className={`library-selection${Object.keys(selected).length ? " has-selection" : ""}`}><span role="status">跨页已选 {Object.keys(selected).length} 款</span><button className="text-button" disabled={!Object.keys(selected).length} onClick={() => { setSelected({}); setBatchResults([]); }}>清空选择</button><button className="danger-button" disabled={!Object.keys(selected).length} onClick={() => { setBatchConfirm(true); setDeleteError(null); }}>批量删除</button></div>
       {batchResults.filter(row => row.outcome !== "deleted").map(row => <p role="status" key={row.id}>产品 #{row.id}：{row.outcome === "missing" ? "已不存在" : "版本已变化"}，请刷新后重新选择</p>)}
       {status === "loading" && <p role="status" className="state-panel">正在加载产品…</p>}

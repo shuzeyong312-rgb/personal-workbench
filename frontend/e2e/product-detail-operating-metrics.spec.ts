@@ -54,7 +54,7 @@ async function openDetail(page: Page, mode: "normal" | "mixed", adjust?: (data: 
   adjust?.(fixture);
   await page.route("**/api/competitors/1/detail**", route => route.fulfill({ json: fixture }));
   await page.goto("/");
-  await page.getByRole("button", { name: "竞品列表" }).click();
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品列表", exact: true }).click();
   await page.getByRole("button", { name: product.title!, exact: true }).click();
   await expect(page.getByRole("heading", { name: "经营数据" })).toBeVisible();
 }

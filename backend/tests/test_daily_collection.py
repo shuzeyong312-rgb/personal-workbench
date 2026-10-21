@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -127,6 +128,55 @@ def test_disabled_does_not_reserve_or_stop_existing_batch(factory: sessionmaker[
     assert attempt(factory, FixedDailyState(), POST) is None
     assert BATCH_RUNTIME.is_busy()
     BATCH_RUNTIME.finish("success")
+
+
+def test_preparation_lookup_error_does_not_leak_reservation(factory, monkeypatch):
+    competitor(factory)
+    original = Session.scalars
+    def fail(self, statement, *args, **kwargs):
+        if str(statement).startswith("SELECT collection_batches.scheduler_occurrence_key "):
+            raise OperationalError("occurrence lookup", {}, Exception("database is locked"))
+        return original(self, statement, *args, **kwargs)
+    monkeypatch.setattr(Session, "scalars", fail)
+    with pytest.raises(OperationalError):
+        prepare_auto_batch(factory, now=POST)
+    assert not BATCH_RUNTIME.is_busy()
+    with factory() as db:
+        assert db.scalars(select(CollectionBatch)).all() == []
+
+
+def test_preparation_does_not_reload_committed_plan_before_dispatch(factory):
+    competitor(factory)
+    factory.configure(expire_on_commit=True)
+    engine = factory.kw["bind"]
+    def no_reload(connection, cursor, statement, parameters, context, executemany):
+        if "WHERE collection_batches.id =" in statement and BATCH_RUNTIME.runner_active:
+            raise OperationalError(statement, parameters, Exception("post-commit read failed"))
+    event.listen(engine, "before_cursor_execute", no_reload)
+    try:
+        result = prepare_auto_batch(factory, now=POST)
+        assert result is not None and BATCH_RUNTIME.batch_id == result.batch_id
+    finally:
+        event.remove(engine, "before_cursor_execute", no_reload)
+    with factory() as db:
+        assert db.get(CollectionBatch, result.batch_id).lifecycle_status == "created"
+
+
+def test_preparation_write_failure_releases_reservation_and_plan(factory, monkeypatch):
+    competitor(factory)
+    original = daily.create_collection_batch
+    def fail(db, *args, **kwargs):
+        assert BATCH_RUNTIME.is_busy()
+        # Flush the real plan and items, then fail before commit.
+        with monkeypatch.context() as patch:
+            patch.setattr(db, "commit", lambda: (_ for _ in ()).throw(OperationalError("commit", {}, Exception("database is locked"))))
+            return original(db, *args, **kwargs)
+    monkeypatch.setattr(daily, "create_collection_batch", fail)
+    with pytest.raises(OperationalError):
+        prepare_auto_batch(factory, now=POST)
+    assert not BATCH_RUNTIME.is_busy()
+    with factory() as db:
+        assert db.scalars(select(CollectionBatch)).all() == []
 
 
 def test_skip_late_start_and_post_plan_enable_do_not_catch_up(factory: sessionmaker[Session]) -> None:

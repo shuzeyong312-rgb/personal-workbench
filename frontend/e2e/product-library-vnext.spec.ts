@@ -24,7 +24,7 @@ test("file input cancellation preserves the import dialog and form", async ({ pa
   await expect(dialog).toHaveCount(0);
 });
 
-test("incomplete price changes never send invalid bounds", async ({ page }) => {
+test("incomplete price changes never send invalid bounds", async ({ page }, testInfo) => {
   await installApiMock(page, { competitors: [] });
   const queries: URLSearchParams[] = [];
   await page.route("**/api/product-library/products?*", route => { queries.push(new URL(route.request().url()).searchParams); return route.fulfill({ json: { items: [], total: 0 } }); });
@@ -38,11 +38,14 @@ test("incomplete price changes never send invalid bounds", async ({ page }) => {
   await page.getByLabel("产品库关键词").fill("同步查询屏障");
   await expect.poll(() => queries.some(params => params.get("q") === "同步查询屏障")).toBe(true);
   expect(queries.filter(params => params.has("price_mode"))).toEqual([]);
+  await expect(page.getByRole("status").filter({ hasText: "价格条件尚未生效" })).toContainText("仍使用上次有效条件：不限价格");
   await page.getByLabel("最高价", { exact: true }).fill("20");
   await expect.poll(() => queries.at(-1)?.get("price_max")).toBe("20");
+  await expect(page.getByRole("status").filter({ hasText: "价格条件尚未生效" })).toHaveCount(0);
   await page.screenshot({ path: "../docs/qa/product-library-vnext/08-price-range.png", fullPage: true });
   await page.getByLabel("价格条件", { exact: true }).selectOption("below");
   await expect(page.getByLabel("最低价", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "价格条件尚未生效" })).toContainText("仍使用上次有效条件：10～20");
   await page.getByLabel("最高价", { exact: true }).fill("0");
   await expect.poll(() => queries.at(-1)?.get("price_mode")).toBe("below");
   expect(queries.at(-1)?.has("price_min")).toBe(false);
@@ -50,6 +53,23 @@ test("incomplete price changes never send invalid bounds", async ({ page }) => {
   await page.getByLabel("最低价", { exact: true }).fill("999999999.99");
   await expect.poll(() => queries.at(-1)?.get("price_mode")).toBe("above");
   expect(queries.at(-1)?.has("price_max")).toBe(false);
+  await page.getByLabel("价格条件", { exact: true }).selectOption("below");
+  await page.getByLabel("最高价", { exact: true }).fill("100");
+  await expect.poll(() => queries.at(-1)?.get("price_max")).toBe("100");
+  await page.getByLabel("价格条件", { exact: true }).selectOption("above");
+  await page.getByLabel("最低价", { exact: true }).fill("200.");
+  await expect(page.getByRole("status").filter({ hasText: "价格条件尚未生效" })).toContainText("仍使用上次有效条件：小于100");
+  await page.getByLabel("产品库关键词").fill("核对上次条件");
+  await expect.poll(() => queries.at(-1)?.get("q")).toBe("核对上次条件");
+  expect(queries.at(-1)?.get("price_mode")).toBe("below");
+  expect(queries.at(-1)?.get("price_max")).toBe("100");
+  await page.screenshot({ path: testInfo.outputPath("invalid-price-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("status").filter({ hasText: "价格条件尚未生效" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath("invalid-price-narrow.png"), fullPage: true });
+  await page.getByLabel("最低价", { exact: true }).fill("200");
+  await expect(page.getByRole("status").filter({ hasText: "价格条件尚未生效" })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "../docs/qa/product-library-vnext/09-narrow-price.png", fullPage: true });
 });

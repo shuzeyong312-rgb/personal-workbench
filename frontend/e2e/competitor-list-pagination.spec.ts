@@ -4,7 +4,7 @@ import { installApiMock } from "./support/api-mock";
 
 async function openCompetitorList(page: Page) {
   await page.goto("/");
-  await page.getByRole("button", { name: "竞品列表" }).click();
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品列表", exact: true }).click();
   await expect(page.getByRole("heading", { name: "竞品列表" })).toBeVisible();
   await expect(page.getByText("共 23 个竞品").first()).toBeVisible();
 }

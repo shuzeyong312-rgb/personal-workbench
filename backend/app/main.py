@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import os
+import sqlite3
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from threading import Event
@@ -9,11 +11,12 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from datetime import datetime, timezone
 
 from app.collection.daily import FixedDailyState, prepare_auto_batch
-from app.collection.service import fail_created_batch, recover_interrupted_batches, shutdown_batch_runner, start_batch_task
+from app.collection.service import BATCH_RUNTIME, fail_created_batch, recover_interrupted_batches, shutdown_batch_runner, start_batch_task
 from app.collection_runs import router as collection_runs_router
 from app.collection_batches import router as collection_batches_router
 from app.competitors import router as competitors_router
@@ -28,6 +31,7 @@ from app.product_library import router as product_library_router
 
 
 DAILY_COLLECTION_INTERVAL_SECONDS = 60
+logger = logging.getLogger(__name__)
 
 
 def _session_factory() -> Session:
@@ -47,22 +51,39 @@ async def _daily_collection_loop(
 ) -> None:
     state = FixedDailyState()
     lifecycle_started_at = datetime.now(timezone.utc)
+    pending_batch_id = None
     while not thread_stop_event.is_set():
-        start = await asyncio.to_thread(
-            prepare_auto_batch, _session_factory, state=state,
-            lifecycle_started_at=lifecycle_started_at, stop_event=thread_stop_event,
-        )
-        if start is not None and not thread_stop_event.is_set():
-            try:
-                start_batch_task(_session_factory, start.competitor_ids, batch_reservation=start.reservation_token, config=start.config, persisted_batch_id=start.batch_id)
-            except Exception:
-                from app.collection.service import BATCH_RUNTIME
+        try:
+            if pending_batch_id is None:
+                start = await asyncio.to_thread(
+                    prepare_auto_batch, _session_factory, state=state,
+                    lifecycle_started_at=lifecycle_started_at, stop_event=thread_stop_event,
+                )
+                if start is not None:
+                    pending_batch_id = start.batch_id
+                    if not thread_stop_event.is_set():
+                        try:
+                            start_batch_task(_session_factory, start.competitor_ids, batch_reservation=start.reservation_token, config=start.config, persisted_batch_id=start.batch_id)
+                        except Exception:
+                            logger.error("Automatic collection runner dispatch failed")
+                        else:
+                            pending_batch_id = None
+            if pending_batch_id is not None:
+                # Retain failed dispatch cleanup across locked ticks before making a new plan.
+                fail_created_batch(_session_factory, pending_batch_id)
+                pending_batch_id = None
                 BATCH_RUNTIME.finish("collect_failed")
-                fail_created_batch(_session_factory, start.batch_id)
                 BATCH_RUNTIME.set_persisted_batch_state("terminal", "infrastructure_error")
-        if thread_stop_event.is_set():
-            return
-        if await _wait_for_stop(stop_event, DAILY_COLLECTION_INTERVAL_SECONDS):
+        except OperationalError as exc:
+            if not isinstance(exc.orig, sqlite3.OperationalError) or getattr(exc.orig, "sqlite_errorcode", 0) & 0xff not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                if pending_batch_id is not None:
+                    BATCH_RUNTIME.finish("collect_failed")
+                raise
+            logger.warning("Automatic collection database locked; retrying next tick")
+        if thread_stop_event.is_set() or await _wait_for_stop(stop_event, DAILY_COLLECTION_INTERVAL_SECONDS):
+            if pending_batch_id is not None:
+                # Startup recovery closes the durable plan if shutdown cannot write it.
+                BATCH_RUNTIME.finish("collect_failed")
             return
 
 
@@ -81,8 +102,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         thread_stop_event.set()
         stop_event.set()
-        await scheduler_task
-        await shutdown_batch_runner()
+        try:
+            await scheduler_task
+        finally:
+            await shutdown_batch_runner()
 
 
 app = FastAPI(lifespan=lifespan)

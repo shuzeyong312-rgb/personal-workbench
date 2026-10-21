@@ -27,6 +27,8 @@ def upgrade():
             or not isinstance(name, str) or not name or len(name) > 200 or name != name.replace("\r\n", "\n").replace("\r", "\n").strip()
             or model is not None and (not isinstance(model, str) or not model or len(model) > 200 or model != model.replace("\r\n", "\n").replace("\r", "\n").strip())):
             raise RuntimeError("Noncanonical product identity; review data before migration")
+    if bind.execute(sa.text("SELECT 1 FROM library_products GROUP BY manufacturer_name, model, name HAVING count(*) > 1 LIMIT 1")).first():
+        raise RuntimeError("Exact duplicate product identity; review data before migration")
     op.create_index(NEW, "library_products", ["manufacturer_name", "model", "name"], unique=True, sqlite_where=sa.text("model IS NOT NULL"))
     op.drop_index(OLD, table_name="library_products")
 

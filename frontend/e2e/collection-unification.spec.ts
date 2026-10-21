@@ -63,6 +63,7 @@ test('clipboard and manual submission dedupe by Offer while preserving source li
     await route.fulfill({ status: 202, json: { accepted: true, task_id: taskId, task: { task_id: taskId, task_kind: 'add_links', trigger_kind: 'add_links', lifecycle_status: 'running', outcome_code: null, planned_products: posted!.inputs.length, items: [], input_summary: { total: posted!.inputs.length, processed: 0 } } } });
   });
   await page.goto('/');
+  await page.locator('.workspace-sidebar').getByRole('button', { name: '竞品监控大屏', exact: true }).click();
   await page.getByRole('button', { name: '添加监控商品', exact: true }).click();
   const textarea = page.getByLabel('1688 商品链接');
   const original = 'https://detail.1688.com/offer/101.html';
@@ -99,6 +100,7 @@ test('100-item limit uses the final deduplicated submission list', async ({ page
     await route.fulfill({ status: 202, json: { accepted: true, task_id: taskId, task: { task_id: taskId, task_kind: 'add_links', trigger_kind: 'add_links', lifecycle_status: 'running', outcome_code: null, planned_products: posted!.inputs.length, items: [], input_summary: { total: posted!.inputs.length, processed: 0 } } } });
   });
   await page.goto('/');
+  await page.locator('.workspace-sidebar').getByRole('button', { name: '竞品监控大屏', exact: true }).click();
   await page.getByRole('button', { name: '添加监控商品', exact: true }).click();
   const textarea = page.getByLabel('1688 商品链接');
   const link = (id: number) => `https://detail.1688.com/offer/${id}.html`;
@@ -119,6 +121,7 @@ test('add live progress uses input units and the existing Dashboard controls', a
   const mock = await installApiMock(page, { competitors: [], batchStatus: progress });
   await page.setViewportSize({ width: 1680, height: 1100 });
   await page.goto('/');
+  await page.locator('.workspace-sidebar').getByRole('button', { name: '竞品监控大屏', exact: true }).click();
   const overview = page.locator('.collection-overview');
   await expect(overview).toContainText('添加链接：已处理 5/20');
   await expect(overview).toContainText('当前输入：第 6 条');
@@ -148,6 +151,7 @@ test('network uncertainty survives refresh and queries the same submission witho
     await route.fulfill({ json: { accepted: true, task_id: original!.submission_id, task: { ...task, task_id: original!.submission_id } } });
   });
   await page.goto('/');
+  await page.locator('.workspace-sidebar').getByRole('button', { name: '竞品监控大屏', exact: true }).click();
   await page.getByRole('button', { name: '添加监控商品', exact: true }).click();
   const originalText = [...evidence.submission.inputs.map((input: { text: string }) => input.text), 'https://detail.1688.com/offer/101.html?duplicate=1'].join('\n');
   await page.getByLabel('1688 商品链接').fill(originalText);
@@ -157,6 +161,7 @@ test('network uncertainty survives refresh and queries the same submission witho
   expect(original!.inputs.map(input => input.source_line)).toEqual([1, 2, 3, 4, 5]);
   const id = original!.submission_id;
   await page.reload();
+  await page.locator('.workspace-sidebar').getByRole('button', { name: '竞品监控大屏', exact: true }).click();
   await page.getByRole('button', { name: '添加监控商品', exact: true }).click();
   await expect(page.getByLabel('1688 商品链接')).toHaveValue(originalText);
   await page.getByRole('dialog').getByRole('button', { name: /添加.*监控商品/ }).click();
@@ -183,6 +188,7 @@ for (const previousState of ['absent', 'accepted', 'unknown']) {
       await route.fulfill({ status: 202, json: { accepted: true, task_id: body.submission_id, task: { ...task, task_id: body.submission_id, lifecycle_status: 'running', items: [] } } });
     });
     await page.goto('/');
+    await page.locator('.workspace-sidebar').getByRole('button', { name: '竞品监控大屏', exact: true }).click();
     await page.getByRole('button', { name: '添加监控商品', exact: true }).click();
     await page.getByLabel('1688 商品链接').fill('edited-link');
     await page.getByRole('dialog').getByRole('button', { name: /添加.*监控商品/ }).click();
@@ -205,6 +211,7 @@ test('verification terminal refreshes product facts once and rest displays remai
   page.on('request', request => { if (request.url().includes('/api/competitors?')) productReads++; });
   await page.route('**/api/competitors/collect-batch/status', route => route.fulfill({ json: finished ? { ...progress, lifecycle_status: 'terminal', status: 'verification_required', runner_active: false } : { ...progress, status: 'resting', resting_remaining_seconds: 17 } }));
   await page.goto('/');
+  await page.locator('.workspace-sidebar').getByRole('button', { name: '竞品监控大屏', exact: true }).click();
   await expect(page.locator('.collection-overview')).toContainText('计划休息剩余');
   const before = productReads;
   finished = true;

@@ -118,10 +118,6 @@ def prepare_auto_batch(
             if db.scalar(select(CollectionBatch.id).where(CollectionBatch.lifecycle_status.in_(("created", "running"))).limit(1)) is not None:
                 return None
             config = BatchConfig(**batch_config_values(settings))
-            if not BATCH_RUNTIME.reserve(ids, config):
-                return None
-            token = BATCH_RUNTIME.reservation_token()
-            assert token is not None
             due_facts = []
             for competitor_id in sorted(ids):
                 latest = db.scalar(select(CollectionRun).where(
@@ -136,6 +132,12 @@ def prepare_auto_batch(
             )).all()
             generation = sum(key.startswith(f"{prefix}:") for key in existing_keys) + 1
             occurrence_key = f"{prefix}:{generation}"
+            if not BATCH_RUNTIME.reserve(ids, config):
+                return None
+            token = BATCH_RUNTIME.reservation_token()
+            assert token is not None
+            # Binding a committed plan must not perform another fallible database read.
+            db.expire_on_commit = False
             try:
                 batch = create_collection_batch(
                     db, ids, config, trigger_kind="scheduled",
@@ -143,9 +145,9 @@ def prepare_auto_batch(
                 )
             except IntegrityError:
                 db.rollback()
+                BATCH_RUNTIME.finish("collect_failed")
                 winner = db.scalar(select(CollectionBatch).where(CollectionBatch.scheduler_occurrence_key == occurrence_key))
                 if winner is None:
-                    BATCH_RUNTIME.finish("collect_failed")
                     raise
                 BATCH_RUNTIME.finish("success")
                 return None
