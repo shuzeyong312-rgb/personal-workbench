@@ -1487,6 +1487,104 @@ export function groupEventSummaryLabel(events: GroupEventPage["items"]): string 
   return `${hasProduct ? `商品${action}` : ""}${hasProduct && skuCount ? "，涉及 " : ""}${skuCount ? `${skuCount} 个 SKU${hasProduct ? "" : ` ${action}`}` : ""} · ${events.length} 条原始变化`;
 }
 
+type AdvancedFilterField = "shop_name" | "title" | "offer_id" | "price_min" | "price_max" | "min_order_quantity" | "sku_count" | "total_stock" | OperatingMetricSortKey | "has_reviews";
+type AdvancedFilterOperator = "contains" | "not_contains" | "equals" | "not_equals" | "gt" | "gte" | "lt" | "lte" | "between" | "has_value" | "no_value" | "before" | "after" | "date_between" | "raw_equals" | "raw_not_equals" | "has_reviews" | "no_reviews";
+export type AdvancedFilterRule = { id: number; field: AdvancedFilterField; operator: AdvancedFilterOperator; value: string; value2: string };
+type FilterVerdict = "match" | "no_match" | "unknown";
+type AdvancedFilterFieldDefinition = { label: string; kind: "text" | "number" | "integer" | "percent" | "date" | "bucket" | "reviews"; metricKey?: OperatingMetricSortKey };
+
+const advancedFilterFields: Record<AdvancedFilterField, AdvancedFilterFieldDefinition> = {
+  shop_name: { label: "店铺名称", kind: "text" }, title: { label: "商品名称", kind: "text" }, offer_id: { label: "Offer ID", kind: "text" },
+  price_min: { label: "展示报价下限", kind: "number" }, price_max: { label: "展示报价上限", kind: "number" }, min_order_quantity: { label: "MOQ", kind: "integer" }, sku_count: { label: "SKU 数", kind: "integer" }, total_stock: { label: "完整库存", kind: "integer" },
+  listing_time: { label: "上架时间", kind: "date", metricKey: "listing_time" }, monthly_deal: { label: "月成交", kind: "bucket", metricKey: "monthly_deal" }, monthly_dropship: { label: "月代销", kind: "bucket", metricKey: "monthly_dropship" }, annual_units: { label: "年成交件数", kind: "bucket", metricKey: "annual_units" }, annual_orders: { label: "年成交笔数", kind: "bucket", metricKey: "annual_orders" },
+  review_count: { label: "评论数", kind: "integer", metricKey: "review_count" }, positive_rate: { label: "好评率", kind: "percent", metricKey: "positive_rate" }, pickup_rate: { label: "揽收率", kind: "percent", metricKey: "pickup_rate" }, has_reviews: { label: "是否有评价", kind: "reviews", metricKey: "review_count" },
+};
+const advancedFilterOperators: Record<AdvancedFilterFieldDefinition["kind"], { value: AdvancedFilterOperator; label: string }[]> = {
+  text: [{ value: "contains", label: "包含" }, { value: "not_contains", label: "不包含" }, { value: "equals", label: "等于" }],
+  number: [{ value: "equals", label: "等于" }, { value: "not_equals", label: "不等于" }, { value: "gt", label: "大于" }, { value: "gte", label: "大于等于" }, { value: "lt", label: "小于" }, { value: "lte", label: "小于等于" }, { value: "between", label: "介于" }, { value: "has_value", label: "有有效值" }, { value: "no_value", label: "无有效值" }],
+  integer: [{ value: "equals", label: "等于" }, { value: "not_equals", label: "不等于" }, { value: "gt", label: "大于" }, { value: "gte", label: "大于等于" }, { value: "lt", label: "小于" }, { value: "lte", label: "小于等于" }, { value: "between", label: "介于" }, { value: "has_value", label: "有有效值" }, { value: "no_value", label: "无有效值" }],
+  percent: [{ value: "equals", label: "等于" }, { value: "not_equals", label: "不等于" }, { value: "gt", label: "大于" }, { value: "gte", label: "大于等于" }, { value: "lt", label: "小于" }, { value: "lte", label: "小于等于" }, { value: "between", label: "介于" }, { value: "has_value", label: "有有效值" }, { value: "no_value", label: "无有效值" }],
+  date: [{ value: "before", label: "早于" }, { value: "after", label: "晚于" }, { value: "date_between", label: "介于日期范围" }],
+  bucket: [{ value: "raw_equals", label: "原始档位为" }, { value: "raw_not_equals", label: "原始档位不为" }, { value: "gt", label: "确定大于" }, { value: "gte", label: "确定大于等于" }, { value: "lt", label: "确定小于" }, { value: "lte", label: "确定小于等于" }],
+  reviews: [{ value: "has_reviews", label: "有评价" }, { value: "no_reviews", label: "无评价" }],
+};
+const isValueOperator = (operator: AdvancedFilterOperator) => !["has_value", "no_value", "has_reviews", "no_reviews"].includes(operator);
+const ruleLabel = (rule: AdvancedFilterRule) => `${advancedFilterFields[rule.field].label} ${advancedFilterOperators[advancedFilterFields[rule.field].kind].find(option => option.value === rule.operator)?.label ?? rule.operator}${isValueOperator(rule.operator) ? ` ${rule.value}${["between", "date_between"].includes(rule.operator) ? ` 至 ${rule.value2}` : ""}` : ""}`;
+
+function metricRawValue(product: GroupProductFacts, key: OperatingMetricSortKey): string | null {
+  const metric = product.operating_metrics?.find(item => item.metric_key === key);
+  return metric?.eligible && metric.latest_attempt?.status === "observed" ? metric.latest_attempt.raw_value?.trim() || null : null;
+}
+function numericRuleVerdict(value: number | null, rule: AdvancedFilterRule): FilterVerdict {
+  if (rule.operator === "has_value") return value === null ? "no_match" : "match";
+  if (rule.operator === "no_value") return value === null ? "match" : "no_match";
+  if (value === null) return "unknown";
+  const first = Number(rule.value), second = Number(rule.value2);
+  if (!Number.isFinite(first) || (rule.operator === "between" && !Number.isFinite(second))) return "no_match";
+  if (rule.operator === "equals") return value === first ? "match" : "no_match";
+  if (rule.operator === "not_equals") return value !== first ? "match" : "no_match";
+  if (rule.operator === "gt") return value > first ? "match" : "no_match";
+  if (rule.operator === "gte") return value >= first ? "match" : "no_match";
+  if (rule.operator === "lt") return value < first ? "match" : "no_match";
+  if (rule.operator === "lte") return value <= first ? "match" : "no_match";
+  return value >= Math.min(first, second) && value <= Math.max(first, second) ? "match" : "no_match";
+}
+function bucketRuleVerdict(raw: string | null, rule: AdvancedFilterRule): FilterVerdict {
+  if (!raw) return "unknown";
+  if (rule.operator === "raw_equals") return raw === rule.value ? "match" : "no_match";
+  if (rule.operator === "raw_not_equals") return raw !== rule.value ? "match" : "no_match";
+  const match = raw.match(/^([<>]?)(\d+(?:\.\d+)?)(\+)?$/);
+  const threshold = Number(rule.value);
+  if (!match || !Number.isFinite(threshold)) return "unknown";
+  const marker = match[1], value = Number(match[2]), plus = !!match[3];
+  const minimum = marker === "<" ? -Infinity : value;
+  const maximum = marker === "<" ? value : plus || marker === ">" ? Infinity : value;
+  const minInclusive = marker !== ">" && marker !== "<";
+  const maxInclusive = !plus && marker !== ">";
+  const certainGreater = rule.operator === "gt" ? minimum > threshold || (minimum === threshold && !minInclusive) : minimum >= threshold;
+  const certainLess = rule.operator === "lt" ? maximum < threshold || (maximum === threshold && !maxInclusive) : maximum <= threshold;
+  if (rule.operator === "gt" || rule.operator === "gte") return certainGreater ? "match" : maximum < threshold || (maximum === threshold && (rule.operator === "gt" || maxInclusive)) ? "no_match" : "unknown";
+  return certainLess ? "match" : minimum > threshold || (minimum === threshold && (rule.operator === "lt" || minInclusive)) ? "no_match" : "unknown";
+}
+export function evaluateAdvancedFilterRule(product: GroupProductFacts, rule: AdvancedFilterRule): FilterVerdict {
+  const definition = advancedFilterFields[rule.field];
+  if (definition.kind === "text") {
+    const value = String(product[rule.field as "shop_name" | "title" | "offer_id"] ?? "").toLocaleLowerCase(), target = rule.value.toLocaleLowerCase();
+    if (!target) return "no_match";
+    return rule.operator === "contains" ? value.includes(target) ? "match" : "no_match" : rule.operator === "not_contains" ? value.includes(target) ? "no_match" : "match" : value === target ? "match" : "no_match";
+  }
+  if (definition.kind === "reviews") {
+    const raw = metricRawValue(product, "review_count"), value = raw && /^\d+$/.test(raw) ? Number(raw) : null;
+    if (value === null) return "unknown";
+    return (rule.operator === "has_reviews" ? value > 0 : value === 0) ? "match" : "no_match";
+  }
+  if (definition.kind === "bucket") return bucketRuleVerdict(metricRawValue(product, definition.metricKey!), rule);
+  if (definition.kind === "date") {
+    const raw = metricRawValue(product, definition.metricKey!), value = raw ? Date.parse(raw) : NaN;
+    const first = Date.parse(`${rule.value}T00:00:00Z`), second = Date.parse(`${rule.value2}T23:59:59.999Z`);
+    if (!Number.isFinite(value)) return "unknown";
+    if (!Number.isFinite(first) || (rule.operator === "date_between" && !Number.isFinite(second))) return "no_match";
+    return rule.operator === "before" ? value < first ? "match" : "no_match" : rule.operator === "after" ? value > first + 86_399_999 ? "match" : "no_match" : value >= Math.min(first, second) && value <= Math.max(first, second) ? "match" : "no_match";
+  }
+  const snapshot = product.latest_snapshot;
+  const basic = rule.field === "price_min" ? snapshot?.price_min : rule.field === "price_max" ? snapshot?.price_max : rule.field === "min_order_quantity" ? snapshot?.min_order_quantity : rule.field === "sku_count" ? snapshot?.sku_count : rule.field === "total_stock" ? snapshot?.total_stock : null;
+  const raw = definition.metricKey ? metricRawValue(product, definition.metricKey) : basic;
+  if (definition.kind === "integer" && (rule.value && !/^\d+$/.test(rule.value) || rule.value2 && !/^\d+$/.test(rule.value2))) return "no_match";
+  const parsed = raw === null || raw === undefined ? null : Number(String(raw).replace(/%$/, ""));
+  return numericRuleVerdict(Number.isFinite(parsed) ? parsed : null, rule);
+}
+export function evaluateAdvancedFilters(product: GroupProductFacts, rules: AdvancedFilterRule[]): FilterVerdict {
+  let uncertain = false;
+  for (const rule of rules) { const verdict = evaluateAdvancedFilterRule(product, rule); if (verdict === "no_match") return "no_match"; if (verdict === "unknown") uncertain = true; }
+  return uncertain ? "unknown" : "match";
+}
+
+function AdvancedFilterEditor({ rules, onChange, onApply, onReset }: { rules: AdvancedFilterRule[]; onChange: (rules: AdvancedFilterRule[]) => void; onApply: () => void; onReset: () => void }) {
+  const update = (id: number, patch: Partial<AdvancedFilterRule>) => onChange(rules.map(rule => rule.id === id ? { ...rule, ...patch } : rule));
+  const add = () => { const field: AdvancedFilterField = "shop_name"; onChange([...rules, { id: Date.now(), field, operator: "contains", value: "", value2: "" }]); };
+  return <details className="advanced-filter-panel"><summary>高级筛选{rules.length ? `（草稿 ${rules.length}）` : ""}</summary><div className="advanced-filter-body"><p>所有条件同时满足。成交档位仅在结论确定时进入匹配；其余会单独列出。</p>{rules.map(rule => { const definition = advancedFilterFields[rule.field], needsValue = isValueOperator(rule.operator), range = rule.operator === "between" || rule.operator === "date_between", numeric = ["number", "integer", "percent"].includes(definition.kind), inputType = definition.kind === "date" ? "date" : numeric ? "number" : "text", step = definition.kind === "integer" ? "1" : numeric ? "any" : undefined; const valueInput = (label: string, value: string, onChange: (value: string) => void) => <span className="advanced-filter-value"><input aria-label={label} type={inputType} step={step} inputMode={numeric ? "decimal" : undefined} placeholder={definition.kind === "percent" ? "百分比" : definition.kind === "bucket" ? "如 100+ 或 100" : "输入值"} value={value} onChange={event => onChange(event.target.value)} />{definition.kind === "percent" && <span aria-hidden="true">%</span>}</span>; return <div className="advanced-filter-rule" key={rule.id}><select aria-label="筛选字段" value={rule.field} onChange={event => { const field = event.target.value as AdvancedFilterField; update(rule.id, { field, operator: advancedFilterOperators[advancedFilterFields[field].kind][0].value, value: "", value2: "" }); }}>{Object.entries(advancedFilterFields).map(([key, item]) => <option value={key} key={key}>{item.label}</option>)}</select><select aria-label="筛选操作符" value={rule.operator} onChange={event => update(rule.id, { operator: event.target.value as AdvancedFilterOperator })}>{advancedFilterOperators[definition.kind].map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select>{needsValue && valueInput("筛选值", rule.value, value => update(rule.id, { value }))}{range && valueInput("筛选第二个值", rule.value2, value => update(rule.id, { value2: value }))}<button type="button" className="text-button" onClick={() => onChange(rules.filter(item => item.id !== rule.id))}>删除</button></div>; })}<div className="advanced-filter-actions"><button type="button" className="text-button" onClick={add}>添加条件</button><span /><button type="button" className="secondary-button" onClick={onReset}>重置</button><button type="button" className="primary-button" onClick={onApply}>应用筛选</button></div></div></details>;
+}
+
 export function GroupDetailPage({ data, status, error, days, rangeLoading, rangeError, onRetry, onRangeChange, onBack, onViewCompetitors, onOpenDetail, onNavigate, onAdd = noop }: {
   data: GroupDetailData | null; status: DetailStatus; error: string | null; days: 7 | 30; rangeLoading: boolean; rangeError: string | null;
   onAdd?: (groupId: number) => void; onRetry: () => void; onRangeChange: (days: 7 | 30) => void; onBack: () => void; onViewCompetitors: (groupId: number) => void; onOpenDetail: (competitorId: number) => void; onNavigate: (page: Page) => void;
@@ -1503,6 +1601,8 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const [overviewOperatingKey, setOverviewOperatingKey] = useState<OperatingMetricSortKey | null>(null);
   const [search, setSearch] = useState("");
   const [importantOnly, setImportantOnly] = useState(false);
+  const [draftAdvancedFilters, setDraftAdvancedFilters] = useState<AdvancedFilterRule[]>([]);
+  const [appliedAdvancedFilters, setAppliedAdvancedFilters] = useState<AdvancedFilterRule[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [page, setEventPage] = useState<GroupEventPage | null>(data?.event_page ?? null);
   const [eventLoading, setEventLoading] = useState(false);
@@ -1516,7 +1616,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const eventBusy = useRef(false);
   const ownRow = useRef<HTMLTableRowElement>(null);
   const locateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { setWorkspaceView("竞品动态"); setSelectedId(fallbackSelected?.id ?? null); setView("竞争总览"); setMetric("min_order_quantity"); setDirection("asc"); setOverviewOperatingKey(null); setOperatingSort({}); setSearch(""); setImportantOnly(false); setEvidence(null); setLocateNotice(false); }, [data?.group.id]);
+  useEffect(() => { setWorkspaceView("竞品动态"); setSelectedId(fallbackSelected?.id ?? null); setView("竞争总览"); setMetric("min_order_quantity"); setDirection("asc"); setOverviewOperatingKey(null); setOperatingSort({}); setSearch(""); setImportantOnly(false); setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); setEvidence(null); setLocateNotice(false); }, [data?.group.id]);
   useEffect(() => { setSelectedId(current => currentOffers.some(product => product.id === current) ? current : fallbackSelected?.id ?? null); }, [data]);
   useEffect(() => { if (data && eventGroupId.current === data.group.id && eventBusy.current) return; requestId.current++; eventBusy.current = false; setEventPage(null); setEventLoading(false); setEventError(null); setFailedEventRequest(null); setEvidence(null); if (data && eventGroupId.current !== data.group.id) { eventGroupId.current = data.group.id; void loadEvents("today", "important"); } else setEventPage(data?.event_page ?? null); }, [data]);
   useEffect(() => { if (rangeLoading) { requestId.current++; eventBusy.current = false; setEventLoading(false); } }, [rangeLoading]);
@@ -1537,7 +1637,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     } catch (failure) { if (id === requestId.current) { setEventError(failure instanceof Error ? failure.message : "历史加载失败"); setFailedEventRequest({ range, mode, append }); } }
     finally { if (id === requestId.current) { eventBusy.current = false; setEventLoading(false); } }
   }
-  const clearFilters = () => { setSearch(""); setImportantOnly(false); };
+  const clearFilters = () => { setSearch(""); setImportantOnly(false); setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); };
   const locate = () => {
     if (!own) return;
     setSelectedId(own.id);
@@ -1548,7 +1648,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     if (locateTimer.current) clearTimeout(locateTimer.current);
     locateTimer.current = setTimeout(() => setHighlightOwn(false), 1800);
   };
-  useEffect(() => { if (locateNotice && !search && !importantOnly) locate(); }, [search, importantOnly, locateNotice]);
+  useEffect(() => { if (locateNotice && !search && !importantOnly && !appliedAdvancedFilters.length) locate(); }, [search, importantOnly, appliedAdvancedFilters.length, locateNotice]);
   if (status === "loading" && !data) return <AppShell page="group-detail" onNavigate={onNavigate} breadcrumb="竞品分组 / 组分析"><header className="page-header"><h1>组竞争分析</h1></header><div className="state-panel"><div className="spinner" /><strong>正在加载组分析…</strong></div></AppShell>;
   if (!data) return <AppShell page="group-detail" onNavigate={onNavigate} breadcrumb="竞品分组 / 组分析"><header className="page-header"><h1>组竞争分析</h1></header><div className="state-panel state-error"><strong>{error || "加载失败"}</strong><button className="secondary-button" onClick={onRetry}>重试</button><button className="secondary-button" onClick={onBack}>返回竞品分组</button></div></AppShell>;
   const needle = search.trim().toLocaleLowerCase();
@@ -1558,7 +1658,9 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const sortedOffers = operatingView
     ? currentOperatingSort ? sortGroupOffersByOperatingMetric(currentOffers, currentOperatingSort.key, currentOperatingSort.direction) : [...currentOffers].sort((a, b) => a.id - b.id)
     : overviewOperatingKey && currentOperatingSort ? sortGroupOffersByOperatingMetric(currentOffers, overviewOperatingKey, currentOperatingSort.direction) : sortGroupOffers(currentOffers, activePosition, direction);
-  const visible = sortedOffers.filter(product => (!needle || [product.shop_name, product.title, product.offer_id].some(value => value?.toLocaleLowerCase().includes(needle))) && (!importantOnly || page?.important_offer_ids.includes(product.id)));
+  const filterResults = sortedOffers.map(product => ({ product, verdict: evaluateAdvancedFilters(product, appliedAdvancedFilters) }));
+  const visible = filterResults.filter(({ product, verdict }) => verdict === "match" && (!needle || [product.shop_name, product.title, product.offer_id].some(value => value?.toLocaleLowerCase().includes(needle))) && (!importantOnly || page?.important_offer_ids.includes(product.id))).map(({ product }) => product);
+  const uncertain = filterResults.filter(({ product, verdict }) => verdict === "unknown" && (!needle || [product.shop_name, product.title, product.offer_id].some(value => value?.toLocaleLowerCase().includes(needle))) && (!importantOnly || page?.important_offer_ids.includes(product.id))).map(({ product }) => product);
   const selected = currentOffers.find(product => product.id === selectedId) ?? fallbackSelected;
   const hiddenOfferCount = allOffers.length - currentOffers.length;
   const ownExcluded = Boolean(own && !currentOffers.some(product => product.id === own.id));
@@ -1608,7 +1710,8 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     {!own && <p className="group-compact-empty">尚未绑定我方商品 · 未建立我方基准</p>}
     {own && ownExcluded && <p className="group-compact-empty">我方基准商品当前{own.status === "offline" ? "已下架" : "已停止监控"}{own.status === "offline" && !own.is_active ? "且已停止监控" : ""}，不参与比较；绑定关系保留。</p>}
     <div className="position-tabs" role="tablist" aria-label="对比视图">{["竞争总览", ...Object.keys(pendingViews)].map(tab => <button role="tab" aria-selected={view === tab} className={view === tab ? "active" : ""} key={tab} onClick={() => setView(tab)}>{tab}</button>)}</div>
-    <div className="position-filters"><input aria-label="搜索店铺、商品或 Offer" placeholder="搜索店铺 / 商品 / Offer" value={search} onChange={event => setSearch(event.target.value)} /><label><input type="checkbox" checked={importantOnly} onChange={event => setImportantOnly(event.target.checked)} />仅看重要变化</label>{(search || importantOnly) && <button className="text-button" onClick={clearFilters}>清除筛选</button>}</div>
+    <div className="position-filters"><input aria-label="搜索店铺、商品或 Offer" placeholder="搜索店铺 / 商品 / Offer" value={search} onChange={event => setSearch(event.target.value)} /><label><input type="checkbox" checked={importantOnly} onChange={event => setImportantOnly(event.target.checked)} />仅看重要变化</label><AdvancedFilterEditor rules={draftAdvancedFilters} onChange={setDraftAdvancedFilters} onApply={() => setAppliedAdvancedFilters(draftAdvancedFilters)} onReset={() => { setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); }} />{(search || importantOnly || appliedAdvancedFilters.length) && <button className="text-button" onClick={clearFilters}>清除筛选</button>}</div>
+    {appliedAdvancedFilters.length > 0 && <div className="advanced-filter-summary" aria-label="已应用高级筛选">{appliedAdvancedFilters.map(rule => <span key={rule.id}>{ruleLabel(rule)}<button type="button" aria-label={`删除条件：${ruleLabel(rule)}`} onClick={() => { const next = appliedAdvancedFilters.filter(item => item.id !== rule.id); setAppliedAdvancedFilters(next); setDraftAdvancedFilters(next); }}>×</button></span>)}</div>}
     <p className="position-context">成交类指标按页面显示档位排序，保留原文，不代表精确销量或竞争排名。</p>
     {own && !ownExcluded && !visible.some(product => product.id === own.id) && <div className="position-filter-notice" role="status"><span><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" /><path d="M10 9v5M10 6v1" /></svg>当前筛选未显示我方商品</span><button onClick={() => { setLocateNotice(true); clearFilters(); }}>清除筛选并定位</button></div>}
     <div className="table-scroll"><table className={view === "竞争总览" ? "position-table position-overview-table" : "position-table"}><thead><tr><th>店铺</th>{view === "竞争总览" && <th aria-sort="none"><span title="数据待接入，不能排序">平台标签 <small className="position-tag-pending">待接入</small></span></th>}{columns.map(column => {
@@ -1623,7 +1726,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
         }); }}>{column.title}{metricSorted ? currentOperatingSort!.direction === "asc" ? " ↑" : " ↓" : " ↕"}</button> : <span title="数据待接入，不能排序">{column.title}</span>}
       </th>;
     })}<th>操作</th></tr></thead><tbody>{visible.map(product => <tr key={product.id} data-offer-id={product.id} ref={product.id === own?.id ? ownRow : undefined} tabIndex={0} aria-label={rowDescription(product)} aria-selected={product.id === selected?.id} onClick={() => setSelectedId(product.id)} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setSelectedId(product.id); } }} className={(product.id === own?.id ? "position-own-row " : "") + (product.id === selected?.id ? "position-selected " : "") + (product.id === own?.id && highlightOwn ? "position-located" : "")}><td>{groupShopLink(product)}{product.status === "unknown" && <small className="position-status-unknown">状态未知</small>}</td>{view === "竞争总览" && <td className="position-tag-cell" aria-label={`平台标签待接入，Offer ${product.offer_id}`}>—</td>}{columns.map(column => <td key={column.title}>{column.metric_key ? <span className="position-metric-raw">{operatingMetricValue(product, column.metric_key)}</span> : column.field ? <button className="position-value" onClick={() => setSelectedId(product.id)} aria-label={`${column.title}字段依据 ${product.offer_id}`}>{groupSnapshotValue(product, column.field)}</button> : <span className="position-pending">待接入</span>}</td>)}<td><div className="position-row-actions"><button className="detail-button" onClick={event => { event.stopPropagation(); onOpenDetail(product.id); }}>查看详情</button></div></td></tr>)}</tbody></table></div>
-    {!visible.length && <p className="group-compact-empty">{currentOffers.length ? "没有符合条件的 Offer。" : "当前没有商品可参与比较。"}</p>}<p className="position-context">可见 {visible.length} / 当前参与对比 {currentOffers.length} · 筛选不改变全组排名与分母</p></section>
+    {!visible.length && <p className="group-compact-empty">{currentOffers.length ? "没有符合条件的 Offer。" : "当前没有商品可参与比较。"}</p>}{uncertain.length > 0 && <details className="advanced-filter-uncertain"><summary>无法判断 {uncertain.length} 个 Offer</summary><p>这些记录没有把未知、占位符或读取失败当成数值，因此未混入确定匹配结果。</p><ul>{uncertain.map(product => <li key={product.id}>{product.shop_name || "店铺未采集"} · Offer {product.offer_id}</li>)}</ul></details>}<p className="position-context">确定匹配 {visible.length} · 无法判断 {uncertain.length} / 当前参与对比 {currentOffers.length} · 筛选不改变全组排名与分母</p></section>
     <section hidden={workspaceView !== "竞品动态"} role="tabpanel" id="group-events-panel" aria-labelledby="group-events-tab" className="table-card group-detail-section position-events"><div className="table-heading"><div><h2>竞争动态与可追溯变化</h2><span>全组 · 价格、MOQ、SKU 为重点，普通库存变化弱化</span></div></div><div className="position-event-controls">{(["today", "7", "30"] as const).map(range => <button className={page?.range === range ? "active" : ""} disabled={rangeLoading} aria-pressed={page?.range === range} key={range} onClick={() => { if (range !== "today") { requestId.current++; onRangeChange(Number(range) as 7 | 30); } else void loadEvents(range, "important"); }}>{range === "today" ? "今日" : `近 ${range} 天`}</button>)}{(["important", "all"] as const).map(mode => <button className={page?.mode === mode ? "active" : ""} disabled={rangeLoading} aria-pressed={page?.mode === mode} key={mode} onClick={() => void loadEvents(page?.range ?? String(days) as "7" | "30", mode)}>{mode === "important" ? "重点" : "全部"}</button>)}</div>
     {(eventLoading || rangeLoading) && <p role="status">正在更新历史范围，保留上一份事实…</p>}
     {eventError && <p role="alert">{eventError}<button className="text-button" onClick={() => { if (eventError.includes("角色")) void loadEvents(page?.range ?? "7", page?.mode ?? "important"); else if (failedEventRequest) void loadEvents(failedEventRequest.range, failedEventRequest.mode, failedEventRequest.append); }}>重试 / 重新加载</button></p>}

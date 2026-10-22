@@ -64,6 +64,38 @@ test("compact rows have no hover or focus popup and select same-shop Offers inde
   await mock.expectNoUnexpectedApi();
 });
 
+test("advanced filters apply AND rules across comparison views and keep uncertain metric records separate", async ({ page }, testInfo) => {
+  const mock = await openWorkbench(page);
+  await page.getByText("高级筛选", { exact: false }).click();
+  await page.getByRole("button", { name: "添加条件", exact: true }).click();
+  const fields = page.getByLabel("筛选字段");
+  const operators = page.getByLabel("筛选操作符");
+  const values = page.getByLabel("筛选值");
+  await fields.nth(0).selectOption("min_order_quantity");
+  await operators.nth(0).selectOption("gte");
+  await values.nth(0).fill("1");
+  await page.getByRole("button", { name: "添加条件", exact: true }).click();
+  await fields.nth(1).selectOption("shop_name");
+  await values.nth(1).fill("测试店铺 4");
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click();
+  await expect(page.getByLabel("已应用高级筛选")).toContainText("MOQ 大于等于 1");
+  await expect(page.locator(".position-table tbody tr")).toHaveCount(1);
+  await page.getByRole("tab", { name: "经营表现", exact: true }).click();
+  await expect(page.locator(".position-table tbody tr")).toHaveCount(1);
+  await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+  await expect(page.locator(".position-table tbody tr")).toHaveCount(9);
+  await page.getByRole("button", { name: "添加条件", exact: true }).click();
+  await fields.nth(0).selectOption("monthly_deal");
+  await operators.nth(0).selectOption("gt");
+  await values.nth(0).fill("100");
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click();
+  await expect(page.locator(".advanced-filter-uncertain")).toContainText("无法判断");
+  await page.setViewportSize({ width: 640, height: 900 });
+  await expect(page.locator(".advanced-filter-panel")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("advanced-group-filter-narrow.png"), fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});
+
 test("group table sorts displayed metric attempts and keeps the product preview compact", async ({ page }, testInfo) => {
   const source = "1688_official_procurement_assistant_top";
   const definitions = [
