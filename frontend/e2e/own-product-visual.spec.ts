@@ -22,15 +22,18 @@ test("own products share competitor list presentation and preserve own-product c
     competitors: [...competitors, ...ownProducts],
     groups: [{ id: 19, name: "A19", created_at: "2026-09-01T00:00:00Z" }],
   });
-  await page.setViewportSize({ width: 1600, height: 1100 });
   await page.goto("/");
 
-  const styles = [] as Record<string, string>[];
-  for (const [label, expectedHeading] of [["竞品列表", "竞品列表"], ["我方商品", "我方商品"]]) {
-    await page.getByRole("button", { name: label, exact: true }).click();
-    await expect(page.getByRole("heading", { name: expectedHeading, exact: true })).toBeVisible();
-    await expect(page.locator("tbody tr")).toHaveCount(10);
-    styles.push(await page.evaluate(() => {
+  for (const width of [1366, 1600]) {
+    await page.setViewportSize({ width, height: 1100 });
+    const styles = [] as Record<string, string>[];
+    const layouts = [] as { firstColumnWidth: number; checkboxLeft: number; checkboxToImage: number; imageToTitle: number; columns: { headerLeft: number; headerWidth: number; cellLeft: number; cellWidth: number }[] }[];
+    for (const [label, expectedHeading] of [["竞品列表", "竞品列表"], ["我方商品", "我方商品"]]) {
+      await page.getByRole("button", { name: label, exact: true }).click();
+      await expect(page.getByRole("heading", { name: expectedHeading, exact: true })).toBeVisible();
+      await expect(page.locator("tbody tr")).toHaveCount(10);
+      await expect(page.getByRole("columnheader", { name: "操作", exact: true })).toHaveCount(0);
+      styles.push(await page.evaluate(() => {
       const read = (selector: string, property: string) => getComputedStyle(document.querySelector(selector)!).getPropertyValue(property);
       return {
         heading: read(".page-header h1", "font-size"),
@@ -42,10 +45,38 @@ test("own products share competitor list presentation and preserve own-product c
         statusShape: read(".status-badge", "border-radius"),
         pageButton: read(".pagination-bar button", "border-radius"),
       };
-    }));
-    await page.screenshot({ path: testInfo.outputPath(`${label}.png`), fullPage: true });
+      }));
+      layouts.push(await page.evaluate(() => {
+        const rect = (element: Element) => element.getBoundingClientRect();
+        const firstHeader = document.querySelector(".competitor-workspace thead th")!;
+        const checkbox = document.querySelector(".competitor-workspace tbody input[type=checkbox]")!;
+        const image = document.querySelector(".competitor-workspace tbody .product-image")!;
+        const title = document.querySelector(".competitor-workspace tbody .competitor-title-link")!;
+        const checkboxRect = rect(checkbox), imageRect = rect(image), titleRect = rect(title);
+        return {
+          firstColumnWidth: rect(firstHeader).width,
+          checkboxLeft: checkboxRect.left,
+          checkboxToImage: imageRect.left - checkboxRect.right,
+          imageToTitle: titleRect.left - imageRect.right,
+          columns: [...document.querySelectorAll(".competitor-workspace thead th")].map((header, index) => {
+            const headerRect = rect(header), cellRect = rect(document.querySelectorAll(".competitor-workspace tbody tr:first-child td")[index]);
+            return { headerLeft: headerRect.left, headerWidth: headerRect.width, cellLeft: cellRect.left, cellWidth: cellRect.width };
+          }),
+        };
+      }));
+      await page.screenshot({ path: testInfo.outputPath(`${width}-${label}.png`), fullPage: true });
+    }
+    expect(styles[1]).toEqual(styles[0]);
+    expect(layouts[1]).toEqual(layouts[0]);
+    expect(layouts[0].columns.every(column => Math.abs(column.headerLeft - column.cellLeft) < 0.5 && Math.abs(column.headerWidth - column.cellWidth) < 0.5)).toBe(true);
+    console.info(`${width}px DOM geometry: ${JSON.stringify(layouts[0])}`);
   }
-  expect(styles[1]).toEqual(styles[0]);
+
+  await page.getByRole("button", { name: "我方商品 1", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "我方商品详情", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "返回我方商品", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "我方商品", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "我方商品 1", exact: true })).toBeVisible();
 
   await page.getByRole("textbox", { name: "搜索商品名称 / offerId / 店铺" }).fill("我方商品 13");
   await expect(page.locator("tbody tr")).toHaveCount(1);

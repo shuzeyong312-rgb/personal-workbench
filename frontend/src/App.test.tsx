@@ -1215,8 +1215,10 @@ test("opens competitor details from the product title", () => {
   expect(list).toContain('class="competitor-title-link"');
   expect(list).toContain(">未采集</button>");
   const ownList = renderToStaticMarkup(<ListPage {...listProps} ownership="self" competitors={[competitor]} status="ready" error={null} onRetry={noop} onAdd={noop} onOpenDetail={noop} />);
-  expect(ownList).toContain(">详情</button>");
-  expect(ownList).toContain("<th>操作</th>");
+  expect(ownList).toContain('class="competitor-title-link"');
+  expect(ownList).not.toContain(">详情</button>");
+  expect(ownList).not.toContain("<th>操作</th>");
+  expect(ownList).toContain('class="competitor-product-meta"');
 });
 
 test.each([
