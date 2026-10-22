@@ -110,6 +110,9 @@ def test_competitor_monitoring_settings_default_invalid_read_and_atomic_save(cli
         "auto_collection_enabled": True,
         "auto_collection_strategy": "rolling_24h",
         "auto_collection_time": "09:30",
+        "auto_collection_times": ["09:30"],
+        "auto_collection_interval_hours": 4,
+        "auto_collection_daily_limit": 3,
         "auto_collection_missed_policy": "catch_up",
     }
     assert client[0].get("/api/settings/competitor-monitoring").json() == defaults
@@ -119,7 +122,7 @@ def test_competitor_monitoring_settings_default_invalid_read_and_atomic_save(cli
         session.commit()
     assert client[0].get("/api/settings/competitor-monitoring").json() == defaults
 
-    saved = {"item_interval_seconds": 1, "continuous_collection_count": 50, "batch_rest_seconds": 0, "verification_cooldown_seconds": 3600, "auto_resume_max": 0, "operating_metrics_retry_max": 0, "auto_collection_enabled": False, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30", "auto_collection_missed_policy": "skip"}
+    saved = {"item_interval_seconds": 1, "continuous_collection_count": 50, "batch_rest_seconds": 0, "verification_cooldown_seconds": 3600, "auto_resume_max": 0, "operating_metrics_retry_max": 0, "auto_collection_enabled": False, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30", "auto_collection_times": ["09:30"], "auto_collection_interval_hours": 4, "auto_collection_daily_limit": 3, "auto_collection_missed_policy": "skip"}
     assert client[0].put("/api/settings/competitor-monitoring", json=saved).json() == saved
     rejected = client[0].put("/api/settings/competitor-monitoring", json={**saved, "item_interval_seconds": True})
     assert rejected.status_code == 422
@@ -141,6 +144,105 @@ def test_competitor_monitoring_settings_falls_back_for_an_unbounded_legacy_integ
         assert session.get(SystemSetting, "competitor_monitoring_item_interval_seconds").value == raw
 
 
+def test_legacy_single_daily_time_is_exposed_as_one_time_without_rewriting(client):
+    with client[1]() as session:
+        session.add_all([
+            SystemSetting(key="competitor_monitoring_auto_collection_strategy", value="fixed_daily"),
+            SystemSetting(key="competitor_monitoring_auto_collection_time", value="10:20"),
+        ])
+        session.commit()
+    assert client[0].get("/api/settings/competitor-monitoring").json()["auto_collection_times"] == ["10:20"]
+    with client[1]() as session:
+        assert session.get(SystemSetting, "competitor_monitoring_auto_collection_times") is None
+
+
+def test_invalid_new_schedule_settings_fall_back_without_rewriting(client):
+    raw = {
+        "competitor_monitoring_auto_collection_strategy": "fixed_interval",
+        "competitor_monitoring_auto_collection_time": "20:00",
+        "competitor_monitoring_auto_collection_times": '["09:00","09:00"]',
+        "competitor_monitoring_auto_collection_interval_hours": "24",
+        "competitor_monitoring_auto_collection_daily_limit": "2",
+    }
+    with client[1]() as session:
+        session.add_all(SystemSetting(key=key, value=value) for key, value in raw.items())
+        session.commit()
+    response = client[0].get("/api/settings/competitor-monitoring").json()
+    assert response["auto_collection_times"] == ["20:00"]
+    assert (response["auto_collection_time"], response["auto_collection_interval_hours"], response["auto_collection_daily_limit"]) == ("09:30", 4, 3)
+    with client[1]() as session:
+        assert {key: session.get(SystemSetting, key).value for key in raw} == raw
+
+
+def test_fixed_daily_times_are_sorted_and_stored_canonically(client):
+    payload = {
+        "item_interval_seconds": 5, "continuous_collection_count": 10, "batch_rest_seconds": 120,
+        "verification_cooldown_seconds": 600, "auto_resume_max": 2, "operating_metrics_retry_max": 0,
+        "auto_collection_enabled": True, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30",
+        "auto_collection_times": ["18:00", "09:30", "12:00"], "auto_collection_interval_hours": 4,
+        "auto_collection_daily_limit": 3, "auto_collection_missed_policy": "catch_up",
+    }
+    response = client[0].put("/api/settings/competitor-monitoring", json=payload)
+    assert response.status_code == 200
+    assert response.json()["auto_collection_times"] == ["09:30", "12:00", "18:00"]
+    with client[1]() as session:
+        assert session.get(SystemSetting, "competitor_monitoring_auto_collection_times").value == '["09:30","12:00","18:00"]'
+
+
+@pytest.mark.parametrize("times", [[], ["09:30", "09:30"], ["9:30"], ["24:00"], [f"{hour:02d}:00" for hour in range(9)]])
+def test_fixed_daily_rejects_invalid_time_lists(client, times):
+    payload = {
+        "item_interval_seconds": 5, "continuous_collection_count": 10, "batch_rest_seconds": 120,
+        "verification_cooldown_seconds": 600, "auto_resume_max": 2, "operating_metrics_retry_max": 0,
+        "auto_collection_enabled": True, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30",
+        "auto_collection_times": times, "auto_collection_interval_hours": 4,
+        "auto_collection_daily_limit": 3, "auto_collection_missed_policy": "catch_up",
+    }
+    assert client[0].put("/api/settings/competitor-monitoring", json=payload).status_code == 422
+
+
+def test_fixed_interval_validates_limits_and_same_day_boundary(client):
+    payload = {
+        "item_interval_seconds": 5, "continuous_collection_count": 10, "batch_rest_seconds": 120,
+        "verification_cooldown_seconds": 600, "auto_resume_max": 2, "operating_metrics_retry_max": 0,
+        "auto_collection_enabled": True, "auto_collection_strategy": "fixed_interval", "auto_collection_time": "09:30",
+        "auto_collection_times": ["09:30"], "auto_collection_interval_hours": 4,
+        "auto_collection_daily_limit": 3, "auto_collection_missed_policy": "skip",
+    }
+    assert client[0].put("/api/settings/competitor-monitoring", json=payload).status_code == 200
+    invalid = {**payload, "auto_collection_time": "21:00", "auto_collection_daily_limit": 2}
+    assert client[0].put("/api/settings/competitor-monitoring", json=invalid).status_code == 422
+    assert client[0].get("/api/settings/competitor-monitoring").json() == payload
+
+
+def test_fixed_time_and_interval_upper_limits_are_accepted(client):
+    times = [f"{hour:02d}:00" for hour in range(8)]
+    payload = {
+        "item_interval_seconds": 5, "continuous_collection_count": 10, "batch_rest_seconds": 120,
+        "verification_cooldown_seconds": 600, "auto_resume_max": 2, "operating_metrics_retry_max": 0,
+        "auto_collection_enabled": True, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "00:00",
+        "auto_collection_times": times, "auto_collection_interval_hours": 1,
+        "auto_collection_daily_limit": 12, "auto_collection_missed_policy": "catch_up",
+    }
+    response = client[0].put("/api/settings/competitor-monitoring", json=payload)
+    assert response.status_code == 200
+    assert response.json()["auto_collection_times"] == times
+    interval = {**payload, "auto_collection_strategy": "fixed_interval", "auto_collection_time": "00:00", "auto_collection_times": ["00:00"], "auto_collection_interval_hours": 2}
+    assert client[0].put("/api/settings/competitor-monitoring", json=interval).status_code == 200
+
+
+@pytest.mark.parametrize("hours, count", [(0, 1), (25, 1), (4, 0), (4, 13), (24, 2)])
+def test_fixed_interval_rejects_out_of_range_or_cross_day_plan(client, hours, count):
+    payload = {
+        "item_interval_seconds": 5, "continuous_collection_count": 10, "batch_rest_seconds": 120,
+        "verification_cooldown_seconds": 600, "auto_resume_max": 2, "operating_metrics_retry_max": 0,
+        "auto_collection_enabled": True, "auto_collection_strategy": "fixed_interval", "auto_collection_time": "09:30",
+        "auto_collection_times": ["09:30"], "auto_collection_interval_hours": hours,
+        "auto_collection_daily_limit": count, "auto_collection_missed_policy": "catch_up",
+    }
+    assert client[0].put("/api/settings/competitor-monitoring", json=payload).status_code == 422
+
+
 @pytest.mark.parametrize("field, malformed", [
     ("auto_collection_strategy", []),
     ("auto_collection_strategy", {}),
@@ -155,7 +257,8 @@ def test_competitor_monitoring_enum_malformed_json_is_422(client, field, malform
         "batch_rest_seconds": 120, "verification_cooldown_seconds": 600, "auto_resume_max": 2,
         "operating_metrics_retry_max": 0,
         "auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h",
-        "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up",
+        "auto_collection_time": "09:30", "auto_collection_times": ["09:30"], "auto_collection_interval_hours": 4,
+        "auto_collection_daily_limit": 3, "auto_collection_missed_policy": "catch_up",
     }
     payload[field] = malformed
     response = client[0].put("/api/settings/competitor-monitoring", json=payload)
@@ -174,6 +277,9 @@ def test_competitor_monitoring_settings_reads_the_complete_snapshot_in_one_query
         "auto_collection_enabled": True,
         "auto_collection_strategy": "rolling_24h",
         "auto_collection_time": "09:30",
+        "auto_collection_times": ["09:30"],
+        "auto_collection_interval_hours": 4,
+        "auto_collection_daily_limit": 3,
         "auto_collection_missed_policy": "catch_up",
     }
     assert client[0].put("/api/settings/competitor-monitoring", json=saved).status_code == 200

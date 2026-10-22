@@ -760,7 +760,7 @@ def test_batch_start_freezes_one_settings_snapshot_and_the_next_start_uses_the_n
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     add_competitor(client[1], 1)
-    auto = {"auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h", "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up"}
+    auto = {"auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h", "auto_collection_time": "09:30", "auto_collection_times": ["09:30"], "auto_collection_interval_hours": 4, "auto_collection_daily_limit": 3, "auto_collection_missed_policy": "catch_up"}
     old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0, "operating_metrics_retry_max": 0, **auto}
     new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5, "operating_metrics_retry_max": 0, **auto}
     assert client[0].put("/api/settings/competitor-monitoring", json=old).status_code == 200
@@ -780,7 +780,7 @@ def test_batch_start_and_settings_put_interleaving_freeze_only_complete_old_or_n
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     add_competitor(client[1], 1)
-    auto = {"auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h", "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up"}
+    auto = {"auto_collection_enabled": True, "auto_collection_strategy": "rolling_24h", "auto_collection_time": "09:30", "auto_collection_times": ["09:30"], "auto_collection_interval_hours": 4, "auto_collection_daily_limit": 3, "auto_collection_missed_policy": "catch_up"}
     old = {"item_interval_seconds": 1, "continuous_collection_count": 1, "batch_rest_seconds": 0, "verification_cooldown_seconds": 60, "auto_resume_max": 0, "operating_metrics_retry_max": 0, **auto}
     new = {"item_interval_seconds": 60, "continuous_collection_count": 50, "batch_rest_seconds": 1800, "verification_cooldown_seconds": 3600, "auto_resume_max": 5, "operating_metrics_retry_max": 0, **auto}
     assert client[0].put("/api/settings/competitor-monitoring", json=old).status_code == 200

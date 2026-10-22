@@ -207,11 +207,11 @@ V1 使用 SQLite。
 
 ## 10. 调度原则
 
-当前实现使用 FastAPI lifespan 启动一个可中断的 asyncio 后台 task，按分钟读取当前自动采集设置并判断 due 商品。
+当前实现使用 FastAPI lifespan 启动一个可中断的 asyncio 后台 task，按分钟读取当前自动采集设置并判断 due 商品。支持滚动 24 小时、每日 1–8 个固定本地时间点，以及从每日开始时间按 1–24 小时间隔运行且最多 12 次的固定间隔策略；间隔计划必须全部落在同一日期内。固定策略使用 `CollectionRun.started_at` 判断每个 occurrence 的资格，计划点之后的成功、失败或手动正式尝试都会阻止该商品在同一 occurrence 重复采集。旧版单个固定时间设置可读取为只有一个计划点。
 
-scheduler 只负责编排：计算 active 商品范围，取得既有 collection slot 后重新确认资格并预留 BatchRuntime。自动采集与“立即采集”共享唯一 Batch Runner、COLLECTION_LOCK、冻结的 BatchConfig 和状态轮询；scheduler 不直接逐条调用 `collect_competitor()`。
+错过计划支持 catch-up 与 skip：catch-up 或本进程内跨过计划时间后，最多保留最新到期 occurrence；Runner 忙时下次分钟检查重新计算资格，较早的计划点不排队。skip 在 Backend 启动或策略生命周期于计划之后开始时跳过当天已到期计划。scheduler 只负责编排：计算所有 active 我方商品和竞品范围，取得既有 collection slot 后重新读取配置、商品状态和 CollectionRun，再预留 BatchRuntime。每个 occurrence 通过 `CollectionBatch.scheduler_occurrence_key` 防止重复 reservation。自动采集与“立即采集”共享唯一 Batch Runner、COLLECTION_LOCK、冻结的 BatchConfig 和状态轮询；scheduler 不直接逐条调用 `collect_competitor()`。
 
-自动采集依赖 Backend 正在运行，电脑关机时不会执行。全局 COLLECTION_LOCK 或 BatchRuntime 忙时不会并发或排队，下一次检查重新判断。Backend shutdown 会唤醒 scheduler，停止新的 reservation，并让已运行的 Batch 协作式结束。
+自动采集依赖 Backend 正在运行，电脑关机时不会执行。全局 COLLECTION_LOCK 或 BatchRuntime 忙时不会并发或形成积压队列，最新适用计划由后续检查重新判断。Backend shutdown 会唤醒 scheduler，停止新的 reservation，并让已运行的 Batch 协作式结束。
 
 当前不引入：
 

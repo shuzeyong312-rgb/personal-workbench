@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import json
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -41,16 +42,16 @@ def run(factory: sessionmaker[Session], item: int, at: datetime, status: str = "
 
 
 def settings(factory: sessionmaker[Session], **changes: object) -> None:
-    values = {"auto_collection_enabled": True, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30", "auto_collection_missed_policy": "catch_up"}
-    keys = {"auto_collection_enabled": "competitor_monitoring_auto_collection_enabled", "auto_collection_strategy": "competitor_monitoring_auto_collection_strategy", "auto_collection_time": "competitor_monitoring_auto_collection_time", "auto_collection_missed_policy": "competitor_monitoring_auto_collection_missed_policy"}
+    values = {"auto_collection_enabled": True, "auto_collection_strategy": "fixed_daily", "auto_collection_time": "09:30", "auto_collection_times": ["09:30"], "auto_collection_interval_hours": 4, "auto_collection_daily_limit": 3, "auto_collection_missed_policy": "catch_up"}
+    keys = {"auto_collection_enabled": "competitor_monitoring_auto_collection_enabled", "auto_collection_strategy": "competitor_monitoring_auto_collection_strategy", "auto_collection_time": "competitor_monitoring_auto_collection_time", "auto_collection_times": "competitor_monitoring_auto_collection_times", "auto_collection_interval_hours": "competitor_monitoring_auto_collection_interval_hours", "auto_collection_daily_limit": "competitor_monitoring_auto_collection_daily_limit", "auto_collection_missed_policy": "competitor_monitoring_auto_collection_missed_policy"}
     with factory() as db:
         for field, key in keys.items():
             existing = db.get(SystemSetting, key)
             if existing is not None:
-                values[field] = existing.value == "true" if field == "auto_collection_enabled" else existing.value
+                values[field] = existing.value == "true" if field == "auto_collection_enabled" else json.loads(existing.value) if field == "auto_collection_times" else int(existing.value) if field in {"auto_collection_interval_hours", "auto_collection_daily_limit"} else existing.value
         values.update(changes)
         for field, value in values.items():
-            db.merge(SystemSetting(key=keys[field], value="true" if value is True else "false" if value is False else str(value)))
+            db.merge(SystemSetting(key=keys[field], value="true" if value is True else "false" if value is False else json.dumps(value) if field == "auto_collection_times" else str(value)))
         db.commit()
 
 
@@ -59,6 +60,15 @@ def attempt(factory: sessionmaker[Session], state: FixedDailyState, now: datetim
     if result is not None:
         BATCH_RUNTIME.finish("success")
     return result
+
+
+def finish_batch(factory: sessionmaker[Session], start) -> None:
+    with factory() as db:
+        batch = db.get(CollectionBatch, start.batch_id)
+        batch.lifecycle_status = "terminal"
+        batch.outcome_code = "success"
+        db.commit()
+    BATCH_RUNTIME.finish("success")
 
 
 def test_fixed_daily_catch_up_matrix_and_utc_boundary(factory: sessionmaker[Session]) -> None:
@@ -73,6 +83,77 @@ def test_fixed_daily_catch_up_matrix_and_utc_boundary(factory: sessionmaker[Sess
     run(factory, competitor_id, datetime(2026, 10, 6, 1, 31), "success")
     assert attempt(factory, state, POST, started=POST) is None
     run(factory, inactive, datetime(2026, 10, 6, 1, 31))
+
+
+def test_multiple_daily_points_are_independent_and_same_point_is_not_retriggered(factory: sessionmaker[Session]) -> None:
+    first, second = competitor(factory), competitor(factory)
+    settings(factory, auto_collection_times=["13:30", "09:30"])
+    state = FixedDailyState()
+    start = attempt(factory, state, POST, started=PRE)
+    assert start and start.competitor_ids == [first, second]
+    with factory() as db:
+        key = db.get(CollectionBatch, start.batch_id).scheduler_occurrence_key
+    finish_batch(factory, start)
+    assert attempt(factory, state, POST, started=PRE) is None
+    run(factory, first, POST)
+    next_point = POST + timedelta(hours=4)
+    next_batch = attempt(factory, state, next_point, started=PRE)
+    assert next_batch and next_batch.competitor_ids == [first, second]
+    with factory() as db:
+        next_key = db.get(CollectionBatch, next_batch.batch_id).scheduler_occurrence_key
+    assert key != next_key and "T05:30" in next_key
+
+
+def test_fixed_interval_uses_start_interval_count_and_advances_by_occurrence(factory: sessionmaker[Session]) -> None:
+    item = competitor(factory)
+    settings(factory, auto_collection_strategy="fixed_interval", auto_collection_time="09:30", auto_collection_interval_hours=4, auto_collection_daily_limit=3)
+    with factory() as db:
+        current = daily.get_competitor_monitoring_settings(db)
+    assert daily._scheduled_times(current) == ["09:30", "13:30", "17:30"]
+    assert daily._latest_occurrence(PRE, current, LOCAL) is None
+    first = attempt(factory, FixedDailyState(), POST, started=PRE)
+    assert first and first.competitor_ids == [item]
+    finish_batch(factory, first)
+    run(factory, item, POST, "success")
+    second = attempt(factory, FixedDailyState(), POST + timedelta(hours=4), started=PRE)
+    assert second and second.competitor_ids == [item]
+    with factory() as db:
+        assert "T05:30" in db.get(CollectionBatch, second.batch_id).scheduler_occurrence_key
+
+
+def test_busy_runner_keeps_only_latest_fixed_point_and_next_day_is_new_occurrence(factory: sessionmaker[Session]) -> None:
+    item = competitor(factory)
+    settings(factory, auto_collection_times=["09:30", "13:30"], auto_collection_missed_policy="skip")
+    state = FixedDailyState()
+    assert attempt(factory, state, PRE) is None
+    BATCH_RUNTIME.reserve([999])
+    assert attempt(factory, state, POST) is None
+    BATCH_RUNTIME.finish("success")
+    next_point = POST + timedelta(hours=4)
+    start = attempt(factory, state, next_point)
+    assert start and start.competitor_ids == [item]
+    with factory() as db:
+        key = db.get(CollectionBatch, start.batch_id).scheduler_occurrence_key
+    assert "T05:30" in key
+    finish_batch(factory, start)
+    tomorrow = next_point + timedelta(days=1)
+    next_day = attempt(factory, state, tomorrow)
+    assert next_day and next_day.competitor_ids == [item]
+    with factory() as db:
+        assert db.get(CollectionBatch, next_day.batch_id).scheduler_occurrence_key != key
+
+
+def test_fixed_strategy_hot_switch_uses_new_schedule_on_next_check(factory: sessionmaker[Session]) -> None:
+    item = competitor(factory)
+    settings(factory, auto_collection_missed_policy="skip")
+    state = FixedDailyState()
+    assert attempt(factory, state, PRE) is None
+    settings(factory, auto_collection_strategy="fixed_interval", auto_collection_time="10:00", auto_collection_interval_hours=2, auto_collection_daily_limit=3)
+    assert attempt(factory, state, POST) is None
+    start = attempt(factory, state, POST + timedelta(minutes=30))
+    assert start and start.competitor_ids == [item]
+    with factory() as db:
+        assert "T02:00" in db.get(CollectionBatch, start.batch_id).scheduler_occurrence_key
 
 
 def test_fixed_daily_pre_boundary_run_and_naive_utc_are_due(factory: sessionmaker[Session]) -> None:
@@ -189,6 +270,18 @@ def test_skip_late_start_and_post_plan_enable_do_not_catch_up(factory: sessionma
     assert item
 
 
+def test_startup_disabled_then_enable_after_plan_skips_today(factory: sessionmaker[Session]) -> None:
+    item = competitor(factory)
+    settings(factory, auto_collection_enabled=False, auto_collection_missed_policy="skip")
+    state = FixedDailyState()
+    assert attempt(factory, state, PRE) is None
+    settings(factory, auto_collection_enabled=True)
+    assert attempt(factory, state, POST) is None
+    tomorrow = POST + timedelta(days=1)
+    start = attempt(factory, state, tomorrow)
+    assert start and start.competitor_ids == [item]
+
+
 def test_skip_pending_retries_when_busy_and_recomputes_formal_attempt(factory: sessionmaker[Session]) -> None:
     item = competitor(factory); settings(factory, auto_collection_missed_policy="skip")
     state = FixedDailyState()
@@ -207,7 +300,7 @@ def test_skip_pending_retries_when_busy_and_recomputes_formal_attempt(factory: s
     [
         ({"auto_collection_enabled": False}, POST, False),
         ({"auto_collection_strategy": "rolling_24h"}, POST, True),
-        ({"auto_collection_time": "10:00"}, POST, False),
+        ({"auto_collection_time": "10:00", "auto_collection_times": ["10:00"]}, POST, False),
         ({"auto_collection_missed_policy": "skip"}, POST, False),
     ],
 )
@@ -253,7 +346,7 @@ def test_rolling_24h_and_real_slot_race_recheck(factory: sessionmaker[Session], 
         assert db.query(CollectionRun).filter_by(competitor_id=item).count() == 1
 
 
-@pytest.mark.parametrize("change", [{"auto_collection_time": "10:00"}, {"auto_collection_missed_policy": "skip"}])
+@pytest.mark.parametrize("change", [{"auto_collection_time": "10:00", "auto_collection_times": ["10:00"]}, {"auto_collection_missed_policy": "skip"}])
 def test_locked_eligibility_uses_settings_changed_after_precheck(factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch, change: dict[str, object]) -> None:
     competitor(factory); settings(factory)
     real_slot = daily.acquire_collection_slot

@@ -116,7 +116,7 @@ const makeBatchState = (status: BatchState["status"], overrides: Partial<BatchSt
   ...overrides,
 });
 
-const monitoringSettings = { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2, operating_metrics_retry_max: 0, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "09:30", auto_collection_missed_policy: "catch_up" };
+const monitoringSettings = { item_interval_seconds: 5, continuous_collection_count: 10, batch_rest_seconds: 120, verification_cooldown_seconds: 600, auto_resume_max: 2, operating_metrics_retry_max: 0, auto_collection_enabled: true, auto_collection_strategy: "rolling_24h", auto_collection_time: "09:30", auto_collection_times: ["09:30"], auto_collection_interval_hours: 4, auto_collection_daily_limit: 3, auto_collection_missed_policy: "catch_up" };
 
 async function openSettingsScenario(options: { ownGet: number; monitoringGet: number; ownPut?: number; monitoringPut?: number }) {
   const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), server: { host: "127.0.0.1", port: 0 }, clearScreen: false });
