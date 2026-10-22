@@ -1460,6 +1460,33 @@ export function sortGroupOffers(offers: GroupProductFacts[], position: MetricPos
   });
 }
 
+export function groupEventSummaries(events: GroupEventPage["items"]) {
+  const groups = new Map<string, GroupEventPage["items"]>();
+  for (const event of events) {
+    const relation = event.collection_run_id != null ? `run:${event.collection_run_id}`
+      : event.snapshot_id != null ? `snapshot:${event.snapshot_id}` : `event:${event.id}`;
+    const key = JSON.stringify([event.competitor_id, event.offer_id, relation, event.change_type]);
+    const group = groups.get(key);
+    if (group) group.push(event);
+    else groups.set(key, [event]);
+  }
+  return [...groups].map(([key, items]) => ({ key, items }));
+}
+
+export function groupEventSummaryLabel(events: GroupEventPage["items"]): string {
+  if (events.length === 1) return formatChange(events[0]);
+  const skuCount = new Set(events.filter(event => event.entity_key).map(event => event.entity_key)).size;
+  const hasProduct = events.some(event => !event.entity_key);
+  const actions: Record<string, string> = {
+    price_decrease: "降价", price_increase: "涨价", min_order_quantity_increase: "起批量增加", min_order_quantity_decrease: "起批量降低",
+    sku_added: "新增", sku_removed: "移除", stock_changed: "库存变化", stock_increase: "库存增加",
+    stock_decrease: "库存下降", sku_sold_out: "售罄", sku_restocked: "恢复有货",
+    product_offline: "下架", product_online: "恢复上架", title_changed: "标题变化", main_image_changed: "主图变化",
+  };
+  const action = actions[events[0].change_type] ?? events[0].change_type;
+  return `${hasProduct ? `商品${action}` : ""}${hasProduct && skuCount ? "，涉及 " : ""}${skuCount ? `${skuCount} 个 SKU${hasProduct ? "" : ` ${action}`}` : ""} · ${events.length} 条原始变化`;
+}
+
 export function GroupDetailPage({ data, status, error, days, rangeLoading, rangeError, onRetry, onRangeChange, onBack, onViewCompetitors, onOpenDetail, onNavigate, onAdd = noop }: {
   data: GroupDetailData | null; status: DetailStatus; error: string | null; days: 7 | 30; rangeLoading: boolean; rangeError: string | null;
   onAdd?: (groupId: number) => void; onRetry: () => void; onRangeChange: (days: 7 | 30) => void; onBack: () => void; onViewCompetitors: (groupId: number) => void; onOpenDetail: (competitorId: number) => void; onNavigate: (page: Page) => void;
@@ -1468,6 +1495,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const allOffers = [...(own ? [own] : []), ...(data?.competitors ?? [])];
   const currentOffers = allOffers.filter(product => product.is_active === true && product.status !== "offline");
   const fallbackSelected = currentOffers.find(product => product.id === own?.id) ?? currentOffers[0] ?? null;
+  const [workspaceView, setWorkspaceView] = useState("竞品动态");
   const [view, setView] = useState<string>("竞争总览");
   const [metric, setMetric] = useState<PositionMetric>("min_order_quantity");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
@@ -1481,15 +1509,16 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const [eventError, setEventError] = useState<string | null>(null);
   const [failedEventRequest, setFailedEventRequest] = useState<{ range: GroupEventPage["range"]; mode: GroupEventPage["mode"]; append: boolean } | null>(null);
   const [evidence, setEvidence] = useState<GroupTodayEvent | null>(null);
+  const eventGroupId = useRef<number | null>(null);
   const [locateNotice, setLocateNotice] = useState(false);
   const [highlightOwn, setHighlightOwn] = useState(false);
   const requestId = useRef(0);
   const eventBusy = useRef(false);
   const ownRow = useRef<HTMLTableRowElement>(null);
   const locateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { setSelectedId(fallbackSelected?.id ?? null); setView("竞争总览"); setMetric("min_order_quantity"); setDirection("asc"); setOverviewOperatingKey(null); setOperatingSort({}); setSearch(""); setImportantOnly(false); setEvidence(null); setLocateNotice(false); }, [data?.group.id]);
+  useEffect(() => { setWorkspaceView("竞品动态"); setSelectedId(fallbackSelected?.id ?? null); setView("竞争总览"); setMetric("min_order_quantity"); setDirection("asc"); setOverviewOperatingKey(null); setOperatingSort({}); setSearch(""); setImportantOnly(false); setEvidence(null); setLocateNotice(false); }, [data?.group.id]);
   useEffect(() => { setSelectedId(current => currentOffers.some(product => product.id === current) ? current : fallbackSelected?.id ?? null); }, [data]);
-  useEffect(() => { requestId.current++; eventBusy.current = false; setEventPage(data?.event_page ?? null); setEventLoading(false); setEventError(null); setFailedEventRequest(null); setEvidence(null); }, [data]);
+  useEffect(() => { if (data && eventGroupId.current === data.group.id && eventBusy.current) return; requestId.current++; eventBusy.current = false; setEventPage(null); setEventLoading(false); setEventError(null); setFailedEventRequest(null); setEvidence(null); if (data && eventGroupId.current !== data.group.id) { eventGroupId.current = data.group.id; void loadEvents("today", "important"); } else setEventPage(data?.event_page ?? null); }, [data]);
   useEffect(() => { if (rangeLoading) { requestId.current++; eventBusy.current = false; setEventLoading(false); } }, [rangeLoading]);
   useEffect(() => () => { requestId.current++; if (locateTimer.current) clearTimeout(locateTimer.current); }, []);
   async function loadEvents(range: GroupEventPage["range"], mode: GroupEventPage["mode"], append = false) {
@@ -1565,9 +1594,17 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     <div className="position-workbench">
     <header className="page-header group-detail-page-header"><div><h1>{data.group.name} 竞争分析</h1><p className="page-description">当前参与对比 {currentOffers.length} 个商品 · 仅监控样本，非实时报价</p>{hiddenOfferCount > 0 && <p className="page-description">已隐藏 {hiddenOfferCount} 条下架或停监商品</p>}</div><div className="detail-page-actions"><button className="primary-button" onClick={() => onAdd(data.group.id)}>添加竞品</button><button className="secondary-button" onClick={onRetry}>刷新</button><button className="secondary-button" onClick={() => onViewCompetitors(data.group.id)}>查看竞品</button><button className="secondary-button" onClick={onBack}>返回竞品分组</button></div></header>
     {(error || rangeError) && <div className="feedback feedback-server-error" role="alert">更新失败，保留上一份事实：{error || rangeError}<button className="text-button" onClick={onRetry}>重试</button></div>}
-    <section className="position-summaries">{[["组内经营景气信号", "证据不足", "不计算销量排名、增长或综合评分"], ["我方综合竞争力及组内位置", "待接入", "评分规则未冻结"], ["经营字段历史有效值", "八项原值已接入", operatingCoverageText ? `${operatingCoverageText}（按监控中 Offer 统计）` : "各 Offer 有效值覆盖将在采集后逐项显示"], ["当前经营决策提示", "证据不足", "先核查原值、时间与来源"]].map(([title, value, hint], index) => <article className="table-card" key={title}><span>{title}</span><strong>{value}</strong><small>{index === 1 && own ? ownExcluded ? "我方基准商品当前不可参与比较" : positionText(own) : hint}</small>{index === 1 && <small>{hint}</small>}</article>)}</section>
-    <div className="position-layout"><div className="position-primary">
-    <section className="table-card group-detail-section position-comparison"><div className="table-heading"><div><h2>商品横向竞争对比</h2><span>Offer 为比较单位，同店多个 Offer 分别保留</span></div><button className="secondary-button" disabled={!own || ownExcluded} onClick={locate}>定位我方</button></div>
+    <div className="position-tabs position-workspace-tabs" role="tablist" aria-label="组分析视图">{["竞品动态", "商品对比"].map(tab => <button type="button" role="tab" id={tab === "竞品动态" ? "group-events-tab" : "group-comparison-tab"} aria-controls={tab === "竞品动态" ? "group-events-panel" : "group-comparison-panel"} aria-selected={workspaceView === tab} tabIndex={workspaceView === tab ? 0 : -1} className={workspaceView === tab ? "active" : ""} key={tab} onClick={() => setWorkspaceView(tab)} onKeyDown={event => {
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        const next = event.key === "Home" ? "竞品动态" : event.key === "End" ? "商品对比" : tab === "竞品动态" ? "商品对比" : "竞品动态";
+        setWorkspaceView(next);
+        document.getElementById(next === "竞品动态" ? "group-events-tab" : "group-comparison-tab")?.focus();
+      }
+    }}>{tab}</button>)}</div>
+    <section hidden={workspaceView !== "商品对比"} className="position-summaries">{[["组内经营景气信号", "证据不足", "不计算销量排名、增长或综合评分"], ["我方综合竞争力及组内位置", "待接入", "评分规则未冻结"], ["经营字段历史有效值", "八项原值已接入", operatingCoverageText ? `${operatingCoverageText}（按监控中 Offer 统计）` : "各 Offer 有效值覆盖将在采集后逐项显示"], ["当前经营决策提示", "证据不足", "先核查原值、时间与来源"]].map(([title, value, hint], index) => <article className="table-card" key={title}><span>{title}</span><strong>{value}</strong><small>{index === 1 && own ? ownExcluded ? "我方基准商品当前不可参与比较" : positionText(own) : hint}</small>{index === 1 && <small>{hint}</small>}</article>)}</section>
+    <div className={`position-layout${workspaceView === "竞品动态" ? " position-layout-events" : ""}`}><div className="position-primary">
+    <section hidden={workspaceView !== "商品对比"} role="tabpanel" id="group-comparison-panel" aria-labelledby="group-comparison-tab" className="table-card group-detail-section position-comparison"><div className="table-heading"><div><h2>商品横向竞争对比</h2><span>Offer 为比较单位，同店多个 Offer 分别保留</span></div><button className="secondary-button" disabled={!own || ownExcluded} onClick={locate}>定位我方</button></div>
     {!own && <p className="group-compact-empty">尚未绑定我方商品 · 未建立我方基准</p>}
     {own && ownExcluded && <p className="group-compact-empty">我方基准商品当前{own.status === "offline" ? "已下架" : "已停止监控"}{own.status === "offline" && !own.is_active ? "且已停止监控" : ""}，不参与比较；绑定关系保留。</p>}
     <div className="position-tabs" role="tablist" aria-label="对比视图">{["竞争总览", ...Object.keys(pendingViews)].map(tab => <button role="tab" aria-selected={view === tab} className={view === tab ? "active" : ""} key={tab} onClick={() => setView(tab)}>{tab}</button>)}</div>
@@ -1587,15 +1624,19 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
       </th>;
     })}<th>操作</th></tr></thead><tbody>{visible.map(product => <tr key={product.id} data-offer-id={product.id} ref={product.id === own?.id ? ownRow : undefined} tabIndex={0} aria-label={rowDescription(product)} aria-selected={product.id === selected?.id} onClick={() => setSelectedId(product.id)} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setSelectedId(product.id); } }} className={(product.id === own?.id ? "position-own-row " : "") + (product.id === selected?.id ? "position-selected " : "") + (product.id === own?.id && highlightOwn ? "position-located" : "")}><td>{groupShopLink(product)}{product.status === "unknown" && <small className="position-status-unknown">状态未知</small>}</td>{view === "竞争总览" && <td className="position-tag-cell" aria-label={`平台标签待接入，Offer ${product.offer_id}`}>—</td>}{columns.map(column => <td key={column.title}>{column.metric_key ? <span className="position-metric-raw">{operatingMetricValue(product, column.metric_key)}</span> : column.field ? <button className="position-value" onClick={() => setSelectedId(product.id)} aria-label={`${column.title}字段依据 ${product.offer_id}`}>{groupSnapshotValue(product, column.field)}</button> : <span className="position-pending">待接入</span>}</td>)}<td><div className="position-row-actions"><button className="detail-button" onClick={event => { event.stopPropagation(); onOpenDetail(product.id); }}>查看详情</button></div></td></tr>)}</tbody></table></div>
     {!visible.length && <p className="group-compact-empty">{currentOffers.length ? "没有符合条件的 Offer。" : "当前没有商品可参与比较。"}</p>}<p className="position-context">可见 {visible.length} / 当前参与对比 {currentOffers.length} · 筛选不改变全组排名与分母</p></section>
-    <section className="table-card group-detail-section position-events"><div className="table-heading"><div><h2>竞争动态与可追溯变化</h2><span>全组 · 价格、MOQ、SKU 为重点，普通库存变化弱化</span></div></div><div className="position-event-controls">{(["today", "7", "30"] as const).map(range => <button className={page?.range === range ? "active" : ""} disabled={rangeLoading} aria-pressed={page?.range === range} key={range} onClick={() => { if (range !== "today") { requestId.current++; onRangeChange(Number(range) as 7 | 30); } else void loadEvents(range, "important"); }}>{range === "today" ? "今日" : `近 ${range} 天`}</button>)}{(["important", "all"] as const).map(mode => <button className={page?.mode === mode ? "active" : ""} disabled={rangeLoading} aria-pressed={page?.mode === mode} key={mode} onClick={() => void loadEvents(page?.range ?? String(days) as "7" | "30", mode)}>{mode === "important" ? "重点" : "全部"}</button>)}</div>
+    <section hidden={workspaceView !== "竞品动态"} role="tabpanel" id="group-events-panel" aria-labelledby="group-events-tab" className="table-card group-detail-section position-events"><div className="table-heading"><div><h2>竞争动态与可追溯变化</h2><span>全组 · 价格、MOQ、SKU 为重点，普通库存变化弱化</span></div></div><div className="position-event-controls">{(["today", "7", "30"] as const).map(range => <button className={page?.range === range ? "active" : ""} disabled={rangeLoading} aria-pressed={page?.range === range} key={range} onClick={() => { if (range !== "today") { requestId.current++; onRangeChange(Number(range) as 7 | 30); } else void loadEvents(range, "important"); }}>{range === "today" ? "今日" : `近 ${range} 天`}</button>)}{(["important", "all"] as const).map(mode => <button className={page?.mode === mode ? "active" : ""} disabled={rangeLoading} aria-pressed={page?.mode === mode} key={mode} onClick={() => void loadEvents(page?.range ?? String(days) as "7" | "30", mode)}>{mode === "important" ? "重点" : "全部"}</button>)}</div>
     {(eventLoading || rangeLoading) && <p role="status">正在更新历史范围，保留上一份事实…</p>}
     {eventError && <p role="alert">{eventError}<button className="text-button" onClick={() => { if (eventError.includes("角色")) void loadEvents(page?.range ?? "7", page?.mode ?? "important"); else if (failedEventRequest) void loadEvents(failedEventRequest.range, failedEventRequest.mode, failedEventRequest.append); }}>重试 / 重新加载</button></p>}
     {page && !page.items.length && <p className="group-compact-empty">{page.mode === "important" ? "当前窗口暂无重点事件，可查看全部变化" : "当前窗口暂无变化"}</p>}
-    <ol className="position-event-list">{page?.items.map(event => <li key={event.id} className={/^(price_|min_order_quantity_|sku_added|sku_removed)/.test(event.change_type) ? "important" : "ordinary"}><div><strong>{event.shop_name || event.title || `Offer ${event.offer_id}`}</strong> <span>{event.role === "own" ? "我方" : "竞品"}{allOffers.some(product => product.id === event.competitor_id && !currentOffers.some(current => current.id === product.id)) ? " · 当前已下架或停监" : ""} · {formatChange(event)}</span><p>{event.old_value ?? "未知"} → {event.new_value ?? "未知"}</p><small>检测时间 {formatDate(event.detected_at)} · Offer {event.offer_id}</small></div><button className="detail-button" onClick={() => setEvidence(event)}>变化证据</button></li>)}</ol>
-    {page && <p className="position-context">已加载 {page.items.length} 条{page.has_more ? "，仍有更多" : "，已加载当前窗口全部符合条件的事件"}{page.has_more && <button className="secondary-button" disabled={eventLoading || rangeLoading} onClick={() => void loadEvents(page.range, page.mode, true)}>继续加载</button>}</p>}
+    <ol className="position-event-list">{groupEventSummaries(page?.items ?? []).map(({ key, items }) => {
+      const event = items[0];
+      const original = (item: GroupEventPage["items"][number]) => <div className="position-event-original" key={item.id}><div><strong>{item.entity_key ? item.sku_name || `SKU ${item.entity_key}` : "商品级变化"}</strong><p>{formatChange(item)}</p><p>前值 {item.old_value ?? "未知"} → 后值 {item.new_value ?? "未知"}</p><small>检测时间 {formatDate(item.detected_at)}</small></div><button className="detail-button" onClick={() => setEvidence(item)}>变化证据</button></div>;
+      return <li key={key} className={/^(price_|min_order_quantity_|sku_added|sku_removed)/.test(event.change_type) ? "important" : "ordinary"}><div className="position-event-summary"><strong>{event.shop_name || event.title || `Offer ${event.offer_id}`}</strong> <span>{event.role === "own" ? "我方" : "竞品"}{allOffers.some(product => product.id === event.competitor_id && !currentOffers.some(current => current.id === product.id)) ? " · 当前已下架或停监" : ""} · {groupEventSummaryLabel(items)}</span><small>检测时间 {formatDate(event.detected_at)} · Offer {event.offer_id}</small>{items.length > 1 ? <details><summary>展开 {items.length} 条原始变化</summary>{items.map(original)}</details> : original(event)}</div></li>;
+    })}</ol>
+    {page && <p className="position-context">已加载 {page.items.length} 条原始事件{page.has_more ? "，摘要数量仅代表已加载事件，仍有更多" : "，已加载当前窗口全部符合条件的事件"}{page.has_more && <button className="secondary-button" disabled={eventLoading || rangeLoading} onClick={() => void loadEvents(page.range, page.mode, true)}>继续加载</button>}</p>}
     {evidence && <div className="position-evidence" role="region" aria-label="所选变化证据"><strong>{formatChange(evidence)}</strong><p>前值 {evidence.old_value ?? "未知"} → 后值 {evidence.new_value ?? "未知"}</p><p>检测时间 {formatDate(evidence.detected_at)}</p><p>Event #{evidence.id} · Snapshot #{evidence.snapshot_id ?? "未知"} · Collection Run #{evidence.collection_run_id ?? "未知"} · {evidence.entity_key ?? "Offer 级"} {evidence.sku_name}</p><p>单品详情没有事件锚点；以上保留所选事件证据。</p><button className="detail-button" onClick={() => onOpenDetail(evidence.competitor_id)}>查看详情</button></div>}
     </section></div>
-    <aside className="position-aside"><section className="table-card position-side-card"><h2>组内经营判断</h2><strong>证据不足</strong><p>不计算销量排名、增长或综合评分。</p><h3>关键证据与缺口</h3><p>经营表现和口碑履约展示官方采购助手原值；平台标签与收藏数待接入。</p><h3>当前建议</h3><p>证据不足。可从单品速览核查事实，不生成调价、加码或放弃建议。</p></section><section className="table-card position-side-card product-preview"><h2>商品速览</h2>{selected ? <><div className="product-preview-shop">{selected.shop_name?.trim() || "店铺未采集"}{selected.id === own?.id && <span className="group-own-label">我方</span>}</div><p className="product-preview-title">{selected.title || "商品名未采集"}</p><p className="product-preview-offer">Offer ID：{selected.offer_id}</p><dl className="position-facts">{(["price", "moq", "sku", "stock"] as const).map((field, index) => <div key={field}><dt>{["展示报价", "MOQ", "SKU 数", "完整库存"][index]}</dt><dd>{groupSnapshotValue(selected, field)}</dd></div>)}</dl><div className="product-preview-status"><span>商品：{selected.status === "active" ? "在售" : selected.status === "offline" ? "下架" : "未知"}</span><span>{selected.is_active ? "监控中" : "已停止"}</span></div><p className="product-preview-freshness">最近有效基础快照 · {formatDate(selected.latest_snapshot?.captured_at ?? null)}</p>{previewPosition(selected)}<button className="detail-button" onClick={() => onOpenDetail(selected.id)}>查看详情</button></> : <p>当前组暂无有效商品可速览</p>}</section></aside>
+    <aside hidden={workspaceView !== "商品对比"} className="position-aside"><section className="table-card position-side-card"><h2>组内经营判断</h2><strong>证据不足</strong><p>不计算销量排名、增长或综合评分。</p><h3>关键证据与缺口</h3><p>经营表现和口碑履约展示官方采购助手原值；平台标签与收藏数待接入。</p><h3>当前建议</h3><p>证据不足。可从单品速览核查事实，不生成调价、加码或放弃建议。</p></section><section className="table-card position-side-card product-preview"><h2>商品速览</h2>{selected ? <><div className="product-preview-shop">{selected.shop_name?.trim() || "店铺未采集"}{selected.id === own?.id && <span className="group-own-label">我方</span>}</div><p className="product-preview-title">{selected.title || "商品名未采集"}</p><p className="product-preview-offer">Offer ID：{selected.offer_id}</p><dl className="position-facts">{(["price", "moq", "sku", "stock"] as const).map((field, index) => <div key={field}><dt>{["展示报价", "MOQ", "SKU 数", "完整库存"][index]}</dt><dd>{groupSnapshotValue(selected, field)}</dd></div>)}</dl><div className="product-preview-status"><span>商品：{selected.status === "active" ? "在售" : selected.status === "offline" ? "下架" : "未知"}</span><span>{selected.is_active ? "监控中" : "已停止"}</span></div><p className="product-preview-freshness">最近有效基础快照 · {formatDate(selected.latest_snapshot?.captured_at ?? null)}</p>{previewPosition(selected)}<button className="detail-button" onClick={() => onOpenDetail(selected.id)}>查看详情</button></> : <p>当前组暂无有效商品可速览</p>}</section></aside>
     </div></div>
   </AppShell>;
 }
@@ -1878,8 +1919,16 @@ function dashboardCollectionNotice(data: DashboardData | null, status: Dashboard
 
 function DashboardAttentionList({ attention, onOpenGroupDetail }: { attention: GroupAttentionData; onOpenGroupDetail?: (groupId: number) => void }) {
   const [showAllAttention, setShowAllAttention] = useState(false);
-  const visibleAttentionGroups = showAllAttention ? attention.groups : attention.groups.slice(0, 5);
-  return <><div className="dashboard-attention-list">{visibleAttentionGroups.map((item) => <article className="dashboard-attention-card" key={item.group_id}><div className="dashboard-attention-main"><div className="dashboard-attention-identity"><h3>{item.group_name}</h3><span>{item.own_product.title?.trim() || `Offer ${item.own_product.offer_id}`}{item.own_product.shop_name ? ` · ${item.own_product.shop_name}` : ""}</span></div><span className={`dashboard-attention-level dashboard-attention-level-${item.attention_level === "重点关注" ? "high" : item.attention_level === "建议查看" ? "medium" : "low"}`}>{item.attention_level}</span></div><div className="dashboard-attention-meta"><span>今日变化竞品 <strong>{item.changed_competitor_count}</strong></span><span>最近变化 {formatDate(item.latest_change_at)}</span></div><ul className="dashboard-attention-reasons">{item.reasons.map((reason, index) => <li key={`${reason.reason_type}-${index}`}>{reason.display_text}</li>)}</ul><button type="button" className="detail-button dashboard-attention-action" onClick={() => onOpenGroupDetail?.(item.group_id)}>进入组分析</button></article>)}</div>{attention.groups.length > 5 && <div className="dashboard-attention-toggle"><span>{showAllAttention ? `已展示全部 ${attention.groups.length} 个商品组` : `还有 ${attention.groups.length - 5} 个需要关注的商品组`}</span><button type="button" onClick={() => setShowAllAttention((showAll) => !showAll)} aria-label={showAllAttention ? "收起" : "展开全部"}>{showAllAttention ? "收起" : "展开全部"}<i aria-hidden="true">{showAllAttention ? "⌃" : "⌄"}</i></button></div>}</>;
+  const priorityGroups = attention.groups.filter(item => item.attention_level !== "一般变化");
+  const ordinaryGroups = attention.groups.filter(item => item.attention_level === "一般变化");
+  const visibleAttentionGroups = showAllAttention ? priorityGroups : priorityGroups.slice(0, 5);
+  const renderGroup = (item: GroupAttentionItem) => <article className="dashboard-attention-card" key={item.group_id}><div className="dashboard-attention-main"><div className="dashboard-attention-identity"><h3>{item.group_name}</h3></div><span className={`dashboard-attention-level dashboard-attention-level-${item.attention_level === "重点关注" ? "high" : item.attention_level === "建议查看" ? "medium" : "low"}`}>{item.attention_level}</span></div><div className="dashboard-attention-meta"><span>今日变化竞品 <strong>{item.changed_competitor_count}</strong></span><span>最近变化 {formatDate(item.latest_change_at)}</span></div><ul className="dashboard-attention-reasons">{item.reasons.map((reason, index) => <li key={`${reason.reason_type}-${index}`}>{reason.display_text}</li>)}</ul><button type="button" className="detail-button dashboard-attention-action" onClick={() => onOpenGroupDetail?.(item.group_id)}>进入组分析</button></article>;
+  return <><p className="position-context">重点关注 / 建议查看 {priorityGroups.length} 组 · 一般变化 {ordinaryGroups.length} 组</p>
+    {!priorityGroups.length && <p className="group-compact-empty">今日暂无重点关注或建议查看的商品组</p>}
+    <div className="dashboard-attention-list">{visibleAttentionGroups.map(renderGroup)}</div>
+    {priorityGroups.length > 5 && <div className="dashboard-attention-toggle"><span>{showAllAttention ? `已展示全部 ${priorityGroups.length} 个商品组` : `还有 ${priorityGroups.length - 5} 个需要关注的商品组`}</span><button type="button" aria-expanded={showAllAttention} onClick={() => setShowAllAttention(value => !value)} aria-label={showAllAttention ? "收起" : "展开全部"}>{showAllAttention ? "收起" : "展开全部"}<i aria-hidden="true">{showAllAttention ? "⌃" : "⌄"}</i></button></div>}
+    {ordinaryGroups.length > 0 && <details className="dashboard-ordinary-groups"><summary>一般变化 {ordinaryGroups.length} 组</summary><div className="dashboard-attention-list">{ordinaryGroups.map(renderGroup)}</div></details>}
+  </>;
 }
 
 export function DashboardPage({ data, attention, attentionStatus, attentionError, status, error, batchState = idleBatchState, onRetry, onRetryAttention, onNavigate, ownShopName = null, onAdd = noop, onCollect = noop, onToggleBatchPause = noop, onEndBatch = noop, onOpenGroupDetail }: DashboardPageProps) {

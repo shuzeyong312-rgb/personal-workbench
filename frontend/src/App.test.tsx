@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { expect, test, vi } from "vitest";
 
-import { competitorPageSize, competitorOfferId, dedupeCompetitorInputs, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
+import { groupEventSummaries, groupEventSummaryLabel, competitorPageSize, competitorOfferId, dedupeCompetitorInputs, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
 
 import { submitAddLinks, AddDialog, applyInitialGroupFilter, filterAndSortCompetitorGroups, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
 
@@ -883,14 +883,14 @@ test("renders group-first KPI and keeps backend group order and Attention levels
   expect(html).toContain("添加监控商品");
   expect(html).not.toContain("dashboard-context-row");
   expect(html).toContain("今日需要关注的商品组");
-  const order = ["一般组", "建议组"].map((name) => html.indexOf(name));
+  const order = ["建议组", "重点组", "一般组"].map((name) => html.indexOf(name));
   expect(order.every((index) => index >= 0)).toBe(true);
   expect(order).toEqual([...order].sort((left, right) => left - right));
   expect(html).toContain("一般变化");
   expect(html).toContain("建议查看");
   expect(html).toContain("重点关注");
-  expect(html).toContain("我方重点款");
-  expect(html).toContain("旗舰店");
+  expect(html).not.toContain("我方重点款");
+  expect(html).not.toContain("旗舰店");
   expect(html).toContain("今日变化竞品");
   expect(html).toContain("进入组分析");
   expect(html).not.toContain("attention_score");
@@ -902,7 +902,7 @@ test("renders group-first KPI and keeps backend group order and Attention levels
 });
 
 test("shows up to five dashboard groups and preserves backend order", () => {
-  const groups = Array.from({ length: 7 }, (_, index) => ({ ...attentionData.groups[index % 3], group_id: index + 1, group_name: `商品组${index + 1}` }));
+  const groups = Array.from({ length: 7 }, (_, index) => ({ ...attentionData.groups[index % 3], attention_level: "重点关注" as const, group_id: index + 1, group_name: `商品组${index + 1}` }));
   const html = renderDashboard({ attention: { ...attentionData, groups } });
   expect((html.match(/class="dashboard-attention-card"/g) || []).length).toBe(5);
   expect(html).toContain("商品组5");
@@ -917,7 +917,7 @@ test("expands and collapses dashboard Attention groups without changing their or
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
-  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组", "第六组", "第七组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
+  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组", "第六组", "第七组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], attention_level: "重点关注" as const, group_id: index + 1, group_name }));
   const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/api/**", async (route) => {
     const key = `${route.request().method()} ${new URL(route.request().url()).pathname}`;
@@ -970,7 +970,7 @@ test("keeps Dashboard collection status complete in idle, running, and resting b
     await page.screenshot({ path: `${screenshotDir}/${name}.png` });
     await page.locator("body > div:last-child").evaluate((element) => element.remove());
   };
-  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], group_id: index + 1, group_name }));
+  const groups = ["第一组", "第二组", "第三组", "第四组", "第五组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], attention_level: "重点关注" as const, group_id: index + 1, group_name }));
   let batchState: BatchState = idleBatchState;
   const json = (route: Route, body: unknown) => route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/api/**", async (route) => {
@@ -1420,7 +1420,7 @@ test("renders competitive workbench states and compact product preview", () => {
   for (const text of ["待接入：评分规则未冻结", "评分拆解", "来源快照 #", "经营指标原值", "排名覆盖：", "字段依据：", "报价仅按完整区间下限排名"]) expect(html).not.toContain(text);
   expect(html.match(/class=\"position-row-actions\"><button class=\"detail-button\">查看详情<\/button><\/div>/g)).toHaveLength(groupDetailData.competitors.length + 1);
   expect(html).toContain("平台标签 <small class=\"position-tag-pending\">待接入</small>");
-  expect(html.match(/role=\"tab\"/g)).toHaveLength(3);
+  expect(html.match(/role=\"tab\"/g)).toHaveLength(5);
   expect(html).not.toContain("role=\"tab\" aria-selected=\"false\" class=\"\">平台标签");
   expect(html.match(/class=\"position-tag-cell\" aria-label=\"平台标签待接入/g)).toHaveLength(groupDetailData.competitors.length + 1);
   expect(html).not.toContain("无标签");
@@ -2348,4 +2348,29 @@ test("an older detail error cannot replace the newer successful request", () => 
   if (isCurrentDetailRequest(oldRequest, latestRequestId)) state = "error";
 
   expect(state).toBe("ready");
+});
+
+
+test("groups only events with a proven collection relationship without changing original facts", () => {
+  const base = { id: 1, competitor_id: 7, offer_id: "700", role: "competitor" as const, title: "测试", snapshot_id: 10, collection_run_id: 42, change_type: "price_decrease", entity_key: "a", sku_name: "白色", old_value: "12", new_value: "9", delta_value: "-3", delta_rate: "-0.25", detected_at: "2026-10-09T01:00:00Z" };
+  const events = [base, { ...base, id: 2, entity_key: "b", sku_name: "黑色", old_value: "20", new_value: "18" }, { ...base, id: 3 }, { ...base, id: 4, entity_key: null }];
+  const before = JSON.stringify(events);
+  const grouped = groupEventSummaries(events);
+  expect(grouped).toHaveLength(1);
+  expect(grouped[0].items).toEqual(events);
+  expect(groupEventSummaryLabel(grouped[0].items)).toBe("商品降价，涉及 2 个 SKU · 4 条原始变化");
+  expect(groupEventSummaryLabel(events.slice(0, 3))).toBe("2 个 SKU 降价 · 3 条原始变化");
+  expect(JSON.stringify(events)).toBe(before);
+  expect(groupEventSummaries([...events, { ...base, id: 5, change_type: "sku_added" }, { ...base, id: 6, competitor_id: 8, offer_id: "800" }, { ...base, id: 7, collection_run_id: 43 }, { ...base, id: 8, collection_run_id: null, snapshot_id: null }, { ...base, id: 9, collection_run_id: null, snapshot_id: null }])).toHaveLength(6);
+  expect(groupEventSummaries([{ ...base, collection_run_id: null }, { ...base, id: 2, collection_run_id: null }])).toHaveLength(1);
+  expect(groupEventSummaries([{ ...base, collection_run_id: null }, { ...base, id: 2, collection_run_id: null, snapshot_id: 11 }])).toHaveLength(2);
+  expect(groupEventSummaries([])).toEqual([]);
+});
+
+test("dashboard exposes ordinary-only groups in a closed disclosure and removes product identity", () => {
+  const html = renderDashboard({ attention: { ...attentionData, groups: attentionData.groups.filter(item => item.attention_level === "一般变化") } });
+  expect(html).toContain("今日暂无重点关注或建议查看的商品组");
+  expect(html).toContain("重点关注 / 建议查看 0 组 · 一般变化 1 组");
+  expect(html).toContain('<details class="dashboard-ordinary-groups"><summary>一般变化 1 组</summary>');
+  expect(html).not.toContain("我方一般款");
 });

@@ -18,7 +18,7 @@
 - 列表：`competitor-list` → `competitor-list-pagination-v1` → `competitor-list-batch-actions-v1` → `own-product-management-v1`（统一添加/采集入口回到大屏）。
 - 采集：`batch-collection` → `batch-collection-auto-resume-v1` → `competitor-monitoring-settings-v1`；`daily-collection` → `daily-auto-collection-strategy-v1`。Runtime 与 CollectionRun 不是同一种历史。
 - 设置：我方店铺设置 + 五项 Batch 配置 → 九项完整配置 → `system-settings-visual-refresh-v1`（仅控件/外观，业务不变）。
-- 组分析：`group-intelligence` → `group-detail-v1` → 已实施的 `group-competitive-position-v1`，身份叠加 `own-product-management-v1`；Group Detail V2 尚无实施合同。
+- 组分析：`group-intelligence` → `group-detail-v1` → 已实施的 `group-competitive-position-v1`，身份叠加 `own-product-management-v1`；动态优先工作区草稿见 [group-analysis-dynamics-first-v1.md](group-analysis-dynamics-first-v1.md)，尚未 Review / Freeze。
 
 ## 分类含义
 
@@ -86,7 +86,7 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | --- | --- | --- |
 | [组内竞争情报与竞争位置 V1](group-competitive-position-v1.md) | 已通过 ChatGPT Final Spec Review / 已 Freeze；本轮已实施，最新 UI 已由用户验收，完整验证结果见最终收尾报告；冻结基准 `7bd49355df7ca19a1de2835c0280d140a76b624f` | 升级现有组详情的目标 UI、真实 Offer 排序/位置和变化证据；R1～R3 已正式确认。原始原型截图已入库，历史明细有界首批/游标加载，排名基于各 Offer 最近有效快照且非实时同步。新经营字段与评分保持未就绪。Freeze 后局部覆盖 Group Detail V1 的我方首行、首屏结构和主要动态呈现，其余事实合同继承。 |
 
-以上 Spec 不计入 2026-10-08 的 30 份历史核验分类统计；当前索引共收录 33 份 Spec。组分析现按已实施的 group-competitive-position-v1 及其继承合同运行；完整验证结果见最终收尾报告。
+以上 Spec 不计入 2026-10-08 的 30 份历史核验分类统计；本索引现收录 34 份 Spec，包含下方未冻结草稿。组分析现按已实施的 group-competitive-position-v1 及其继承合同运行；草稿不改变当前实施合同。
 
 ## 已 Freeze Spec（2026-10-12）
 
@@ -100,4 +100,10 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | --- | --- | --- |
 | [collection-trigger-unification-v1.3.md](collection-trigger-unification-v1.3.md) | Frozen；ChatGPT 独立 Final Spec Review PASS，P0/P1/P2=0/0/0；审核基线 `761ba2be7a16ef347693f84aebaf1f1acf15e1e1`；已批准实施 | 手动/定时/添加链接统一真实任务；明确业务拒绝终态、添加 Runtime 输入进度、同 ID 并发受理及 unknown 查询兼容。继承 V1.2，新增合同只在 Review / Freeze 后实施。 |
 | [collection-add-initial-metrics-and-input-dedup-v1.4.md](collection-add-initial-metrics-and-input-dedup-v1.4.md) | Frozen；ChatGPT Final Spec Review PASS，P0/P1/P2=0/0/0；审核基线 `d4ea68dbe7ebf3b15c3d7718aee0f89b33070153`；已批准实施 | 添加时复用同一次 `CollectionPageResult` 原子保存真实经营 Observation；添加专用经营状态映射与收口/恢复幂等；首页按批次、详情按输入筛选异常；剪贴板及提交按 Offer ID 去重并冻结幂等输入。继承 V1.2/V1.3。 |
+
+## 草稿 Spec（2026-10-22）
+
+| Spec | 状态 | 范围与 Gate |
+| --- | --- | --- |
+| [group-analysis-dynamics-first-v1.md](group-analysis-dynamics-first-v1.md) | 草稿，待独立 Spec Review；未冻结，未授权实施 | 大屏按现有关注等级分区并折叠一般变化；组分析以竞品动态为默认标签，与商品对比共用工作区；相关 SKU 变化合并呈现并保留原事件证据。 |
 

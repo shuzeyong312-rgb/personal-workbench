@@ -9,7 +9,7 @@ const groups = Array.from({ length: 7 }, (_, index) => ({
   group_id: index + 1,
   group_name: ["便携暖手宝 · 主推款", "桌面加湿器 · 静音款", "随行保温杯 · 轻量款", "折叠风扇 · 桌面款", "充电夜灯 · 柔光款", "电热水袋 · 家用款", "迷你取暖器 · 陶瓷款"][index],
   own_product: { id: index + 100, offer_id: `80000${index}`, title: "我方商品 · 标准配置 / 多规格", shop_name: "工作台示例店铺", main_image_url: null },
-  attention_level: index === 0 ? "重点关注" : index < 3 ? "建议查看" : "一般变化",
+  attention_level: index === 0 ? "重点关注" : "建议查看",
   changed_competitor_count: index === 0 ? 3 : 1,
   reasons: [{ reason_type: "price_decrease", display_text: index === 0 ? "3 家直接竞品降价，请进入组分析核对价格差距" : "1 家直接竞品调整价格", competitor_count: index === 0 ? 3 : 1, sku_count: null, direction: "price_decrease", event_level: "B", current_state_safe: true }],
   latest_change_at: `${date}T02:18:00Z`,

@@ -8,10 +8,18 @@ async function openWorkbench(page: Page, data = detail, competitors: Competitor[
   const mock = await installApiMock(page, { competitors, groups: [group] });
   await page.route("**/api/competitor-groups/summary", route => route.fulfill({ json: { groups: [{ ...group, competitor_count: 8, active_count: 7, price_min: "9", price_max: "150", changed_competitors_today: 2, last_change_at: null, own_product: detail.own_product }], unassigned: { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } } }));
   await page.route("**/api/competitor-groups/91/detail?*", route => route.fulfill({ json: { ...data, range_days: Number(new URL(route.request().url()).searchParams.get("days")), event_page: { ...(data.event_page ?? eventPage), range: new URL(route.request().url()).searchParams.get("days") } } }));
+  await page.route("**/api/competitor-groups/91/events?*", route => { const url = new URL(route.request().url()); return route.fulfill({ json: { ...(data.event_page ?? eventPage), range: url.searchParams.get("range"), mode: url.searchParams.get("mode") } }); });
   await page.goto("/");
+  if (page.viewportSize()!.width <= 720) await page.getByRole("button", { name: "展开导航", exact: true }).click();
   await page.getByRole("button", { name: "竞品分组", exact: true }).click();
   await page.locator(".group-directory-name").click();
   await expect(page.getByRole("heading", { name: "隔离测试组 竞争分析" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "竞品动态", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".position-comparison")).toBeHidden();
+  await expect(page.locator(".position-events")).toBeVisible();
+  await expect(page.getByRole("button", { name: "今日", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "重点", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("tab", { name: "商品对比", exact: true }).click();
   return mock;
 }
 
@@ -345,18 +353,22 @@ test("wheel over comparison table, preview and events scrolls the main page", as
   ];
   const results: Array<{ name: string; mainDelta: number; tableDelta: number }> = [];
   for (const zone of zones) {
+    await page.getByRole("tab", { name: zone.name === "events" ? "竞品动态" : "商品对比", exact: true }).click();
     await page.evaluate(() => { (document.querySelector("main") as HTMLElement).scrollTop = 0; document.querySelector(".table-scroll")!.scrollTop = 0; });
+    if (zone.name === "events") await page.locator(".position-event-list summary").evaluateAll(elements => elements.forEach(element => { (element.parentElement as HTMLDetailsElement).open = true; }));
     await zone.locator.scrollIntoViewIfNeeded();
+    if (zone.name === "events") await page.locator(".main-content").evaluate(element => { element.scrollTop = 0; });
     const box = await zone.locator.boundingBox();
     if (!box) throw new Error(`${zone.name} has no layout box`);
     const point = await page.evaluate(({ x, y, width, height, name }) => ({ x: name === "left blank cell" ? x + width - 6 : x + width / 2, y: Math.max(20, Math.min(y + Math.min(height / 2, 250), innerHeight - 20)) }), { ...box, name: zone.name });
     const beforeWheel = await page.evaluate(() => ({ main: (document.querySelector("main") as HTMLElement).scrollTop, table: document.querySelector(".table-scroll")!.scrollTop }));
     await page.mouse.move(point.x, point.y);
-    await page.mouse.wheel(0, zone.name === "events" ? -420 : 420);
+    await page.mouse.wheel(0, 420);
     await page.waitForTimeout(80);
     const after = await page.evaluate(() => ({ main: (document.querySelector("main") as HTMLElement).scrollTop, table: document.querySelector(".table-scroll")!.scrollTop }));
     results.push({ name: zone.name, mainDelta: after.main - beforeWheel.main, tableDelta: after.table - beforeWheel.table });
   }
+  await page.getByRole("tab", { name: "商品对比", exact: true }).click();
   const tableOverflow = await page.locator(".position-comparison .table-scroll").evaluate(element => ({ x: getComputedStyle(element).overflowX, y: getComputedStyle(element).overflowY, clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
   expect(results.every(result => Math.abs(result.mainDelta) > 0), "each wheel region should move the main page").toBe(true);
   expect(results.every(result => result.tableDelta === 0), "the comparison table should not scroll vertically").toBe(true);
@@ -413,7 +425,9 @@ test("current comparison consistently excludes offline and stopped Offers and pr
   await expect(page.getByLabel("监控状态", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("商品状态", { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-offer-id="9"]')).toContainText("状态未知");
+  await page.getByRole("tab", { name: "竞品动态", exact: true }).click();
   await expect(page.locator(".position-event-list")).toContainText("当前已下架或停监");
+  await page.getByRole("tab", { name: "商品对比", exact: true }).click();
   expect(await rowIds(page)).toEqual([1, 2, 3, 7, 8, 9]);
   await page.setViewportSize({ width: 1600, height: 1400 });
   await page.screenshot({ path: testInfo.outputPath("group-position-mixed-status.png"), fullPage: true });
@@ -506,6 +520,7 @@ test("details activation leaves the mounted Offer selection unchanged", async ({
     }));
   }, detail);
   const harness = page.locator("[data-selection-harness]");
+  await harness.getByRole("tab", { name: "商品对比", exact: true }).click();
   await harness.locator('[data-offer-id="2"] td:nth-child(2)').click();
   const button = harness.locator('[data-offer-id="6"]').getByRole("button", { name: "查看详情", exact: true });
   for (const key of ["click", "Enter", "Space"]) {
@@ -538,7 +553,7 @@ test("header sorting, tied positions, filtering, own location and pending views"
   await expect(page.locator(".position-table tbody tr").first()).not.toContainText("隔离商品");
   await expect(page.locator(".position-row-actions button")).toHaveCount(9);
   await expect(page.locator(".position-row-actions button")).toHaveText(Array(9).fill("查看详情"));
-  await expect(page.getByRole("tab")).toHaveCount(3);
+  await expect(page.getByRole("tablist", { name: "对比视图", exact: true }).getByRole("tab")).toHaveCount(3);
   await expect(page.getByRole("tab", { name: "平台标签", exact: true })).toHaveCount(0);
   const tagHeader = page.locator(".position-table thead th").filter({ hasText: "平台标签" });
   await expect(tagHeader).toContainText("待接入");
@@ -614,6 +629,7 @@ test("unbound groups select the first Offer and refresh falls back when the sele
 
 test("bounded history append, failed retry, evidence and stale response isolation", async ({ page }) => {
   const mock = await openWorkbench(page);
+  await page.getByRole("tab", { name: "竞品动态", exact: true }).click();
   let appendAttempts = 0;
   await page.route("**/api/competitor-groups/91/events?*", async route => {
     const url = new URL(route.request().url());
@@ -630,9 +646,12 @@ test("bounded history append, failed retry, evidence and stale response isolatio
   });
   await page.getByRole("button", { name: "继续加载" }).click();
   await expect(page.getByRole("alert")).toContainText("隔离追加失败");
-  await expect(page.locator(".position-event-list li")).toHaveCount(20);
+  await expect(page.locator(".position-event-list > li")).toHaveCount(2);
+  await expect(page.locator(".position-events")).toContainText("已加载 20 条原始事件");
   await page.getByRole("button", { name: "重试 / 重新加载" }).click();
-  await expect(page.locator(".position-event-list li")).toHaveCount(22);
+  await expect(page.locator(".position-event-list > li")).toHaveCount(2);
+  await expect(page.locator(".position-events")).toContainText("已加载 22 条原始事件");
+  await page.locator(".position-event-list summary").first().click();
   await expect(page.locator(".position-events")).toContainText("已加载当前窗口全部符合条件");
   await page.getByRole("button", { name: "变化证据" }).first().click();
   await expect(page.getByRole("region", { name: "所选变化证据" })).toContainText("Collection Run #42");
@@ -760,9 +779,10 @@ test("range failure preserves facts and important filters; context conflict rest
   const mock = await openWorkbench(page);
   await page.getByLabel("仅看重要变化").check();
   await page.route("**/api/competitor-groups/91/detail?days=30", route => route.fulfill({ status: 503, json: { message: "隔离范围失败" } }));
+  await page.getByRole("tab", { name: "竞品动态", exact: true }).click();
   await page.getByRole("button", { name: "近 30 天", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("保留上一份事实");
-  await expect(page.getByRole("button", { name: "近 7 天", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "今日", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect(await rowIds(page)).toEqual([1, 3, 6]);
   await page.route("**/api/competitor-groups/91/events?*", route => new URL(route.request().url()).searchParams.has("cursor") ? route.fulfill({ status: 409, json: { code: "group_event_context_changed" } }) : route.fulfill({ json: { ...eventPage, items: [event(88)], has_more: false, next_cursor: null, important_offer_ids: [6] } }));
   await page.getByRole("button", { name: "继续加载" }).click();
@@ -797,5 +817,84 @@ test("read-only real A19 response can be inspected in the browser", async ({ pag
   await expect(page.getByRole("region", { name: "所选变化证据" })).toContainText(`Event #${real.event_page.items[0].id}`);
   await page.locator(".main-content").evaluate(element => { element.scrollTop = element.scrollHeight; });
   await page.screenshot({ path: testInfo.outputPath("real-a19-evidence.png") });
+  await mock.expectNoUnexpectedApi();
+});
+
+
+for (const width of [1440, 390]) test(`dynamics workspace preserves filters and lossless paged summaries at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 });
+  const sku = (id: number, key: string, old: string, value: string) => ({ ...event(id), competitor_id: 1, offer_id: "9001", role: "competitor" as const, entity_key: key, sku_name: `型号 ${key}`, old_value: old, new_value: value });
+  const initial = [sku(101, "a", "12", "9"), sku(102, "b", "20", "18"), { ...sku(103, "b", "20", "18"), change_type: "sku_added" }, { ...sku(104, "x", "30", "29"), collection_run_id: null, snapshot_id: null }, { ...sku(105, "y", "40", "39"), collection_run_id: null, snapshot_id: null }];
+  const mock = await openWorkbench(page, { ...detail, event_page: { ...eventPage, items: initial } });
+  await page.getByLabel("搜索店铺、商品或 Offer").fill("9001");
+  await page.getByLabel("仅看重要变化").check();
+  const dynamicTab = page.getByRole("tab", { name: "竞品动态", exact: true });
+  await dynamicTab.focus();
+  await dynamicTab.press("Enter");
+  await expect(dynamicTab).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tabpanel", { name: "商品对比", exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: "定位我方", exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: "今日", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "重点", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.screenshot({ path: testInfo.outputPath(`dynamics-initial-${width}.png`) });
+  const summaries = page.locator(".position-event-list > li");
+  await expect(summaries).toHaveCount(4);
+  await expect(summaries.first()).toContainText("2 个 SKU 降价");
+  await expect(page.locator(".position-events")).toContainText("摘要数量仅代表已加载事件");
+  await summaries.first().locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(summaries.first().getByRole("button", { name: "变化证据" })).toHaveCount(2);
+  await expect(summaries.first()).toContainText("前值 12 → 后值 9");
+  await expect(summaries.first()).toContainText("前值 20 → 后值 18");
+  await summaries.first().getByRole("button", { name: "变化证据" }).nth(1).click();
+  await expect(page.getByRole("region", { name: "所选变化证据" })).toContainText("Event #102 · Snapshot #1 · Collection Run #42");
+  let attempts = 0;
+  await page.route("**/api/competitor-groups/91/events?*", async route => {
+    attempts++;
+    if (attempts === 1) return route.fulfill({ status: 503, json: { message: "分页失败" } });
+    return route.fulfill({ json: { ...eventPage, items: [sku(106, "c", "50", "45"), sku(107, "b", "20", "18")], has_more: false, next_cursor: null } });
+  });
+  await page.getByRole("button", { name: "继续加载" }).click();
+  await expect(page.getByRole("alert")).toContainText("分页失败");
+  await expect(summaries.first()).toContainText("2 个 SKU 降价");
+  await page.getByRole("button", { name: "重试 / 重新加载" }).click();
+  await expect(summaries).toHaveCount(4);
+  await expect(summaries.first()).toContainText("3 个 SKU 降价 · 4 条原始变化");
+  await expect(summaries.first().locator("details")).toHaveAttribute("open", "");
+  await expect(summaries.first().getByRole("button", { name: "变化证据" })).toHaveCount(4);
+  await expect(page.locator(".position-events")).toContainText("已加载 7 条原始事件，已加载当前窗口全部符合条件的事件");
+  await dynamicTab.focus();
+  await dynamicTab.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "商品对比", exact: true })).toBeFocused();
+  await expect(page.getByLabel("搜索店铺、商品或 Offer")).toHaveValue("9001");
+  await expect(page.getByLabel("仅看重要变化")).toBeChecked();
+  await page.getByRole("tab", { name: "商品对比", exact: true }).press("Home");
+  await expect(dynamicTab).toHaveAttribute("aria-selected", "true");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.locator(".main-content").evaluate(element => { element.scrollTop = 0; });
+  await page.screenshot({ path: testInfo.outputPath(`dynamics-${width}.png`), fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});
+
+test("dashboard separates priority order and keyboard-accessible ordinary groups", async ({ page }) => {
+  const mock = await installApiMock(page, { competitors: [] });
+  const groups = Array.from({ length: 9 }, (_, index) => ({ group_id: index + 1, group_name: `关注组 ${index + 1}`, own_product: { id: index, offer_id: "9000", title: "不应显示的商品身份", shop_name: "不应显示的店铺身份", main_image_url: null }, attention_level: index === 0 || index === 4 ? "一般变化" : index % 2 ? "重点关注" : "建议查看", changed_competitor_count: index + 1, latest_change_at: "2026-10-09T01:00:00Z", reasons: [{ reason_type: "price", display_text: `原始理由 ${index}` }] }));
+  await page.route("**/api/dashboard/group-attention", route => route.fulfill({ json: { date: "2026-10-09", kpis: { monitored_product_groups: 9, changed_product_groups_today: 9, changed_competitors_today: 45 }, groups } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "竞品监控大屏", exact: true }).click();
+  const priority = groups.filter(group => group.attention_level !== "一般变化");
+  await expect(page.locator(".dashboard-attention-card:visible h3")).toHaveText(priority.slice(0, 5).map(group => group.group_name));
+  await expect(page.getByText("不应显示的商品身份", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("不应显示的店铺身份", { exact: false })).toHaveCount(0);
+  await page.getByRole("button", { name: "展开全部", exact: true }).click();
+  await expect(page.locator(".dashboard-attention-card:visible h3")).toHaveText(priority.map(group => group.group_name));
+  const disclosure = page.locator(".dashboard-ordinary-groups");
+  await expect(disclosure).not.toHaveAttribute("open", "");
+  await disclosure.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(disclosure).toHaveAttribute("open", "");
+  await expect(disclosure.locator("h3")).toHaveText(["关注组 1", "关注组 5"]);
+  await page.keyboard.press("Space");
+  await expect(disclosure).not.toHaveAttribute("open", "");
   await mock.expectNoUnexpectedApi();
 });

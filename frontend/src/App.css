@@ -895,3 +895,14 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .breadcrumb strong { color: #343b45; }
 .group-name-dialog { max-width: calc(100vw - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; }
 .group-name-dialog::backdrop { background: rgba(31, 48, 85, .28); backdrop-filter: blur(7px); }
+
+.position-workbench [hidden] { display: none; }
+.position-layout.position-layout-events { grid-template-columns: minmax(0, 1fr); }
+.position-workspace-tabs { padding-inline: 0; }
+.position-event-summary { width: 100%; min-width: 0; }
+.position-event-summary > small { display: block; margin-top: 8px; }
+.position-event-original { display: flex; justify-content: space-between; align-items: start; gap: 12px; padding-block: 10px; }
+.position-event-original > div { min-width: 0; overflow-wrap: anywhere; }
+.position-event-summary summary, .dashboard-ordinary-groups > summary { cursor: pointer; padding-block: 12px; }
+.position-event-summary details[open] > summary { border-bottom: 1px solid var(--border-color, #e4e9f2); }
+.dashboard-ordinary-groups { margin-top: 12px; }
