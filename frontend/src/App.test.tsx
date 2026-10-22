@@ -1532,11 +1532,29 @@ test("validates advanced-filter values before replacing applied rules", () => {
   const rule = (field: Parameters<typeof validateAdvancedFilters>[0][number]["field"], operator: Parameters<typeof validateAdvancedFilters>[0][number]["operator"], value: string, value2 = "") => [{ id: 1, field, operator, value, value2 }];
   expect(validateAdvancedFilters(rule("shop_name", "contains", " "))).toContain("需要输入");
   expect(validateAdvancedFilters(rule("price_min", "between", "12.5", ""))).toContain("有效数值");
+  expect(validateAdvancedFilters(rule("price_min", "gte", "-1"))).toContain("不能小于 0");
   expect(validateAdvancedFilters(rule("min_order_quantity", "gte", "1.5"))).toContain("整数");
   expect(validateAdvancedFilters(rule("positive_rate", "gte", "101"))).toContain("0% 和 100%");
   expect(validateAdvancedFilters(rule("listing_time", "date_between", "2026-02-30", "2026-03-01"))).toContain("有效日期");
   expect(validateAdvancedFilters(rule("listing_time", "date_between", "2026-03-02", "2026-03-01"))).toContain("开始日期");
+  expect(validateAdvancedFilters(rule("monthly_deal", "raw_equals", ""))).toContain("原始档位");
+  for (const value of ["", "100+", "1.5", "-1", "abc"]) expect(validateAdvancedFilters(rule("monthly_deal", "gte", value))).toContain("非负整数");
+  expect(validateAdvancedFilters(rule("monthly_deal", "has_value", ""))).toBeNull();
   expect(validateAdvancedFilters(rule("has_reviews", "no_reviews", ""))).toBeNull();
+});
+
+test("handles bucket valid-value checks and calendar boundaries without coercion", () => {
+  const metric = (metric_key: string, raw_value: string | null, status: "observed" | "placeholder" = "observed") => ({ metric_key, label: metric_key, section: "经营表现" as const, eligible: true, status, latest_attempt: { collection_run_id: 9, status, raw_value, source: "test", observed_at: "2026-10-10T00:00:00Z", reason: null }, latest_valid: null });
+  const product = groupProduct({ operating_metrics: [metric("monthly_deal", "1,000"), metric("listing_time", "2026-03-01")] });
+  const rule = (field: Parameters<typeof validateAdvancedFilters>[0][number]["field"], operator: Parameters<typeof validateAdvancedFilters>[0][number]["operator"], value = "", value2 = "") => ({ id: 1, field, operator, value, value2 });
+  expect(evaluateAdvancedFilters(product, [rule("monthly_deal", "has_value")])).toBe("match");
+  expect(evaluateAdvancedFilters(product, [rule("monthly_deal", "gte", "1000")])).toBe("match");
+  expect(evaluateAdvancedFilters({ ...product, operating_metrics: [metric("monthly_deal", "-", "placeholder")] }, [rule("monthly_deal", "no_value")])).toBe("match");
+  expect(evaluateAdvancedFilters(product, [rule("listing_time", "before", "2026-03-01")])).toBe("no_match");
+  expect(evaluateAdvancedFilters(product, [rule("listing_time", "after", "2026-03-01")])).toBe("no_match");
+  expect(evaluateAdvancedFilters(product, [rule("listing_time", "date_between", "2026-03-01", "2026-03-01")])).toBe("match");
+  expect(evaluateAdvancedFilters({ ...product, operating_metrics: [metric("listing_time", "2026-02-30")] }, [rule("listing_time", "before", "2026-03-01")])).toBe("unknown");
+  expect(evaluateAdvancedFilters(product, [rule("price_min", "gte", "-1")])).toBe("no_match");
 });
 
 test("orders fuzzy deal bins by displayed boundary and category in both directions", () => {

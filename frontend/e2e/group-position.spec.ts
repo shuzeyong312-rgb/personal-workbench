@@ -101,6 +101,27 @@ test("advanced filters apply AND rules across comparison views and keep uncertai
   await mock.expectNoUnexpectedApi();
 });
 
+test("advanced filters validate bucket thresholds and expose valid-value operations", async ({ page }) => {
+  const mock = await openWorkbench(page);
+  await page.getByText("高级筛选", { exact: false }).click();
+  await page.getByRole("button", { name: "添加条件", exact: true }).click();
+  const field = page.getByLabel("筛选字段"), operator = page.getByLabel("筛选操作符"), value = page.getByLabel("筛选值");
+  await field.selectOption("monthly_deal");
+  await operator.selectOption("gte");
+  await expect(value).toHaveAttribute("type", "number");
+  await expect(value).toHaveAttribute("min", "0");
+  await expect(value).toHaveAttribute("step", "1");
+  await value.fill("-1");
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("月成交需要非负整数阈值");
+  await expect(page.getByLabel("已应用高级筛选")).toHaveCount(0);
+  await operator.selectOption("no_value");
+  await expect(value).toHaveCount(0);
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click();
+  await expect(page.getByLabel("已应用高级筛选")).toContainText("月成交 无有效值");
+  await mock.expectNoUnexpectedApi();
+});
+
 test("group table sorts displayed metric attempts and keeps the product preview compact", async ({ page }, testInfo) => {
   const source = "1688_official_procurement_assistant_top";
   const definitions = [

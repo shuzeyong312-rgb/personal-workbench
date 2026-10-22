@@ -1510,12 +1510,13 @@ const advancedFilterOperators: Record<AdvancedFilterFieldDefinition["kind"], { v
   integer: [{ value: "equals", label: "等于" }, { value: "not_equals", label: "不等于" }, { value: "gt", label: "大于" }, { value: "gte", label: "大于等于" }, { value: "lt", label: "小于" }, { value: "lte", label: "小于等于" }, { value: "between", label: "介于" }, { value: "has_value", label: "有有效值" }, { value: "no_value", label: "无有效值" }],
   percent: [{ value: "equals", label: "等于" }, { value: "not_equals", label: "不等于" }, { value: "gt", label: "大于" }, { value: "gte", label: "大于等于" }, { value: "lt", label: "小于" }, { value: "lte", label: "小于等于" }, { value: "between", label: "介于" }, { value: "has_value", label: "有有效值" }, { value: "no_value", label: "无有效值" }],
   date: [{ value: "before", label: "早于" }, { value: "after", label: "晚于" }, { value: "date_between", label: "介于日期范围" }],
-  bucket: [{ value: "raw_equals", label: "原始档位为" }, { value: "raw_not_equals", label: "原始档位不为" }, { value: "gt", label: "确定大于" }, { value: "gte", label: "确定大于等于" }, { value: "lt", label: "确定小于" }, { value: "lte", label: "确定小于等于" }],
+  bucket: [{ value: "raw_equals", label: "原始档位为" }, { value: "raw_not_equals", label: "原始档位不为" }, { value: "gt", label: "确定大于" }, { value: "gte", label: "确定大于等于" }, { value: "lt", label: "确定小于" }, { value: "lte", label: "确定小于等于" }, { value: "has_value", label: "有有效值" }, { value: "no_value", label: "无有效值" }],
   reviews: [{ value: "has_reviews", label: "有评价" }, { value: "no_reviews", label: "无评价" }],
 };
 const isValueOperator = (operator: AdvancedFilterOperator) => !["has_value", "no_value", "has_reviews", "no_reviews"].includes(operator);
 const ruleLabel = (rule: AdvancedFilterRule) => `${advancedFilterFields[rule.field].label} ${advancedFilterOperators[advancedFilterFields[rule.field].kind].find(option => option.value === rule.operator)?.label ?? rule.operator}${isValueOperator(rule.operator) ? ` ${rule.value}${["between", "date_between"].includes(rule.operator) ? ` 至 ${rule.value2}` : ""}` : ""}`;
-const numberInput = (value: string) => value.trim() && Number.isFinite(Number(value));
+const numberInput = (value: string) => value.trim() !== "" && Number.isFinite(Number(value));
+const bucketThresholdOperator = (operator: AdvancedFilterOperator) => ["gt", "gte", "lt", "lte"].includes(operator);
 const dateInput = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const [year, month, day] = value.split("-").map(Number), date = new Date(Date.UTC(year, month - 1, day));
@@ -1526,8 +1527,14 @@ export function validateAdvancedFilters(rules: AdvancedFilterRule[]): string | n
   for (const rule of rules) {
     const definition = advancedFilterFields[rule.field];
     if (!isValueOperator(rule.operator)) continue;
-    if (definition.kind === "text" || definition.kind === "bucket") {
+    if (definition.kind === "text") {
       if (!rule.value.trim()) return `${definition.label}需要输入筛选值。`;
+      continue;
+    }
+    if (definition.kind === "bucket") {
+      if (rule.operator === "raw_equals" || rule.operator === "raw_not_equals") {
+        if (!rule.value.trim()) return `${definition.label}需要输入原始档位。`;
+      } else if (!/^\d+$/.test(rule.value)) return `${definition.label}需要非负整数阈值。`;
       continue;
     }
     if (definition.kind === "date") {
@@ -1537,6 +1544,7 @@ export function validateAdvancedFilters(rules: AdvancedFilterRule[]): string | n
       continue;
     }
     if (!numberInput(rule.value) || (rule.operator === "between" && !numberInput(rule.value2))) return `${definition.label}需要有效数值。`;
+    if ([rule.value, rule.value2].filter(Boolean).some(value => Number(value) < 0)) return `${definition.label}不能小于 0。`;
     if (definition.kind === "integer" && (![rule.value, rule.value2].filter(Boolean).every(value => /^\d+$/.test(value)))) return `${definition.label}只能输入整数。`;
     if (definition.kind === "percent" && [rule.value, rule.value2].filter(Boolean).some(value => Number(value) < 0 || Number(value) > 100)) return `${definition.label}必须介于 0% 和 100% 之间。`;
     if (rule.operator === "between" && Number(rule.value) > Number(rule.value2)) return `${definition.label}的起始值不能大于结束值。`;
@@ -1553,7 +1561,7 @@ function numericRuleVerdict(value: number | null, rule: AdvancedFilterRule): Fil
   if (rule.operator === "no_value") return value === null ? "match" : "no_match";
   if (value === null) return "unknown";
   const first = Number(rule.value), second = Number(rule.value2);
-  if (!Number.isFinite(first) || (rule.operator === "between" && !Number.isFinite(second))) return "no_match";
+  if (!Number.isFinite(first) || first < 0 || (rule.operator === "between" && (!Number.isFinite(second) || second < 0))) return "no_match";
   if (rule.operator === "between" && first > second) return "no_match";
   if (rule.operator === "equals") return value === first ? "match" : "no_match";
   if (rule.operator === "not_equals") return value !== first ? "match" : "no_match";
@@ -1564,12 +1572,15 @@ function numericRuleVerdict(value: number | null, rule: AdvancedFilterRule): Fil
   return value >= first && value <= second ? "match" : "no_match";
 }
 function bucketRuleVerdict(raw: string | null, rule: AdvancedFilterRule): FilterVerdict {
-  if (!raw) return "unknown";
+  if (!raw) return rule.operator === "no_value" ? "match" : rule.operator === "has_value" ? "no_match" : "unknown";
   if (rule.operator === "raw_equals") return raw === rule.value ? "match" : "no_match";
   if (rule.operator === "raw_not_equals") return raw !== rule.value ? "match" : "no_match";
   const parsed = parseOperatingMetricSortValue(raw, "monthly_deal");
   const threshold = Number(rule.value);
-  if (!parsed || !Number.isFinite(threshold)) return "unknown";
+  if (!parsed || !Number.isFinite(threshold)) return rule.operator === "has_value" || rule.operator === "no_value" ? rule.operator === "no_value" ? "match" : "no_match" : "unknown";
+  if (rule.operator === "has_value") return "match";
+  if (rule.operator === "no_value") return "no_match";
+  if (threshold < 0) return "no_match";
   const lower = parsed.boundary === 0 ? -Infinity : parsed.value;
   const upper = parsed.boundary === 0 ? parsed.value : parsed.boundary === 1 ? parsed.value : Infinity;
   const lowerInclusive = parsed.boundary === 1 || parsed.boundary === 3;
@@ -1593,9 +1604,9 @@ export function evaluateAdvancedFilterRule(product: GroupProductFacts, rule: Adv
   }
   if (definition.kind === "bucket") return bucketRuleVerdict(metricRawValue(product, definition.metricKey!), rule);
   if (definition.kind === "date") {
-    const raw = metricRawValue(product, definition.metricKey!), value = raw ? Date.parse(raw) : NaN;
+    const raw = metricRawValue(product, definition.metricKey!), value = raw ? dateInput(raw) : null;
     const first = dateInput(rule.value), second = dateInput(rule.value2);
-    if (!Number.isFinite(value)) return "unknown";
+    if (value === null) return "unknown";
     if (first === null || (rule.operator === "date_between" && second === null)) return "no_match";
     return rule.operator === "before" ? value < first ? "match" : "no_match" : rule.operator === "after" ? value > first + 86_399_999 ? "match" : "no_match" : value >= first && value <= second! + 86_399_999 ? "match" : "no_match";
   }
@@ -1615,7 +1626,7 @@ export function evaluateAdvancedFilters(product: GroupProductFacts, rules: Advan
 function AdvancedFilterEditor({ rules, error, onChange, onApply, onReset }: { rules: AdvancedFilterRule[]; error: string | null; onChange: (rules: AdvancedFilterRule[]) => void; onApply: () => void; onReset: () => void }) {
   const update = (id: number, patch: Partial<AdvancedFilterRule>) => onChange(rules.map(rule => rule.id === id ? { ...rule, ...patch } : rule));
   const add = () => { const field: AdvancedFilterField = "shop_name"; onChange([...rules, { id: Date.now(), field, operator: "contains", value: "", value2: "" }]); };
-  return <details className="advanced-filter-panel"><summary>高级筛选{rules.length ? `（草稿 ${rules.length}）` : ""}</summary><div className="advanced-filter-body"><p>所有条件同时满足。成交档位仅在结论确定时进入匹配；其余会单独列出。</p>{error && <p role="alert" className="feedback feedback-server-error advanced-filter-error">{error}</p>}{rules.map(rule => { const definition = advancedFilterFields[rule.field], needsValue = isValueOperator(rule.operator), range = rule.operator === "between" || rule.operator === "date_between", numeric = ["number", "integer", "percent"].includes(definition.kind), inputType = definition.kind === "date" ? "date" : numeric ? "number" : "text", step = definition.kind === "integer" ? "1" : numeric ? "any" : undefined; const valueInput = (label: string, value: string, onChange: (value: string) => void) => <span className="advanced-filter-value"><input aria-label={label} type={inputType} step={step} inputMode={numeric ? "decimal" : undefined} placeholder={definition.kind === "percent" ? "百分比" : definition.kind === "bucket" ? "如 100+ 或 100" : "输入值"} value={value} onChange={event => onChange(event.target.value)} />{definition.kind === "percent" && <span aria-hidden="true">%</span>}</span>; return <div className="advanced-filter-rule" key={rule.id}><select aria-label="筛选字段" value={rule.field} onChange={event => { const field = event.target.value as AdvancedFilterField; update(rule.id, { field, operator: advancedFilterOperators[advancedFilterFields[field].kind][0].value, value: "", value2: "" }); }}>{Object.entries(advancedFilterFields).map(([key, item]) => <option value={key} key={key}>{item.label}</option>)}</select><select aria-label="筛选操作符" value={rule.operator} onChange={event => update(rule.id, { operator: event.target.value as AdvancedFilterOperator })}>{advancedFilterOperators[definition.kind].map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select>{needsValue && valueInput("筛选值", rule.value, value => update(rule.id, { value }))}{range && valueInput("筛选第二个值", rule.value2, value => update(rule.id, { value2: value }))}<button type="button" className="text-button" onClick={() => onChange(rules.filter(item => item.id !== rule.id))}>删除</button></div>; })}<div className="advanced-filter-actions"><button type="button" className="text-button" onClick={add}>添加条件</button><span /><button type="button" className="secondary-button" onClick={onReset}>重置</button><button type="button" className="primary-button" onClick={onApply}>应用筛选</button></div></div></details>;
+  return <details className="advanced-filter-panel"><summary>高级筛选{rules.length ? `（草稿 ${rules.length}）` : ""}</summary><div className="advanced-filter-body"><p>所有条件同时满足。成交档位仅在结论确定时进入匹配；其余会单独列出。</p>{error && <p role="alert" className="feedback feedback-server-error advanced-filter-error">{error}</p>}{rules.map(rule => { const definition = advancedFilterFields[rule.field], needsValue = isValueOperator(rule.operator), range = rule.operator === "between" || rule.operator === "date_between", numeric = ["number", "integer", "percent"].includes(definition.kind) || definition.kind === "bucket" && bucketThresholdOperator(rule.operator), inputType = definition.kind === "date" ? "date" : numeric ? "number" : "text", step = definition.kind === "integer" || definition.kind === "bucket" && bucketThresholdOperator(rule.operator) ? "1" : numeric ? "any" : undefined; const valueInput = (label: string, value: string, onChange: (value: string) => void) => <span className="advanced-filter-value"><input aria-label={label} type={inputType} min={numeric ? "0" : undefined} step={step} inputMode={numeric ? "decimal" : undefined} placeholder={definition.kind === "percent" ? "百分比" : definition.kind === "bucket" ? bucketThresholdOperator(rule.operator) ? "非负整数" : "如 100+ 或 100" : "输入值"} value={value} onChange={event => onChange(event.target.value)} />{definition.kind === "percent" && <span aria-hidden="true">%</span>}</span>; return <div className="advanced-filter-rule" key={rule.id}><select aria-label="筛选字段" value={rule.field} onChange={event => { const field = event.target.value as AdvancedFilterField; update(rule.id, { field, operator: advancedFilterOperators[advancedFilterFields[field].kind][0].value, value: "", value2: "" }); }}>{Object.entries(advancedFilterFields).map(([key, item]) => <option value={key} key={key}>{item.label}</option>)}</select><select aria-label="筛选操作符" value={rule.operator} onChange={event => update(rule.id, { operator: event.target.value as AdvancedFilterOperator })}>{advancedFilterOperators[definition.kind].map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select>{needsValue && valueInput("筛选值", rule.value, value => update(rule.id, { value }))}{range && valueInput("筛选第二个值", rule.value2, value => update(rule.id, { value2: value }))}<button type="button" className="text-button" onClick={() => onChange(rules.filter(item => item.id !== rule.id))}>删除</button></div>; })}<div className="advanced-filter-actions"><button type="button" className="text-button" onClick={add}>添加条件</button><span /><button type="button" className="secondary-button" onClick={onReset}>重置</button><button type="button" className="primary-button" onClick={onApply}>应用筛选</button></div></div></details>;
 }
 
 export function GroupDetailPage({ data, status, error, days, rangeLoading, rangeError, onRetry, onRangeChange, onBack, onViewCompetitors, onOpenDetail, onNavigate, onAdd = noop }: {
