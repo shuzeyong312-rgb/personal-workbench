@@ -1413,21 +1413,26 @@ function operatingMetricValue(product: GroupProductFacts, metricKey: string): st
   return attempt.status === "loading" ? "仍在加载" : attempt.status === "source_unavailable" ? "来源不可用" : "读取失败";
 }
 
-function operatingMetricSortValue(product: GroupProductFacts, metricKey: OperatingMetricSortKey): { value: number; boundary: number } | null {
-  const metric = product.operating_metrics?.find(item => item.metric_key === metricKey);
-  const raw = metric?.eligible && metric.latest_attempt?.status === "observed" ? metric.latest_attempt.raw_value?.trim() : null;
-  if (!raw || raw === "-") return null;
+function parseOperatingMetricSortValue(raw: string | null | undefined, metricKey: OperatingMetricSortKey): { value: number; boundary: number } | null {
+  const normalized = raw?.trim();
+  if (!normalized || normalized === "-") return null;
   if (metricKey === "listing_time") {
-    const time = Date.parse(raw);
+    const time = Date.parse(normalized);
     return Number.isFinite(time) ? { value: time, boundary: 0 } : null;
   }
   const threshold = metricKey === "monthly_deal" || metricKey === "monthly_dropship" || metricKey === "annual_units" || metricKey === "annual_orders";
   const number = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
-  const value = raw.match(threshold ? new RegExp(`^([<>]?)(${number})(\\+)?$`) : new RegExp(`^(${number})\\s*%?$`));
+  const value = normalized.match(threshold ? new RegExp(`^([<>]?)(${number})(\\+)?$`) : new RegExp(`^(${number})\\s*%?$`));
   if (!value || (threshold && value[1] && value[3])) return null;
   const parsed = Number(value[threshold ? 2 : 1].replaceAll(",", ""));
   const boundary = !threshold ? 0 : value[1] === "<" ? 0 : value[1] === ">" ? 2 : value[3] ? 3 : 1;
   return Number.isFinite(parsed) ? { value: parsed, boundary } : null;
+}
+
+function operatingMetricSortValue(product: GroupProductFacts, metricKey: OperatingMetricSortKey): { value: number; boundary: number } | null {
+  const metric = product.operating_metrics?.find(item => item.metric_key === metricKey);
+  const raw = metric?.eligible && metric.latest_attempt?.status === "observed" ? metric.latest_attempt.raw_value : null;
+  return parseOperatingMetricSortValue(raw, metricKey);
 }
 
 export function sortGroupOffersByOperatingMetric(offers: GroupProductFacts[], metricKey: OperatingMetricSortKey, direction: "asc" | "desc"): GroupProductFacts[] {
@@ -1510,6 +1515,34 @@ const advancedFilterOperators: Record<AdvancedFilterFieldDefinition["kind"], { v
 };
 const isValueOperator = (operator: AdvancedFilterOperator) => !["has_value", "no_value", "has_reviews", "no_reviews"].includes(operator);
 const ruleLabel = (rule: AdvancedFilterRule) => `${advancedFilterFields[rule.field].label} ${advancedFilterOperators[advancedFilterFields[rule.field].kind].find(option => option.value === rule.operator)?.label ?? rule.operator}${isValueOperator(rule.operator) ? ` ${rule.value}${["between", "date_between"].includes(rule.operator) ? ` 至 ${rule.value2}` : ""}` : ""}`;
+const numberInput = (value: string) => value.trim() && Number.isFinite(Number(value));
+const dateInput = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split("-").map(Number), date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? date.getTime() : null;
+};
+
+export function validateAdvancedFilters(rules: AdvancedFilterRule[]): string | null {
+  for (const rule of rules) {
+    const definition = advancedFilterFields[rule.field];
+    if (!isValueOperator(rule.operator)) continue;
+    if (definition.kind === "text" || definition.kind === "bucket") {
+      if (!rule.value.trim()) return `${definition.label}需要输入筛选值。`;
+      continue;
+    }
+    if (definition.kind === "date") {
+      const first = dateInput(rule.value), second = rule.operator === "date_between" ? dateInput(rule.value2) : 0;
+      if (first === null || (rule.operator === "date_between" && second === null)) return `${definition.label}需要有效日期。`;
+      if (rule.operator === "date_between" && first > second!) return `${definition.label}的开始日期不能晚于结束日期。`;
+      continue;
+    }
+    if (!numberInput(rule.value) || (rule.operator === "between" && !numberInput(rule.value2))) return `${definition.label}需要有效数值。`;
+    if (definition.kind === "integer" && (![rule.value, rule.value2].filter(Boolean).every(value => /^\d+$/.test(value)))) return `${definition.label}只能输入整数。`;
+    if (definition.kind === "percent" && [rule.value, rule.value2].filter(Boolean).some(value => Number(value) < 0 || Number(value) > 100)) return `${definition.label}必须介于 0% 和 100% 之间。`;
+    if (rule.operator === "between" && Number(rule.value) > Number(rule.value2)) return `${definition.label}的起始值不能大于结束值。`;
+  }
+  return null;
+}
 
 function metricRawValue(product: GroupProductFacts, key: OperatingMetricSortKey): string | null {
   const metric = product.operating_metrics?.find(item => item.metric_key === key);
@@ -1521,30 +1554,30 @@ function numericRuleVerdict(value: number | null, rule: AdvancedFilterRule): Fil
   if (value === null) return "unknown";
   const first = Number(rule.value), second = Number(rule.value2);
   if (!Number.isFinite(first) || (rule.operator === "between" && !Number.isFinite(second))) return "no_match";
+  if (rule.operator === "between" && first > second) return "no_match";
   if (rule.operator === "equals") return value === first ? "match" : "no_match";
   if (rule.operator === "not_equals") return value !== first ? "match" : "no_match";
   if (rule.operator === "gt") return value > first ? "match" : "no_match";
   if (rule.operator === "gte") return value >= first ? "match" : "no_match";
   if (rule.operator === "lt") return value < first ? "match" : "no_match";
   if (rule.operator === "lte") return value <= first ? "match" : "no_match";
-  return value >= Math.min(first, second) && value <= Math.max(first, second) ? "match" : "no_match";
+  return value >= first && value <= second ? "match" : "no_match";
 }
 function bucketRuleVerdict(raw: string | null, rule: AdvancedFilterRule): FilterVerdict {
   if (!raw) return "unknown";
   if (rule.operator === "raw_equals") return raw === rule.value ? "match" : "no_match";
   if (rule.operator === "raw_not_equals") return raw !== rule.value ? "match" : "no_match";
-  const match = raw.match(/^([<>]?)(\d+(?:\.\d+)?)(\+)?$/);
+  const parsed = parseOperatingMetricSortValue(raw, "monthly_deal");
   const threshold = Number(rule.value);
-  if (!match || !Number.isFinite(threshold)) return "unknown";
-  const marker = match[1], value = Number(match[2]), plus = !!match[3];
-  const minimum = marker === "<" ? -Infinity : value;
-  const maximum = marker === "<" ? value : plus || marker === ">" ? Infinity : value;
-  const minInclusive = marker !== ">" && marker !== "<";
-  const maxInclusive = !plus && marker !== ">";
-  const certainGreater = rule.operator === "gt" ? minimum > threshold || (minimum === threshold && !minInclusive) : minimum >= threshold;
-  const certainLess = rule.operator === "lt" ? maximum < threshold || (maximum === threshold && !maxInclusive) : maximum <= threshold;
-  if (rule.operator === "gt" || rule.operator === "gte") return certainGreater ? "match" : maximum < threshold || (maximum === threshold && (rule.operator === "gt" || maxInclusive)) ? "no_match" : "unknown";
-  return certainLess ? "match" : minimum > threshold || (minimum === threshold && (rule.operator === "lt" || minInclusive)) ? "no_match" : "unknown";
+  if (!parsed || !Number.isFinite(threshold)) return "unknown";
+  const lower = parsed.boundary === 0 ? -Infinity : parsed.value;
+  const upper = parsed.boundary === 0 ? parsed.value : parsed.boundary === 1 ? parsed.value : Infinity;
+  const lowerInclusive = parsed.boundary === 1 || parsed.boundary === 3;
+  const upperInclusive = parsed.boundary === 1;
+  if (rule.operator === "gt") return lower > threshold || (lower === threshold && !lowerInclusive) ? "match" : upper <= threshold ? "no_match" : "unknown";
+  if (rule.operator === "gte") return lower >= threshold ? "match" : upper < threshold || (upper === threshold && !upperInclusive) ? "no_match" : "unknown";
+  if (rule.operator === "lt") return upper < threshold || (upper === threshold && !upperInclusive) ? "match" : lower >= threshold ? "no_match" : "unknown";
+  return upper <= threshold ? "match" : lower > threshold || (lower === threshold && !lowerInclusive) ? "no_match" : "unknown";
 }
 export function evaluateAdvancedFilterRule(product: GroupProductFacts, rule: AdvancedFilterRule): FilterVerdict {
   const definition = advancedFilterFields[rule.field];
@@ -1554,23 +1587,23 @@ export function evaluateAdvancedFilterRule(product: GroupProductFacts, rule: Adv
     return rule.operator === "contains" ? value.includes(target) ? "match" : "no_match" : rule.operator === "not_contains" ? value.includes(target) ? "no_match" : "match" : value === target ? "match" : "no_match";
   }
   if (definition.kind === "reviews") {
-    const raw = metricRawValue(product, "review_count"), value = raw && /^\d+$/.test(raw) ? Number(raw) : null;
+    const value = operatingMetricSortValue(product, "review_count")?.value ?? null;
     if (value === null) return "unknown";
     return (rule.operator === "has_reviews" ? value > 0 : value === 0) ? "match" : "no_match";
   }
   if (definition.kind === "bucket") return bucketRuleVerdict(metricRawValue(product, definition.metricKey!), rule);
   if (definition.kind === "date") {
     const raw = metricRawValue(product, definition.metricKey!), value = raw ? Date.parse(raw) : NaN;
-    const first = Date.parse(`${rule.value}T00:00:00Z`), second = Date.parse(`${rule.value2}T23:59:59.999Z`);
+    const first = dateInput(rule.value), second = dateInput(rule.value2);
     if (!Number.isFinite(value)) return "unknown";
-    if (!Number.isFinite(first) || (rule.operator === "date_between" && !Number.isFinite(second))) return "no_match";
-    return rule.operator === "before" ? value < first ? "match" : "no_match" : rule.operator === "after" ? value > first + 86_399_999 ? "match" : "no_match" : value >= Math.min(first, second) && value <= Math.max(first, second) ? "match" : "no_match";
+    if (first === null || (rule.operator === "date_between" && second === null)) return "no_match";
+    return rule.operator === "before" ? value < first ? "match" : "no_match" : rule.operator === "after" ? value > first + 86_399_999 ? "match" : "no_match" : value >= first && value <= second! + 86_399_999 ? "match" : "no_match";
   }
   const snapshot = product.latest_snapshot;
   const basic = rule.field === "price_min" ? snapshot?.price_min : rule.field === "price_max" ? snapshot?.price_max : rule.field === "min_order_quantity" ? snapshot?.min_order_quantity : rule.field === "sku_count" ? snapshot?.sku_count : rule.field === "total_stock" ? snapshot?.total_stock : null;
   const raw = definition.metricKey ? metricRawValue(product, definition.metricKey) : basic;
   if (definition.kind === "integer" && (rule.value && !/^\d+$/.test(rule.value) || rule.value2 && !/^\d+$/.test(rule.value2))) return "no_match";
-  const parsed = raw === null || raw === undefined ? null : Number(String(raw).replace(/%$/, ""));
+  const parsed = definition.metricKey ? operatingMetricSortValue(product, definition.metricKey)?.value ?? null : raw === null || raw === undefined ? null : Number(String(raw).replaceAll(",", "").replace(/%$/, ""));
   return numericRuleVerdict(Number.isFinite(parsed) ? parsed : null, rule);
 }
 export function evaluateAdvancedFilters(product: GroupProductFacts, rules: AdvancedFilterRule[]): FilterVerdict {
@@ -1579,10 +1612,10 @@ export function evaluateAdvancedFilters(product: GroupProductFacts, rules: Advan
   return uncertain ? "unknown" : "match";
 }
 
-function AdvancedFilterEditor({ rules, onChange, onApply, onReset }: { rules: AdvancedFilterRule[]; onChange: (rules: AdvancedFilterRule[]) => void; onApply: () => void; onReset: () => void }) {
+function AdvancedFilterEditor({ rules, error, onChange, onApply, onReset }: { rules: AdvancedFilterRule[]; error: string | null; onChange: (rules: AdvancedFilterRule[]) => void; onApply: () => void; onReset: () => void }) {
   const update = (id: number, patch: Partial<AdvancedFilterRule>) => onChange(rules.map(rule => rule.id === id ? { ...rule, ...patch } : rule));
   const add = () => { const field: AdvancedFilterField = "shop_name"; onChange([...rules, { id: Date.now(), field, operator: "contains", value: "", value2: "" }]); };
-  return <details className="advanced-filter-panel"><summary>高级筛选{rules.length ? `（草稿 ${rules.length}）` : ""}</summary><div className="advanced-filter-body"><p>所有条件同时满足。成交档位仅在结论确定时进入匹配；其余会单独列出。</p>{rules.map(rule => { const definition = advancedFilterFields[rule.field], needsValue = isValueOperator(rule.operator), range = rule.operator === "between" || rule.operator === "date_between", numeric = ["number", "integer", "percent"].includes(definition.kind), inputType = definition.kind === "date" ? "date" : numeric ? "number" : "text", step = definition.kind === "integer" ? "1" : numeric ? "any" : undefined; const valueInput = (label: string, value: string, onChange: (value: string) => void) => <span className="advanced-filter-value"><input aria-label={label} type={inputType} step={step} inputMode={numeric ? "decimal" : undefined} placeholder={definition.kind === "percent" ? "百分比" : definition.kind === "bucket" ? "如 100+ 或 100" : "输入值"} value={value} onChange={event => onChange(event.target.value)} />{definition.kind === "percent" && <span aria-hidden="true">%</span>}</span>; return <div className="advanced-filter-rule" key={rule.id}><select aria-label="筛选字段" value={rule.field} onChange={event => { const field = event.target.value as AdvancedFilterField; update(rule.id, { field, operator: advancedFilterOperators[advancedFilterFields[field].kind][0].value, value: "", value2: "" }); }}>{Object.entries(advancedFilterFields).map(([key, item]) => <option value={key} key={key}>{item.label}</option>)}</select><select aria-label="筛选操作符" value={rule.operator} onChange={event => update(rule.id, { operator: event.target.value as AdvancedFilterOperator })}>{advancedFilterOperators[definition.kind].map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select>{needsValue && valueInput("筛选值", rule.value, value => update(rule.id, { value }))}{range && valueInput("筛选第二个值", rule.value2, value => update(rule.id, { value2: value }))}<button type="button" className="text-button" onClick={() => onChange(rules.filter(item => item.id !== rule.id))}>删除</button></div>; })}<div className="advanced-filter-actions"><button type="button" className="text-button" onClick={add}>添加条件</button><span /><button type="button" className="secondary-button" onClick={onReset}>重置</button><button type="button" className="primary-button" onClick={onApply}>应用筛选</button></div></div></details>;
+  return <details className="advanced-filter-panel"><summary>高级筛选{rules.length ? `（草稿 ${rules.length}）` : ""}</summary><div className="advanced-filter-body"><p>所有条件同时满足。成交档位仅在结论确定时进入匹配；其余会单独列出。</p>{error && <p role="alert" className="feedback feedback-server-error advanced-filter-error">{error}</p>}{rules.map(rule => { const definition = advancedFilterFields[rule.field], needsValue = isValueOperator(rule.operator), range = rule.operator === "between" || rule.operator === "date_between", numeric = ["number", "integer", "percent"].includes(definition.kind), inputType = definition.kind === "date" ? "date" : numeric ? "number" : "text", step = definition.kind === "integer" ? "1" : numeric ? "any" : undefined; const valueInput = (label: string, value: string, onChange: (value: string) => void) => <span className="advanced-filter-value"><input aria-label={label} type={inputType} step={step} inputMode={numeric ? "decimal" : undefined} placeholder={definition.kind === "percent" ? "百分比" : definition.kind === "bucket" ? "如 100+ 或 100" : "输入值"} value={value} onChange={event => onChange(event.target.value)} />{definition.kind === "percent" && <span aria-hidden="true">%</span>}</span>; return <div className="advanced-filter-rule" key={rule.id}><select aria-label="筛选字段" value={rule.field} onChange={event => { const field = event.target.value as AdvancedFilterField; update(rule.id, { field, operator: advancedFilterOperators[advancedFilterFields[field].kind][0].value, value: "", value2: "" }); }}>{Object.entries(advancedFilterFields).map(([key, item]) => <option value={key} key={key}>{item.label}</option>)}</select><select aria-label="筛选操作符" value={rule.operator} onChange={event => update(rule.id, { operator: event.target.value as AdvancedFilterOperator })}>{advancedFilterOperators[definition.kind].map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select>{needsValue && valueInput("筛选值", rule.value, value => update(rule.id, { value }))}{range && valueInput("筛选第二个值", rule.value2, value => update(rule.id, { value2: value }))}<button type="button" className="text-button" onClick={() => onChange(rules.filter(item => item.id !== rule.id))}>删除</button></div>; })}<div className="advanced-filter-actions"><button type="button" className="text-button" onClick={add}>添加条件</button><span /><button type="button" className="secondary-button" onClick={onReset}>重置</button><button type="button" className="primary-button" onClick={onApply}>应用筛选</button></div></div></details>;
 }
 
 export function GroupDetailPage({ data, status, error, days, rangeLoading, rangeError, onRetry, onRangeChange, onBack, onViewCompetitors, onOpenDetail, onNavigate, onAdd = noop }: {
@@ -1603,6 +1636,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const [importantOnly, setImportantOnly] = useState(false);
   const [draftAdvancedFilters, setDraftAdvancedFilters] = useState<AdvancedFilterRule[]>([]);
   const [appliedAdvancedFilters, setAppliedAdvancedFilters] = useState<AdvancedFilterRule[]>([]);
+  const [advancedFilterError, setAdvancedFilterError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [page, setEventPage] = useState<GroupEventPage | null>(data?.event_page ?? null);
   const [eventLoading, setEventLoading] = useState(false);
@@ -1616,7 +1650,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
   const eventBusy = useRef(false);
   const ownRow = useRef<HTMLTableRowElement>(null);
   const locateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { setWorkspaceView("竞品动态"); setSelectedId(fallbackSelected?.id ?? null); setView("竞争总览"); setMetric("min_order_quantity"); setDirection("asc"); setOverviewOperatingKey(null); setOperatingSort({}); setSearch(""); setImportantOnly(false); setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); setEvidence(null); setLocateNotice(false); }, [data?.group.id]);
+  useEffect(() => { setWorkspaceView("竞品动态"); setSelectedId(fallbackSelected?.id ?? null); setView("竞争总览"); setMetric("min_order_quantity"); setDirection("asc"); setOverviewOperatingKey(null); setOperatingSort({}); setSearch(""); setImportantOnly(false); setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); setAdvancedFilterError(null); setEvidence(null); setLocateNotice(false); }, [data?.group.id]);
   useEffect(() => { setSelectedId(current => currentOffers.some(product => product.id === current) ? current : fallbackSelected?.id ?? null); }, [data]);
   useEffect(() => { if (data && eventGroupId.current === data.group.id && eventBusy.current) return; requestId.current++; eventBusy.current = false; setEventPage(null); setEventLoading(false); setEventError(null); setFailedEventRequest(null); setEvidence(null); if (data && eventGroupId.current !== data.group.id) { eventGroupId.current = data.group.id; void loadEvents("today", "important"); } else setEventPage(data?.event_page ?? null); }, [data]);
   useEffect(() => { if (rangeLoading) { requestId.current++; eventBusy.current = false; setEventLoading(false); } }, [rangeLoading]);
@@ -1637,7 +1671,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     } catch (failure) { if (id === requestId.current) { setEventError(failure instanceof Error ? failure.message : "历史加载失败"); setFailedEventRequest({ range, mode, append }); } }
     finally { if (id === requestId.current) { eventBusy.current = false; setEventLoading(false); } }
   }
-  const clearFilters = () => { setSearch(""); setImportantOnly(false); setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); };
+  const clearFilters = () => { setSearch(""); setImportantOnly(false); setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); setAdvancedFilterError(null); };
   const locate = () => {
     if (!own) return;
     setSelectedId(own.id);
@@ -1710,7 +1744,7 @@ export function GroupDetailPage({ data, status, error, days, rangeLoading, range
     {!own && <p className="group-compact-empty">尚未绑定我方商品 · 未建立我方基准</p>}
     {own && ownExcluded && <p className="group-compact-empty">我方基准商品当前{own.status === "offline" ? "已下架" : "已停止监控"}{own.status === "offline" && !own.is_active ? "且已停止监控" : ""}，不参与比较；绑定关系保留。</p>}
     <div className="position-tabs" role="tablist" aria-label="对比视图">{["竞争总览", ...Object.keys(pendingViews)].map(tab => <button role="tab" aria-selected={view === tab} className={view === tab ? "active" : ""} key={tab} onClick={() => setView(tab)}>{tab}</button>)}</div>
-    <div className="position-filters"><input aria-label="搜索店铺、商品或 Offer" placeholder="搜索店铺 / 商品 / Offer" value={search} onChange={event => setSearch(event.target.value)} /><label><input type="checkbox" checked={importantOnly} onChange={event => setImportantOnly(event.target.checked)} />仅看重要变化</label><AdvancedFilterEditor rules={draftAdvancedFilters} onChange={setDraftAdvancedFilters} onApply={() => setAppliedAdvancedFilters(draftAdvancedFilters)} onReset={() => { setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); }} />{(search || importantOnly || appliedAdvancedFilters.length) && <button className="text-button" onClick={clearFilters}>清除筛选</button>}</div>
+    <div className="position-filters"><input aria-label="搜索店铺、商品或 Offer" placeholder="搜索店铺 / 商品 / Offer" value={search} onChange={event => setSearch(event.target.value)} /><label><input type="checkbox" checked={importantOnly} onChange={event => setImportantOnly(event.target.checked)} />仅看重要变化</label><AdvancedFilterEditor rules={draftAdvancedFilters} error={advancedFilterError} onChange={rules => { setDraftAdvancedFilters(rules); setAdvancedFilterError(null); }} onApply={() => { const validation = validateAdvancedFilters(draftAdvancedFilters); if (validation) { setAdvancedFilterError(validation); return; } setAppliedAdvancedFilters(draftAdvancedFilters); setAdvancedFilterError(null); }} onReset={() => { setDraftAdvancedFilters([]); setAppliedAdvancedFilters([]); setAdvancedFilterError(null); }} />{(search || importantOnly || appliedAdvancedFilters.length) && <button className="text-button" onClick={clearFilters}>清除筛选</button>}</div>
     {appliedAdvancedFilters.length > 0 && <div className="advanced-filter-summary" aria-label="已应用高级筛选">{appliedAdvancedFilters.map(rule => <span key={rule.id}>{ruleLabel(rule)}<button type="button" aria-label={`删除条件：${ruleLabel(rule)}`} onClick={() => { const next = appliedAdvancedFilters.filter(item => item.id !== rule.id); setAppliedAdvancedFilters(next); setDraftAdvancedFilters(next); }}>×</button></span>)}</div>}
     <p className="position-context">成交类指标按页面显示档位排序，保留原文，不代表精确销量或竞争排名。</p>
     {own && !ownExcluded && !visible.some(product => product.id === own.id) && <div className="position-filter-notice" role="status"><span><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" /><path d="M10 9v5M10 6v1" /></svg>当前筛选未显示我方商品</span><button onClick={() => { setLocateNotice(true); clearFilters(); }}>清除筛选并定位</button></div>}

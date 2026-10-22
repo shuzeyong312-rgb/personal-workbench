@@ -9,7 +9,7 @@ import { expect, test, vi } from "vitest";
 
 import { groupEventSummaries, groupEventSummaryLabel, competitorPageSize, competitorOfferId, dedupeCompetitorInputs, formatCollectionRunStatus, getBatchRefreshNotice, paginateCompetitors, sortGroupOffersByOperatingMetric, updatePageSelection } from "./App";
 
-import { submitAddLinks, AddDialog, applyInitialGroupFilter, filterAndSortCompetitorGroups, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, evaluateAdvancedFilters, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas } from "./App";
+import { submitAddLinks, AddDialog, applyInitialGroupFilter, filterAndSortCompetitorGroups, BatchGroupAssignmentDialog, BatchLifecycleDialog, BatchState, Change, Competitor, CompetitorDetail, CompetitorFilters, CompetitorGroup, CompetitorGroupMetrics, CompetitorGroupSummary, CollectionTasksPage, ConfirmDialog, countActiveCompetitors, DashboardData, DashboardPage, DashboardTrendChart, defaultCompetitorFilters, DetailPage, DETAIL_GALLERY_SCROLL_STEP, evaluateAdvancedFilters, filterCompetitors, formatChange, formatChangeMagnitude, formatDashboardTrendTooltip, formatDate, formatDetailPriceDisplay, formatPriceChangeMagnitude, formatPriceChangeTransition, formatPriceTick, formatTrendTooltip, formatStockDisplay, formatDuration, formatGroupLatestChange, formatGroupPriceRange, formatGroupDetailLatestChange, formatGroupProductFreshness, formatLatestChange, getAddFailureReason, getCollectionErrorMessage, getCollectionFailureMessage, getCollectionRequestErrorMessage, getCompetitorGroupLabel, getDetailGallery, getGalleryScrollState, getGroupAssignmentErrorMessage, getGroupFeedbackClass, getGroupNameErrorMessage, getLifecycleErrorMessage, getResponseStatus, GroupAssignmentDialog, GroupDeleteDialog, GroupNameDialog, GroupPage, GroupDetailPage, sortGroupOffers, HomePage, formatGroupUpdateTime, getGroupDifferenceLabels, getNonzeroGroupActionDomains, hideDetailGalleryThumbnail, idleBatchState, isCurrentDetailRequest, ListPage, mergeCompetitorUrlText, parseCompetitorUrls, reconcileSelectedIds, scrollDetailGallery, Sidebar, StatusBadge, WorkspacePlaceholderPage, updateCompetitorGroup, OwnProductDialog, buildDashboardTrendChartPoints, buildDashboardTrendScale, buildPriceChartPoints, buildPriceChartScale, buildStockChartPoints, buildStockChartScale, buildTrendHitAreas, validateAdvancedFilters } from "./App";
 
 const competitor: Competitor = {
   id: 1,
@@ -1509,9 +1509,34 @@ test("evaluates advanced filters with real numbers, current attempts, and three-
   expect(evaluateAdvancedFilters(product, [{ id: 1, field: "monthly_deal", operator: "gte", value: "100", value2: "" }])).toBe("match");
   expect(evaluateAdvancedFilters(product, [{ id: 1, field: "monthly_deal", operator: "gt", value: "100", value2: "" }])).toBe("unknown");
   expect(evaluateAdvancedFilters(product, [{ id: 1, field: "monthly_deal", operator: "lt", value: "100", value2: "" }])).toBe("no_match");
+  expect(evaluateAdvancedFilters({ ...product, operating_metrics: [metric("review_count", "1,000")] }, [{ id: 1, field: "review_count", operator: "gte", value: "1000", value2: "" }])).toBe("match");
   const unknownReview = { ...product, operating_metrics: [metric("review_count", "-", "placeholder")] };
   expect(evaluateAdvancedFilters(unknownReview, [{ id: 1, field: "has_reviews", operator: "no_reviews", value: "", value2: "" }])).toBe("unknown");
   expect(evaluateAdvancedFilters({ ...product, operating_metrics: [metric("monthly_deal", "<10") ] }, [{ id: 1, field: "monthly_deal", operator: "gte", value: "100", value2: "" }, { id: 2, field: "shop_name", operator: "contains", value: "测试", value2: "" }])).toBe("no_match");
+});
+
+test("evaluates deal-bin boundaries without treating open buckets as exact values", () => {
+  const metric = (raw_value: string) => ({ metric_key: "monthly_deal", label: "月成交", section: "经营表现" as const, eligible: true, status: "observed" as const, latest_attempt: { collection_run_id: 9, status: "observed" as const, raw_value, source: "test", observed_at: "2026-10-10T00:00:00Z", reason: null }, latest_valid: null });
+  const verdict = (raw: string, operator: "gt" | "gte" | "lt" | "lte", value: string) => evaluateAdvancedFilters(groupProduct({ operating_metrics: [metric(raw)] }), [{ id: 1, field: "monthly_deal", operator, value, value2: "" }]);
+  expect(verdict("<10", "lt", "10")).toBe("match");
+  expect(verdict("<10", "gte", "10")).toBe("no_match");
+  expect(verdict(">10", "gt", "10")).toBe("match");
+  expect(verdict(">10", "lte", "10")).toBe("no_match");
+  expect(verdict("100+", "gte", "100")).toBe("match");
+  expect(verdict("100+", "gt", "100")).toBe("unknown");
+  expect(verdict("10", "gte", "10")).toBe("match");
+  expect(verdict("10", "gt", "10")).toBe("no_match");
+});
+
+test("validates advanced-filter values before replacing applied rules", () => {
+  const rule = (field: Parameters<typeof validateAdvancedFilters>[0][number]["field"], operator: Parameters<typeof validateAdvancedFilters>[0][number]["operator"], value: string, value2 = "") => [{ id: 1, field, operator, value, value2 }];
+  expect(validateAdvancedFilters(rule("shop_name", "contains", " "))).toContain("需要输入");
+  expect(validateAdvancedFilters(rule("price_min", "between", "12.5", ""))).toContain("有效数值");
+  expect(validateAdvancedFilters(rule("min_order_quantity", "gte", "1.5"))).toContain("整数");
+  expect(validateAdvancedFilters(rule("positive_rate", "gte", "101"))).toContain("0% 和 100%");
+  expect(validateAdvancedFilters(rule("listing_time", "date_between", "2026-02-30", "2026-03-01"))).toContain("有效日期");
+  expect(validateAdvancedFilters(rule("listing_time", "date_between", "2026-03-02", "2026-03-01"))).toContain("开始日期");
+  expect(validateAdvancedFilters(rule("has_reviews", "no_reviews", ""))).toBeNull();
 });
 
 test("orders fuzzy deal bins by displayed boundary and category in both directions", () => {

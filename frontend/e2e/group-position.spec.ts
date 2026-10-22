@@ -80,6 +80,11 @@ test("advanced filters apply AND rules across comparison views and keep uncertai
   await page.getByRole("button", { name: "应用筛选", exact: true }).click();
   await expect(page.getByLabel("已应用高级筛选")).toContainText("MOQ 大于等于 1");
   await expect(page.locator(".position-table tbody tr")).toHaveCount(1);
+  await values.nth(1).fill("");
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("店铺名称需要输入筛选值");
+  await expect(page.locator(".position-table tbody tr")).toHaveCount(1);
+  await values.nth(1).fill("测试店铺 4");
   await page.getByRole("tab", { name: "经营表现", exact: true }).click();
   await expect(page.locator(".position-table tbody tr")).toHaveCount(1);
   await page.getByRole("button", { name: "清除筛选", exact: true }).click();
