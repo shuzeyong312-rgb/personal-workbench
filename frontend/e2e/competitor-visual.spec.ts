@@ -61,7 +61,7 @@ test("visual evidence: desktop, selection, menu, narrow and reduced motion", asy
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     }
     await page.getByRole("button", { name: "我方商品", exact: true }).click();
-    await expect(page.locator(".competitor-workspace")).toHaveCount(0);
+    await expect(page.locator(".competitor-workspace.own-product-workspace")).toHaveCount(1);
   }
   await mock.expectNoUnexpectedApi();
 });

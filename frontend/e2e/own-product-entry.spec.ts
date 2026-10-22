@@ -132,7 +132,7 @@ test("pending add dialog keeps its original group selection until groups load", 
 });
 
 test("adds self from Dashboard, lists it under own products, and binds it to one group", async ({ page }) => {
-  const mock = await installApiMock(page, { competitors: [], groups: [group], addProducts: { "1001": "self" }, activeMonitoredProducts: 1 });
+  const mock = await installApiMock(page, { competitors: [], groups: [group, { id: 20, name: "B20", created_at: "2026-09-02T00:00:00Z" }], addProducts: { "1001": "self" }, activeMonitoredProducts: 1 });
   const collectRequest = page.waitForRequest((candidate) => candidate.method() === "POST" && candidate.url().endsWith("/api/competitors/collect-batch"));
   await page.goto("/");
   await page.locator(".workspace-sidebar").getByRole("button", { name: "竞品监控大屏", exact: true }).click();
@@ -155,8 +155,34 @@ test("adds self from Dashboard, lists it under own products, and binds it to one
   await page.getByRole("button", { name: "保存" }).click();
   expect((await groupRequest).postDataJSON()).toEqual({ group_id: 19 });
   await expect(ownRow).toContainText("A19");
+  await ownRow.getByRole("button", { name: "更换/解除" }).click();
+  await page.getByRole("dialog", { name: "修改竞品组" }).getByLabel("竞品组", { exact: true }).selectOption("20");
+  const replaceRequest = page.waitForRequest((candidate) => candidate.method() === "PATCH" && candidate.url().endsWith("/api/competitors/1/group"));
+  await page.getByRole("button", { name: "保存" }).click();
+  expect((await replaceRequest).postDataJSON()).toEqual({ group_id: 20 });
+  await expect(ownRow).toContainText("B20");
+  await ownRow.getByRole("button", { name: "更换/解除" }).click();
+  await page.getByRole("dialog", { name: "修改竞品组" }).getByLabel("竞品组", { exact: true }).selectOption("");
+  const unbindRequest = page.waitForRequest((candidate) => candidate.method() === "PATCH" && candidate.url().endsWith("/api/competitors/1/group"));
+  await page.getByRole("button", { name: "保存" }).click();
+  expect((await unbindRequest).postDataJSON()).toEqual({ group_id: null });
+  await expect(ownRow).toContainText("未分组");
   await page.getByRole("button", { name: "批量操作（0）" }).click();
   await expect(page.getByRole("menuitem", { name: /采集/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "批量操作（0）" }).click();
+  await page.getByRole("checkbox", { name: "选择 新增我方商品" }).check();
+  await page.getByRole("button", { name: "批量操作（1）" }).click();
+  await page.getByRole("menuitem", { name: "停止监控（1）" }).click();
+  const stopRequest = page.waitForRequest((candidate) => candidate.method() === "PATCH" && candidate.url().endsWith("/api/competitors/monitoring-batch"));
+  await page.getByRole("button", { name: "确认停止" }).click();
+  expect((await stopRequest).postDataJSON()).toEqual({ competitor_ids: [1], is_active: false });
+  await expect(ownRow).toContainText("已停止");
+  await page.getByRole("checkbox", { name: "选择 新增我方商品" }).check();
+  await page.getByRole("button", { name: "批量操作（1）" }).click();
+  const resumeRequest = page.waitForRequest((candidate) => candidate.method() === "PATCH" && candidate.url().endsWith("/api/competitors/monitoring-batch"));
+  await page.getByRole("menuitem", { name: "恢复监控（1）" }).click();
+  expect((await resumeRequest).postDataJSON()).toEqual({ competitor_ids: [1], is_active: true });
+  await expect(ownRow).toContainText("监控中");
 
   await mock.expectNoUnexpectedApi();
 });
