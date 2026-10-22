@@ -30,14 +30,13 @@
 .competitor-workspace th { padding: 12px 8px; color: #4d5662; font-size: 12px; font-weight: 600; }
 .competitor-workspace td { padding: 12px 8px; color: #4a535f; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .competitor-workspace th:first-child { width: 36px; }
-.competitor-workspace th:nth-child(2) { width: 25%; }
+.competitor-workspace th:nth-child(2) { width: 33%; }
 .competitor-workspace th:nth-child(3) { width: 11%; }
 .competitor-workspace th:nth-child(4) { width: 9%; }
 .competitor-workspace th:nth-child(5) { width: 11%; text-align: right; }
 .competitor-workspace th:nth-child(6) { width: 6%; text-align: right; }
-.competitor-workspace th:nth-child(7) { width: 8%; }
-.competitor-workspace th:nth-child(8) { width: 11%; }
-.competitor-workspace th:nth-child(9), .competitor-workspace th:nth-child(10) { width: 7%; }
+.competitor-workspace th:nth-child(7) { width: 11%; }
+.competitor-workspace th:nth-child(8), .competitor-workspace th:nth-child(9) { width: 7%; }
 .competitor-workspace td:nth-child(5), .competitor-workspace td:nth-child(6) { text-align: right; }
 .competitor-workspace .product-cell { align-items: start; min-width: 0; gap: 12px; }
 .competitor-workspace .product-cell > div { min-width: 0; }
@@ -54,7 +53,6 @@
 .competitor-workspace .list-group-cell .text-button { min-height: 24px; color: #2458bd; font-size: 12px; font-weight: 500; text-align: left; }
 .competitor-workspace .price-cell { color: var(--ui-ink); font-weight: 650; white-space: normal; }
 .competitor-workspace .sku-cell { color: var(--ui-ink); font-weight: 600; }
-.competitor-workspace .change-cell { font-weight: 500; }
 .competitor-workspace .muted-cell, .competitor-workspace .collection-date-cell { color: #69727e; font-size: 12px; }
 .competitor-workspace .status-badge, .competitor-workspace .list-monitoring-badge { padding: 4px 8px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .competitor-workspace .list-monitoring-inactive { color: #895614; }

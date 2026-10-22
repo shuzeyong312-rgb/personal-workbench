@@ -148,9 +148,8 @@ Pagination 视觉骨架
 2. 店铺名称
 3. 当前价格
 4. SKU 数量
-5. 最近变化
-6. 最近采集时间
-7. 商品状态
+5. 最近采集时间
+6. 商品状态
 
 商品信息列包含：
 
@@ -195,8 +194,7 @@ Pagination 视觉骨架
 列表仍保留以下列：
 
 - 当前价格；
-- SKU 数量；
-- 最近变化。
+- SKU 数量。
 
 由于当前 API 不提供这些字段，前端固定展示：
 
@@ -204,7 +202,7 @@ Pagination 视觉骨架
 未采集
 ```
 
-不新增 `price`、`sku_count`、`latest_change` API 字段，也不通过前端推断数据。
+不新增 `price`、`sku_count` API 字段，也不通过前端推断数据。`latest_change` 即使由 API 返回也不在本列表展示，其他页面可继续使用。
 
 ### 字段展示规则
 
@@ -289,8 +287,8 @@ Content-Type: application/json
 - 按 `created_at DESC, id DESC` 返回；
 - 不返回 `price`；
 - 不返回 `sku_count`；
-- 不返回 `latest_change`；
-- 前端对应列固定展示“未采集”；
+- `latest_change` 不在本列表展示，接口字段保留给其他页面使用；
+- 当前价格和 SKU 数量列固定展示“未采集”；
 - 空列表返回 `[]`；
 - 不触发 Playwright；
 - 不访问 1688 商品详情页；
@@ -483,7 +481,7 @@ Dialog 只负责输入与提交，不负责：
 11. 空列表显示正式 Empty State。
 12. 加载中显示 Loading State。
 13. 请求失败显示 Error State 和重试入口。
-14. `title`、`shop_name`、`last_collected_at` 缺失时显示“未采集”或等价空值状态；当前价格、SKU 数量、最近变化列始终显示“未采集”，且不依赖虚假的 API 字段。
+14. `title`、`shop_name`、`last_collected_at` 缺失时显示“未采集”或等价空值状态；当前价格和 SKU 数量列始终显示“未采集”，且不依赖虚假的 API 字段。
 15. `GET /api/competitors` 的返回顺序固定为 `created_at DESC, id DESC`。
 16. `main_image_url` 缺失时显示占位图，不显示破损图片。
 17. `status` 使用统一 Badge。
@@ -559,7 +557,7 @@ Dialog 只负责输入与提交，不负责：
 - 列表不生成快照。
 - 当前主要真实字段为 `id`、`offer_id`、`url`、`platform`、`status`、`is_active`、`created_at`。
 - `title`、`shop_name`、`main_image_url`、`last_collected_at` 允许为空。
-- 当前价格、SKU 数量、最近变化只由前端展示“未采集”，不建立对应 API 字段。
+- 当前价格和 SKU 数量只由前端展示“未采集”，不建立对应 API 字段；列表不展示变化信息。
 - 页面必须使用 List Reference Page。
 - 页面必须包含左侧分级导航。
 - 页面必须包含品牌区、首页、竞品监控层级、自动上架和系统设置入口。
@@ -574,7 +572,7 @@ Dialog 只负责输入与提交，不负责：
 
 - 列表 API 返回数组，不引入分页响应包装。
 - `GET /api/competitors` 只返回当前真实存在的数据字段。
-- 当前价格、SKU 数量、最近变化只作为前端展示列存在，不建立对应 API 字段。
+- 当前价格和 SKU 数量只作为前端展示列存在，不建立对应 API 字段；列表不展示变化信息。
 - 当前竞品列表默认一次加载全部竞品。
 - 列表排序固定为 `created_at DESC, id DESC`。
 - 当前不增加数据库字段，也不增加虚假的 API 投影字段。
@@ -588,7 +586,7 @@ Dialog 只负责输入与提交，不负责：
 - 未来高级搜索和筛选规则；
 - 未来分页的默认页大小；
 - 未来竞品详情页的路由和操作；
-- 未来价格、SKU 数量和最近变化的真实数据来源；
+- 未来价格和 SKU 数量的真实数据来源；
 - 未来是否支持竞品分组筛选；
 - 未来是否允许编辑或停用竞品；
 - 未来导航入口的正式占位页内容。

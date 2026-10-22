@@ -27,12 +27,14 @@ test("own products share competitor list presentation and preserve own-product c
   for (const width of [1366, 1600]) {
     await page.setViewportSize({ width, height: 1100 });
     const styles = [] as Record<string, string>[];
-    const layouts = [] as { firstColumnWidth: number; checkboxLeft: number; checkboxToImage: number; imageToTitle: number; columns: { headerLeft: number; headerWidth: number; cellLeft: number; cellWidth: number }[] }[];
+    const layouts = [] as { firstColumnWidth: number; checkboxLeft: number; checkboxToImage: number; imageToTitle: number; headers: string[]; labels: string[]; columns: { headerLeft: number; headerWidth: number; cellLeft: number; cellWidth: number }[] }[];
     for (const [label, expectedHeading] of [["竞品列表", "竞品列表"], ["我方商品", "我方商品"]]) {
       await page.getByRole("button", { name: label, exact: true }).click();
       await expect(page.getByRole("heading", { name: expectedHeading, exact: true })).toBeVisible();
       await expect(page.locator("tbody tr")).toHaveCount(10);
       await expect(page.getByRole("columnheader", { name: "操作", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("columnheader", { name: "最近变化", exact: true })).toHaveCount(0);
+      await expect(page.locator("table")).not.toContainText("最近变化");
       styles.push(await page.evaluate(() => {
       const read = (selector: string, property: string) => getComputedStyle(document.querySelector(selector)!).getPropertyValue(property);
       return {
@@ -58,6 +60,8 @@ test("own products share competitor list presentation and preserve own-product c
           checkboxLeft: checkboxRect.left,
           checkboxToImage: imageRect.left - checkboxRect.right,
           imageToTitle: titleRect.left - imageRect.right,
+          headers: [...document.querySelectorAll(".competitor-workspace thead th")].map((header) => header.textContent?.trim() || ""),
+          labels: [...document.querySelectorAll(".competitor-workspace tbody tr:first-child td")].map((cell) => cell.getAttribute("data-label") || ""),
           columns: [...document.querySelectorAll(".competitor-workspace thead th")].map((header, index) => {
             const headerRect = rect(header), cellRect = rect(document.querySelectorAll(".competitor-workspace tbody tr:first-child td")[index]);
             return { headerLeft: headerRect.left, headerWidth: headerRect.width, cellLeft: cellRect.left, cellWidth: cellRect.width };
@@ -68,6 +72,9 @@ test("own products share competitor list presentation and preserve own-product c
     }
     expect(styles[1]).toEqual(styles[0]);
     expect(layouts[1]).toEqual(layouts[0]);
+    expect(layouts[0].headers).toEqual(["", "商品信息", "店铺名称", "竞品组", "当前价格", "SKU 数量", "最近采集时间", "商品状态", "监控状态"]);
+    expect(layouts[0].labels).toEqual(["选择", "商品信息", "店铺名称", "竞品组", "当前价格", "SKU 数量", "最近采集时间", "商品状态", "监控状态"]);
+    expect(layouts[0].headers.length).toBe(layouts[0].labels.length);
     expect(layouts[0].columns.every(column => Math.abs(column.headerLeft - column.cellLeft) < 0.5 && Math.abs(column.headerWidth - column.cellWidth) < 0.5)).toBe(true);
     console.info(`${width}px DOM geometry: ${JSON.stringify(layouts[0])}`);
   }
@@ -93,7 +100,15 @@ test("own products share competitor list presentation and preserve own-product c
   await expect(page.locator("tbody tr")).toHaveCount(10);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: testInfo.outputPath("我方商品-窄屏.png"), fullPage: true });
+  for (const label of ["竞品列表", "我方商品"]) {
+    await page.getByRole("button", { name: "展开导航", exact: true }).click();
+    await page.locator(".workspace-sidebar").getByRole("button", { name: label, exact: true }).click();
+    await expect(page.getByRole("columnheader", { name: "最近变化", exact: true })).toHaveCount(0);
+    await expect(page.locator("table")).not.toContainText("最近变化");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const labels = await page.locator("tbody tr:first-child td").evaluateAll((cells) => cells.map((cell) => cell.getAttribute("data-label")));
+    expect(labels).toEqual(["选择", "商品信息", "店铺名称", "竞品组", "当前价格", "SKU 数量", "最近采集时间", "商品状态", "监控状态"]);
+    if (label === "我方商品") await page.screenshot({ path: testInfo.outputPath("我方商品-窄屏.png"), fullPage: true });
+  }
   await mock.expectNoUnexpectedApi();
 });

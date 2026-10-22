@@ -136,7 +136,7 @@ V1 引入独立的 `ownership` 商品身份事实：
 - `GET /api/competitors` 增加可选 `ownership=self|competitor` 过滤参数，并在返回商品对象中暴露 `ownership`。无参数时保持现有兼容语义，返回全部监控商品（self + competitor）；`ownership=competitor` 只返回竞品；`ownership=self` 只返回我方商品；其他值返回稳定的参数校验错误，不静默退化为全量或 competitor。
 - 竞品列表必须显式请求 `GET /api/competitors?ownership=competitor`；我方商品页面必须显式请求 `GET /api/competitors?ownership=self`。页面分类不得依赖无参数全量结果再由前端猜测或过滤身份。
 - 搜索、商品状态、采集状态、竞品组筛选和分页沿用现有 Competitor List 的前端模式；本 Feature 不引入服务端搜索、排序、分页框架或全局状态库。
-- “我方商品”页面消费同一列表 contract 的 `ownership = self` 结果，至少展示现有竞品列表已有的监控事实：商品标题、店铺、Offer ID、分组、价格、SKU 数量、最近变化、最近采集、商品状态和监控状态；缺失事实继续显示“未采集/未知/—”，不补零。
+- “我方商品”页面消费同一列表 contract 的 `ownership = self` 结果，至少展示现有竞品列表已有的监控事实：商品标题、店铺、Offer ID、分组、价格、SKU 数量、最近采集、商品状态和监控状态；列表不展示变化信息，详情页、分组页和 Dashboard 保留各自的变化展示。缺失事实继续显示“未采集/未知/—”，不补零。
 - 我方商品页面不再提供任何采集入口；批量操作只保留停止监控、恢复监控。永久删除只提供单条操作，并沿用现有 `COLLECTION_LOCK`、单事务、历史级联删除和失败回滚规则；停止/恢复不删除历史。
 - 我方商品页面直接在“竞品组”列提供单条“绑定竞品组 / 更换竞品组 / 解除竞品组”入口：未分组显示“+ 绑定竞品组”，已分组显示当前组名并可进入更换/解除。绑定 Dialog 只选择现有竞品组，本轮不提供“+ 新建竞品组”。不能提供多个我方商品批量绑定到同一组的操作。解除后商品为 `ownership = self, group_id = NULL, group_role = competitor`，仍出现在我方商品页面。
 - 我方商品的单条分组操作复用现有商品分组 API seam，但对 self 采用 ownership-aware 语义：绑定到空闲组成为 own；目标组已有其他 own 时返回 409 且不变更；解除或移动到未分组保留 self 身份；不自动覆盖目标组 own。
