@@ -28,6 +28,7 @@ from app.database import engine
 from app.dashboard import router as dashboard_router
 from app.settings import router as settings_router
 from app.product_library import router as product_library_router
+from app.customer_reach import recover_customer_reach_tasks, router as customer_reach_router
 
 
 DAILY_COLLECTION_INTERVAL_SECONDS = 60
@@ -91,6 +92,7 @@ async def _daily_collection_loop(
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     session_factory = getattr(_app.state, "collection_session_factory", None) or _session_factory
     recover_interrupted_batches(session_factory)
+    recover_customer_reach_tasks(session_factory)
     if os.getenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER") == "1":
         yield
         return
@@ -119,6 +121,7 @@ app.include_router(group_attention_router)
 app.include_router(dashboard_router)
 app.include_router(settings_router)
 app.include_router(product_library_router)
+app.include_router(customer_reach_router)
 
 
 @app.exception_handler(RequestValidationError)

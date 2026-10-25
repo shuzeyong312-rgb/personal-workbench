@@ -20,5 +20,7 @@ playwright-report/
 /backend/data/*.db-wal
 /backend/data/*.db-shm
 /backend/data/*.db-journal
-/docs/qa/
+!/docs/qa/
+/docs/qa/*
+!/docs/qa/1688-client-automation-poc.md
 /frontend/test-results-settings/

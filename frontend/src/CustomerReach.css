@@ -1,0 +1,45 @@
+.customer-reach-page { padding-bottom: 28px; }
+.reach-layout { display: grid; grid-template-columns: minmax(280px, .82fr) minmax(340px, 1.18fr); gap: 16px; align-items: start; }
+.reach-compose, .reach-records, .reach-detail { min-width: 0; padding: 16px; border: 1px solid var(--ui-border, #dde1e6); border-radius: 10px; background: #fff; }
+.reach-compose h2, .reach-records h2, .reach-detail h2 { margin: 0; color: var(--ui-ink, #20242c); font-size: 16px; }
+.reach-compose form { display: grid; gap: 12px; margin-top: 15px; }
+.reach-compose label { display: grid; gap: 6px; color: #424a55; font-size: 12px; font-weight: 550; }
+.reach-compose input, .reach-compose textarea, .reach-compose select { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #d5d9df; border-radius: 7px; color: #20242c; background: #fff; font: inherit; font-weight: 400; }
+.reach-compose input:focus-visible, .reach-compose textarea:focus-visible, .reach-compose select:focus-visible, .reach-task-list button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.reach-compose textarea { resize: vertical; line-height: 1.55; }
+.reach-safety-note, .reach-runtime p { margin: 12px 0 0; color: #68717e; font-size: 12px; line-height: 1.5; }
+.reach-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.reach-section-heading > span { color: #68717e; font-size: 12px; }
+.reach-section-heading p { margin: 4px 0 0; color: #68717e; font-size: 12px; }
+.reach-task-list { display: grid; gap: 4px; max-height: 360px; margin: 12px 0 0; padding: 0; overflow: auto; list-style: none; }
+.reach-task-list button { display: flex; width: 100%; min-height: 52px; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid transparent; border-radius: 7px; color: #20242c; background: transparent; text-align: left; cursor: pointer; }
+.reach-task-list button[aria-current="true"] { border-color: #cbd8f1; background: #f2f6fd; }
+.reach-task-list button > span:first-child { display: grid; min-width: 0; gap: 3px; }
+.reach-task-list strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.reach-task-list small { color: #79818c; font-size: 11px; }
+.reach-recipient-row { display: flex; min-height: 52px; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-bottom: 1px solid #eef0f2; }
+.reach-recipient-row > span:first-child { display: grid; min-width: 0; gap: 3px; }
+.reach-status { flex: 0 0 auto; padding: 3px 8px; border-radius: 99px; color: #525d6a; background: #f0f2f4; font-size: 11px; }
+.reach-status-awaiting_confirmation { color: #8b5c1a; background: #fff4df; }
+.reach-status-success { color: #176b4c; background: #e7f5ef; }
+.reach-status-failed, .reach-status-unknown { color: #a33f4c; background: #fcebed; }
+.reach-status-locating, .reach-status-preparing, .reach-status-sending { color: #245db4; background: #eaf1ff; }
+.reach-empty { margin: 18px 0 4px; color: #737b87; font-size: 13px; }
+.reach-detail { margin-top: 16px; }
+.reach-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.reach-facts div { min-width: 0; }
+.reach-facts dt { color: #737b87; font-size: 11px; }
+.reach-facts dd { overflow-wrap: anywhere; margin: 4px 0 0; color: #303741; font-size: 12px; }
+.reach-facts div:first-child dd { font-family: ui-monospace, monospace; font-size: 10px; }
+.reach-preview { padding: 12px; border: 1px solid #e3e6ea; border-radius: 8px; background: #fafbfc; }
+.reach-preview h3, .reach-runtime h3 { margin: 0; color: #404955; font-size: 12px; font-weight: 600; }
+.reach-preview p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; color: #252b33; font-size: 13px; line-height: 1.6; }
+.reach-preview a { display: block; overflow-wrap: anywhere; color: #2563eb; font-size: 12px; }
+.reach-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.reach-actions p { margin: 0; color: #176b4c; font-size: 12px; }
+.reach-runtime { margin-top: 18px; padding-top: 14px; border-top: 1px solid #e8eaed; }
+.reach-runtime img { display: block; max-width: 100%; max-height: 440px; margin-top: 10px; border: 1px solid #e0e3e7; border-radius: 6px; object-fit: contain; }
+.reach-error { margin: 12px 0 0; color: #a33f4c; font-size: 12px; }
+.reach-mode-note { margin: 0 0 14px; padding: 9px 11px; border-left: 3px solid #2563eb; color: #4b5d78; background: #f2f6fd; font-size: 12px; line-height: 1.5; }
+.reach-mode-warning { border-left-color: #d88332; color: #79551f; background: #fff8eb; }
+@media (max-width: 850px) { .reach-layout { grid-template-columns: 1fr; } .reach-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

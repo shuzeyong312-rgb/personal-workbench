@@ -7,6 +7,7 @@ import "./CompetitorList.css";
 import "./Workspace.css";
 import "./Dashboard.css";
 import { ProductLibrary } from "./ProductLibrary";
+import { CustomerReachPage } from "./CustomerReach";
 
 type AddStatus = "initial" | "submitting" | "success" | "partial" | "failed" | "invalid" | "duplicate" | "server-error";
 type GroupCreateStatus = "initial" | "submitting" | "success" | "invalid" | "duplicate" | "server-error";
@@ -14,7 +15,7 @@ type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
 export type BatchStatus = "idle" | "running" | "pausing" | "paused" | "stopping" | "stopped" | "resting" | "cooling_down" | "completed" | "verification_required";
-export type Page = "home" | "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "product-library" | "ai-assistant" | "price-compare" | "auto-inquiry" | "auto-listing" | "settings";
+export type Page = "home" | "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "product-library" | "customer-reach" | "ai-assistant" | "price-compare" | "auto-inquiry" | "auto-listing" | "settings";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
 type BatchAction = "selected" | "all_active" | "group" | "stop" | "resume" | "delete";
@@ -1088,6 +1089,7 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
       <button className={"nav-item" + (page === "home" ? " nav-active" : "")} onClick={() => selectPage("home")} aria-current={page === "home" ? "page" : undefined}><NavIcon name="home" />首页</button>
       <p className="nav-section-label">工作工具</p>
       <button className={"nav-item" + (page === "product-library" ? " nav-active" : "")} onClick={() => selectPage("product-library")} aria-current={page === "product-library" ? "page" : undefined}><NavIcon name="library" />产品库</button>
+      <button className={"nav-item" + (page === "customer-reach" ? " nav-active" : "")} onClick={() => selectPage("customer-reach")} aria-current={page === "customer-reach" ? "page" : undefined}><NavIcon name="monitoring" />客户触达</button>
       <div className={"nav-group" + (monitoringExpanded ? "" : " nav-group-collapsed")}>
         <button type="button" className={"nav-group-title" + (monitoringActive ? " nav-group-title-current" : "")} onClick={() => setMonitoringExpanded((expanded) => !expanded)} aria-expanded={monitoringExpanded} aria-controls="competitor-monitoring-nav"><NavIcon name="monitoring" />竞品监控<span className="nav-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 14 4-4 4 4" /></svg></span></button>
         <div className="nav-group-children" id="competitor-monitoring-nav" hidden={!monitoringExpanded}>
@@ -3433,6 +3435,7 @@ function App() {
   return <MonitoringNavigationContext.Provider value={{ expanded: monitoringExpanded, setExpanded: setMonitoringExpanded }}><>
     {page === "home" && <HomePage onNavigate={navigate} />}
     {page === "product-library" && <AppShell page="product-library" breadcrumb="产品库" onNavigate={navigate}><ProductLibrary /></AppShell>}
+    {page === "customer-reach" && <AppShell page="customer-reach" breadcrumb="客户触达" onNavigate={navigate}><CustomerReachPage /></AppShell>}
     {page === "ai-assistant" && <WorkspacePlaceholderPage page="ai-assistant" title="AI智能助手" description="智能辅助工作入口。" note="AI智能助手模块已预留，具体能力待规划。" icon="assistant" onNavigate={navigate} />}
     {page === "price-compare" && <WorkspacePlaceholderPage page="price-compare" title="全网比价" description="统一检索并对比全网同款与相似商品价格。" note="后续将在这里承载商品检索、候选同款筛选、价格对比和结果沉淀。" icon="compare" onNavigate={navigate} />}
     {page === "auto-inquiry" && <WorkspacePlaceholderPage page="auto-inquiry" title="自动询价" description="统一管理供应商询价任务与报价结果。" note="后续将在这里承载询价对象、询价话术、回复状态和供应商报价记录。" icon="inquiry" onNavigate={navigate} />}

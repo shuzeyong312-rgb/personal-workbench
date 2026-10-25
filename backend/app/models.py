@@ -78,6 +78,63 @@ class SystemSetting(Base):
     value: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
+class CustomerReachTask(Base):
+    __tablename__ = "customer_reach_tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'locating', 'preparing', 'awaiting_confirmation', 'sending', 'success', 'failed', 'unknown', 'cancelled', 'paused')",
+            name="ck_customer_reach_tasks_status",
+        ),
+        Index("ix_customer_reach_tasks_created_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    customer_nickname: Mapped[str] = mapped_column(String(255), nullable=False)
+    message_text: Mapped[str] = mapped_column(String(10000), nullable=False)
+    product_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="simulated")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    paused_from_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    step: Mapped[str] = mapped_column(String(64), nullable=False, default="等待执行")
+    matched_customer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    draft_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    send_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    screenshot: Mapped[bytes | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CustomerReachCampaign(Base):
+    __tablename__ = "customer_reach_campaigns"
+    __table_args__ = (
+        CheckConstraint("customer_category IN ('ordered', 'inquiry')", name="ck_customer_reach_campaigns_category"),
+        CheckConstraint(
+            "status IN ('pending', 'locating', 'preparing', 'awaiting_confirmation', 'sending', 'success', 'failed', 'unknown', 'cancelled', 'paused')",
+            name="ck_customer_reach_campaigns_status",
+        ),
+        Index("ix_customer_reach_campaigns_created_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    customer_category: Mapped[str] = mapped_column(String(16), nullable=False)
+    message_text: Mapped[str] = mapped_column(String(10000), nullable=False)
+    product_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="simulated")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    step: Mapped[str] = mapped_column(String(64), nullable=False, default="等待执行")
+    recipients: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    current_recipient_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    screenshot: Mapped[bytes | None] = mapped_column(nullable=True)
+    error_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ProductSnapshot(Base):
     __tablename__ = "product_snapshots"
     __table_args__ = (

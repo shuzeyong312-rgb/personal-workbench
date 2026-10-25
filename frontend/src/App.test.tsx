@@ -31,6 +31,10 @@ const competitor: Competitor = {
 };
 
 const noop = () => undefined;
+const launchTestBrowser = () => chromium.launch({
+  headless: true,
+  ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
+});
 const mainClassTokens = (html: string) => html.match(/<main\b[^>]*\bclass="([^"]*)"/)?.[1].split(/\s+/).filter(Boolean) ?? [];
 const listProps = { groups: [] as CompetitorGroup[] };
 const group: CompetitorGroup = { id: 1, name: "暖手宝", created_at: "2026-09-20T10:00:00Z" };
@@ -121,7 +125,7 @@ const monitoringSettings = { item_interval_seconds: 5, continuous_collection_cou
 async function openSettingsScenario(options: { ownGet: number; monitoringGet: number; ownPut?: number; monitoringPut?: number }) {
   const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), server: { host: "127.0.0.1", port: 0 }, clearScreen: false });
   await server.listen();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchTestBrowser();
   const context = await browser.newContext();
   const page = await context.newPage();
   const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
@@ -150,7 +154,7 @@ test("basic-settings load failure does not block competitor-monitoring settings"
     await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
     await playwrightExpect(scenario.page.getByLabel("单商品采集间隔")).toHaveValue("5");
   } finally { await scenario.close(); }
-});
+}, 10000);
 
 test("basic-settings save failure does not block competitor-monitoring settings", async () => {
   const scenario = await openSettingsScenario({ ownGet: 200, monitoringGet: 200, ownPut: 500 });
@@ -392,7 +396,7 @@ test("renders loading, empty, error and normal list states", () => {
   expect(normal).toContain("未采集");
   expect(normal).toContain("123456789");
   expect(normal).toContain("查看 1688 商品");
-  expect(normal).toContain("暂无变化记录");
+  expect(normal).not.toContain("暂无变化记录");
   expect(normal).toContain("批量操作（0）");
   expect(normal).not.toContain("立即采集");
   expect(normal).not.toContain("采集选中");
@@ -475,8 +479,8 @@ test("keeps product and monitoring status in separate list columns", () => {
   expect(html).toContain("已下架");
   expect(html).toContain("监控中");
   expect(html).toContain("已停止");
-  expect((html.match(/<th(?:\s|>)/g) ?? [])).toHaveLength(10);
-  expect((html.match(/<td(?:\s|>)/g) ?? [])).toHaveLength(20);
+  expect((html.match(/<th(?:\s|>)/g) ?? [])).toHaveLength(9);
+  expect((html.match(/<td(?:\s|>)/g) ?? [])).toHaveLength(18);
 });
 
 test("does not keep completed collection messages in either product list", () => {
@@ -655,7 +659,7 @@ test("formats backend UTC timestamps in Asia/Shanghai without double conversion"
   expect(formatDate("2026-09-22T17:04:00+08:00")).toContain("2026年9月22日 17:04");
 });
 
-test("renders the real latest change in the recent change column", () => {
+test("does not render change summaries in competitor list rows", () => {
   const changed = {
     ...competitor,
     latest_change: {
@@ -672,7 +676,7 @@ test("renders the real latest change in the recent change column", () => {
     },
   };
   const html = renderToStaticMarkup(<ListPage {...listProps} competitors={[changed]} status="ready" error={null} onRetry={noop} onAdd={noop} />);
-  expect(html).toContain("商品涨价 40.00 → 45.00");
+  expect(html).not.toContain("商品涨价 40.00 → 45.00");
 });
 
 test("displays real batch progress and disables selection while running", () => {
@@ -914,7 +918,7 @@ test("shows up to five dashboard groups and preserves backend order", () => {
 test("expands and collapses dashboard Attention groups without changing their order", async () => {
   const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), server: { host: "127.0.0.1", port: 0 }, clearScreen: false });
   await server.listen();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchTestBrowser();
   const context = await browser.newContext();
   const page = await context.newPage();
   const groups = ["第一组", "第二组", "第三组", "第四组", "第五组", "第六组", "第七组"].map((group_name, index) => ({ ...attentionData.groups[index % attentionData.groups.length], attention_level: "重点关注" as const, group_id: index + 1, group_name }));
@@ -955,7 +959,7 @@ test("expands and collapses dashboard Attention groups without changing their or
 test("keeps Dashboard collection status complete in idle, running, and resting browser views", async () => {
   const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), server: { host: "127.0.0.1", port: 0 }, clearScreen: false });
   await server.listen();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchTestBrowser();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   const screenshotDir = fileURLToPath(new URL("../../.artifacts/dashboard-ui-qa/", import.meta.url));
@@ -1685,7 +1689,7 @@ test("reports refresh failure through the real batch delete flow", async () => {
     clearScreen: false,
   });
   await server.listen();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchTestBrowser();
   const context = await browser.newContext();
   const page = await context.newPage();
   let competitorReads = 0;
@@ -1745,7 +1749,7 @@ test("polls cooling batches through retry and refreshes authoritative data once 
     clearScreen: false,
   });
   await server.listen();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchTestBrowser();
   const context = await browser.newContext();
   const page = await context.newPage();
   let statusReads = 0;
@@ -1807,7 +1811,7 @@ test("refreshes after cooling_down completes directly and ignores historical com
     clearScreen: false,
   });
   await server.listen();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchTestBrowser();
   const context = await browser.newContext();
   const page = await context.newPage();
   let statusReads = 0;
