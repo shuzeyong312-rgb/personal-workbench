@@ -14,6 +14,11 @@ from app.customer_reach import recover_customer_reach_tasks
 from app.models import Base, CustomerReachTask
 
 
+@pytest.fixture(autouse=True)
+def isolate_native_desktop(monkeypatch):
+    monkeypatch.setattr(WinAppDesktop, "_native_windows", staticmethod(lambda: []))
+
+
 def test_search_nodes_remain_ephemeral_and_name_match_is_exact(monkeypatch):
     adapter = WinAppDesktop()
     results = [
@@ -257,6 +262,7 @@ def test_preview_binds_first_row_in_document_order_and_matching_action_row(monke
 def test_root_focus_error_is_allowed_only_for_verified_foreground(monkeypatch, foreground, allowed):
     import ctypes
     adapter = WinAppDesktop()
+    monkeypatch.setattr(adapter, '_activate', lambda *_args: None)
     monkeypatch.setattr(ctypes.windll.user32, 'IsIconic', lambda h: False)
     monkeypatch.setattr(ctypes.windll.user32, 'GetForegroundWindow', lambda: foreground)
     def run(*args, **kwargs):
@@ -305,7 +311,8 @@ def test_batch_customer_reuses_qt_draft_path_and_records_phase_times(monkeypatch
     monkeypatch.setattr(adapter, "_document", lambda *_args: ({}, "买家 buyer-1"))
     monkeypatch.setattr(adapter, "_search", lambda _hwnd, text, *_args: [{"name": text, "isOffscreen": False}])
     monkeypatch.setattr(adapter, "_prepare_full_draft", lambda *_args: None)
-    adapter.prepare_customer(task, recipient, lambda **values: updates.append(values))
+    with adapter.measure_execution("prepare", lambda **values: updates.append(values)):
+        adapter.prepare_customer(task, recipient, lambda **values: updates.append(values))
     timings = [item["timing"] for item in updates if "timing" in item]
     assert {"locate_seconds", "open_chat_seconds", "input_verify_seconds", "front_occupied_prepare_seconds"} <= set().union(*[set(item) for item in timings])
 
@@ -456,7 +463,8 @@ def test_unknown_result_verifier_is_observation_only(monkeypatch):
     monkeypatch.setattr(adapter,'_click_screen_point',lambda *a:pytest.fail('must not click'))
     monkeypatch.setattr(adapter,'_focus',lambda *a:pytest.fail('must not focus'))
     result={};adapter.verify_single_result(task,{'nickname':'买家'},lambda **v:result.update(v))
-    assert result['screenshot']==b'evidence'
+    assert 'screenshot' not in result
+    assert '只读' in result['step']
 
 def test_echo_rejects_url_with_extra_or_changed_query_parameters():
     task=SimpleNamespace(message_text='正文',product_url='https://detail.1688.com/offer/1087793481834.html?x=1')

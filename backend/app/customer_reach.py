@@ -55,6 +55,8 @@ class CampaignConfirmation(BaseModel):
     recipient_id: str
     customer_key: str
     content_fingerprint: str
+    confirm_batch: bool = False
+    recipient_keys: list[str] | None = None
 
 
 class CampaignView(BaseModel):
@@ -370,7 +372,28 @@ def get_screenshot(task_id: str, db: Session = Depends(get_db)):
 
 
 def _campaign_view(campaign: CustomerReachCampaign) -> dict:
-    return {key: getattr(campaign, key) for key in CampaignView.model_fields}
+    result = {key: getattr(campaign, key) for key in CampaignView.model_fields}
+    recipients = campaign.recipients
+    success = sum(r.get("status") == "success" for r in recipients)
+    end = campaign.finished_at or datetime.now(timezone.utc)
+    total = max(0, (end.replace(tzinfo=timezone.utc) - campaign.started_at.replace(tzinfo=timezone.utc)).total_seconds()) if campaign.started_at else 0
+    occupied = sum(float(value) for r in recipients for key, value in r.get("timing", {}).items() if key.startswith("front_occupied_") and isinstance(value, (int, float)))
+    result["statistics"] = {"customers": len(recipients), "success": success,
+                            "failed": sum(r.get("status") == "failed" for r in recipients),
+                            "unknown": sum(r.get("status") == "unknown" for r in recipients),
+                            "success_rate": success / len(recipients) if recipients else 0,
+                            "total_seconds": round(total, 3), "front_occupied_seconds": round(occupied, 3),
+                            "average_processing_seconds": round(sum(value for r in recipients for key, value in r.get("timing", {}).items() if key.endswith("_execution_seconds")) / len(recipients), 3) if recipients else 0}
+    return result
+
+
+def _batch_authorized(campaign) -> bool:
+    rows = campaign.recipients
+    authorization = rows[0].get("batch_authorization", {}) if rows else {}
+    return (campaign.execution_mode == "desktop_batch5" and campaign.customer_category == "ordered" and len(rows) == DESKTOP_BATCH_LIMIT
+            and all(r.get("shop_title") for r in rows) and len({r["shop_title"] for r in rows}) == 1
+            and authorization.get("content_fingerprint") == campaign.content_fingerprint
+            and authorization.get("scope") == [[r["recipient_id"], r["customer_key"], r["nickname"], r.get("shop_title")] for r in rows])
 
 
 def _campaign_update(campaign_id: str, **values) -> bool:
@@ -398,7 +421,9 @@ def _campaign_update(campaign_id: str, **values) -> bool:
         if timing is not None and campaign.current_recipient_id:
             recipient = _campaign_recipient(campaign, campaign.current_recipient_id)
             if recipient:
-                recipient.setdefault("timing", {}).update(timing)
+                recorded = recipient.setdefault("timing", {})
+                for key, value in timing.items():
+                    recorded[key] = round(recorded.get(key, 0) + value, 3) if key.endswith("_execution_seconds") or key.startswith("front_occupied_") else value
                 flag_modified(campaign, "recipients")
         for key, value in values.items():
             setattr(campaign, key, value)
@@ -450,7 +475,11 @@ def _campaign_work(campaign_id: str) -> None:
 
         try:
             adapter = WinAppDesktop()
-            rows = adapter.list_customers(category, update_campaign, first_only=True) if mode in {"desktop_preview", "desktop_single"} else adapter.list_customers(category, update_campaign, eligible_limit=DESKTOP_BATCH_LIMIT if mode == "desktop_batch5" else None, test_scope=mode == "desktop_batch5")
+            list_timing = {}
+            with adapter.measure_execution("list", lambda **v: list_timing.update(v.get("timing", {}))):
+                rows = adapter.list_customers(category, update_campaign, first_only=True) if mode in {"desktop_preview", "desktop_single"} else adapter.list_customers(category, update_campaign, eligible_limit=DESKTOP_BATCH_LIMIT if mode == "desktop_batch5" else None, test_scope=mode == "desktop_batch5")
+            if rows:
+                rows[0] = dict(rows[0], timing=list_timing)
             if mode == "desktop_single":
                 if len(rows) != 1 or rows[0]["nickname"] != expected_single:
                     raise DesktopExecutionError("第一页首位客户与本次指定对象不一致，未更换客户")
@@ -467,7 +496,6 @@ def _campaign_work(campaign_id: str) -> None:
     if not existing_recipients:
         seen: set[str] = set()
         recipients = []
-        eligible_count = 0
         for sequence, row in enumerate(rows, 1):
             key = str(row.get("customer_key", "")).strip()
             nickname = str(row.get("nickname", "")).strip()
@@ -479,9 +507,7 @@ def _campaign_work(campaign_id: str) -> None:
             duplicate = not key or key in seen
             if key:
                 seen.add(key)
-            if eligible and not duplicate:
-                eligible_count += 1
-            within_limit = mode != "desktop_batch5" or eligible_count <= DESKTOP_BATCH_LIMIT
+            within_limit = mode != "desktop_batch5" or sequence <= DESKTOP_BATCH_LIMIT
             recipients.append({
                 "recipient_id": str(uuid4()), "customer_key": key,
                 "nickname": nickname or "身份不可识别", "category": category_value,
@@ -492,6 +518,8 @@ def _campaign_work(campaign_id: str) -> None:
                 "matched_customer": None, "draft_verified": None, "send_result": None,
                 "error_reason": "本次连续测试仅处理前 5 位符合条件客户" if eligible and not duplicate and not within_limit else "重复或缺少稳定客户标识" if duplicate else None,
                 "processed_at": None,
+                "shop_title": row.get("shop_title"),
+                "timing": row.get("timing", {}),
             })
         if not _campaign_update(campaign_id, recipients=recipients, step=f"读取到 {len(recipients)} 位客户，开始按顺序核对"):
             return
@@ -512,7 +540,7 @@ def _campaign_work(campaign_id: str) -> None:
             if not ready:
                 recipient["status"] = "preparing"
                 recipient["step"] = "定位并核对客户"
-                recipient["timing"] = {"locating_started_at": datetime.now(timezone.utc).isoformat()}
+                recipient.setdefault("timing", {})["locating_started_at"] = datetime.now(timezone.utc).isoformat()
             flag_modified(campaign, "recipients")
             db.commit()
             task_data = SimpleNamespace(id=campaign.id, customer_nickname=recipient["nickname"], message_text=campaign.message_text,
@@ -535,7 +563,9 @@ def _campaign_work(campaign_id: str) -> None:
         else:
             from app.customer_reach_desktop import DesktopExecutionError, WinAppDesktop
             try:
-                verified = WinAppDesktop().prepare_customer(task_data, recipient, update_campaign) is not False
+                adapter = WinAppDesktop()
+                with adapter.measure_execution("prepare", update_campaign):
+                    verified = adapter.prepare_customer(task_data, recipient, update_campaign) is not False
                 with Session(engine) as db:
                     campaign = db.get(CustomerReachCampaign, campaign_id)
                     if campaign is None or campaign.status in {"paused", "cancelled"}:
@@ -570,6 +600,13 @@ def _campaign_work(campaign_id: str) -> None:
                         db.commit()
                 continue
 
+        with Session(engine) as db:
+            campaign = db.get(CustomerReachCampaign, campaign_id)
+            if campaign and campaign.status == "awaiting_confirmation" and _batch_authorized(campaign):
+                current = _campaign_recipient(campaign, recipient_id)
+                confirm_campaign_recipient(campaign_id, CampaignConfirmation(
+                    campaign_id=campaign_id, recipient_id=recipient_id, customer_key=current["customer_key"],
+                    content_fingerprint=campaign.content_fingerprint), db)
         return
 
     with Session(engine) as db:
@@ -588,6 +625,10 @@ def _campaign_send(campaign_id: str, recipient_id: str) -> None:
         recipient = _campaign_recipient(campaign, recipient_id) if campaign else None
         if campaign is None or recipient is None or campaign.status != "sending" or recipient["status"] != "sending":
             return
+        if campaign.execution_mode == "desktop_batch5" and not _batch_authorized(campaign):
+            campaign.status, campaign.step = "paused", "任务级授权与五客范围不一致，未发送"
+            db.commit()
+            return
         task_data = SimpleNamespace(id=campaign.id, customer_nickname=recipient["nickname"], message_text=campaign.message_text,
             product_url=campaign.product_url, execution_mode=campaign.execution_mode)
         recipient_data = dict(recipient)
@@ -602,7 +643,9 @@ def _campaign_send(campaign_id: str, recipient_id: str) -> None:
     else:
         from app.customer_reach_desktop import DesktopExecutionError, WinAppDesktop
         try:
-            WinAppDesktop().send_customer(task_data, recipient_data, update_campaign)
+            adapter = WinAppDesktop()
+            with adapter.measure_execution("send", update_campaign):
+                adapter.send_customer(task_data, recipient_data, update_campaign)
             send_result, error_reason = "verified", None
         except DesktopExecutionError as exc:
             send_result = "unknown" if exc.may_have_sent else "failed" if exc.send_failed else "not_sent"
@@ -657,6 +700,8 @@ def create_campaign(body: CreateCampaign, db: Session = Depends(get_db)):
             raise HTTPException(422, detail={"code": "invalid_single_test", "message": "单客测试必须使用已成单客户和 desktop 模式"})
         mode = "desktop_single"
     elif mode == "desktop":
+        if body.customer_category != "ordered":
+            raise HTTPException(422, detail={"code": "batch_category_required", "message": "五客连续任务仅处理已成单客户第一页前五位"})
         mode = "desktop_batch5"
     with _creation_lock:
         if db.scalar(select(CustomerReachTask.id).where(CustomerReachTask.status.in_(ACTIVE)).limit(1)) or db.scalar(select(CustomerReachCampaign.id).where(CustomerReachCampaign.status.in_(ACTIVE)).limit(1)):
@@ -698,6 +743,14 @@ def confirm_campaign_recipient(campaign_id: str, body: CampaignConfirmation, db:
         raise HTTPException(409, detail={"code": "confirmation_mismatch", "message": "客户或内容与当前推广任务不匹配"})
     if campaign.status != "awaiting_confirmation" or recipient["status"] != "awaiting_confirmation" or recipient["draft_verified"] is not True or recipient["matched_customer"] != recipient["nickname"]:
         raise HTTPException(409, detail={"code": "confirmation_used", "message": "当前客户未完成核验、已确认或任务已暂停"})
+    if campaign.execution_mode == "desktop_batch5" and not _batch_authorized(campaign):
+        rows = campaign.recipients
+        if not body.confirm_batch or campaign.customer_category != "ordered" or len(rows) != DESKTOP_BATCH_LIMIT or body.recipient_keys != [r["customer_key"] for r in rows] or len(set(body.recipient_keys)) != DESKTOP_BATCH_LIMIT or not all(r.get("shop_title") for r in rows) or len({r["shop_title"] for r in rows}) != 1:
+            raise HTTPException(409, detail={"code": "batch_confirmation_required", "message": "请一次确认已锁定的五位客户顺序与完整内容"})
+        rows[0]["batch_authorization"] = {"content_fingerprint": campaign.content_fingerprint,
+                                         "scope": [[r["recipient_id"], r["customer_key"], r["nickname"], r.get("shop_title")] for r in rows],
+                                         "confirmed_at": datetime.now(timezone.utc).isoformat()}
+        flag_modified(campaign, "recipients")
     changed = db.execute(update(CustomerReachCampaign).where(
         CustomerReachCampaign.id == campaign_id,
         CustomerReachCampaign.status == "awaiting_confirmation",
@@ -807,8 +860,8 @@ def get_campaign_screenshot(campaign_id: str, db: Session = Depends(get_db)):
 def recheck_single_result(campaign_id: str, db: Session = Depends(get_db)):
     campaign = db.get(CustomerReachCampaign, campaign_id)
     recipient = _campaign_recipient(campaign, campaign.current_recipient_id) if campaign else None
-    if not campaign or campaign.execution_mode != "desktop_single" or campaign.status != "unknown" or not recipient or recipient.get("send_attempts") != 1:
-        raise HTTPException(409, detail={"code": "result_not_recheckable", "message": "只读复核仅适用于已点击一次的 unknown 单客任务"})
+    if not campaign or campaign.execution_mode not in {"desktop_single", "desktop_batch5"} or campaign.status != "unknown" or not recipient or recipient.get("send_attempts") != 1:
+        raise HTTPException(409, detail={"code": "result_not_recheckable", "message": "只读复核仅适用于已占用一次发送的 unknown 任务"})
     from app.customer_reach_desktop import DesktopExecutionError, WinAppDesktop
     data = SimpleNamespace(message_text=campaign.message_text, product_url=campaign.product_url)
     evidence = {}
@@ -817,15 +870,26 @@ def recheck_single_result(campaign_id: str, db: Session = Depends(get_db)):
     except DesktopExecutionError as exc:
         raise HTTPException(409, detail={"code": "result_still_unknown", "message": str(exc)}) from exc
     db.refresh(campaign)
-    if campaign.status != "unknown":
+    changed = db.execute(update(CustomerReachCampaign).where(CustomerReachCampaign.id == campaign_id,
+                        CustomerReachCampaign.status == "unknown").values(status="pending"))
+    if not changed.rowcount:
+        db.rollback()
         raise HTTPException(409, detail={"code": "result_changed", "message": "任务状态已变化"})
     recipient = _campaign_recipient(campaign, campaign.current_recipient_id)
     recipient.update(status="success", send_result="verified", error_reason=None,
                      step="一次点击后只读核验唯一正文与商品卡片原链接通过",
                      processed_at=datetime.now(timezone.utc).isoformat())
     flag_modified(campaign, "recipients")
-    campaign.status, campaign.step, campaign.error_reason = "success", "单客发送回显只读复核通过，未重发", None
-    campaign.screenshot = evidence["screenshot"]
-    campaign.finished_at = datetime.now(timezone.utc)
+    continue_queue = _batch_authorized(campaign)
+    campaign.status, campaign.step, campaign.error_reason = ("pending", "当前客户只读复核通过，接续未处理客户", None) if continue_queue else ("success", "发送回显只读复核通过，未重发", None)
+    if campaign.execution_mode == "desktop_batch5" and not continue_queue:
+        campaign.status, campaign.step = "paused", "当前客户复核通过，任务授权范围变化，未继续"
+    if "screenshot" in evidence:
+        campaign.screenshot = evidence["screenshot"]
+    campaign.finished_at = None if campaign.execution_mode == "desktop_batch5" else datetime.now(timezone.utc)
+    if campaign.execution_mode == "desktop_batch5":
+        campaign.current_recipient_id = None
     db.commit()
+    if continue_queue:
+        _runner.submit(_campaign_work, campaign_id)
     return _campaign_view(campaign)

@@ -7,6 +7,8 @@ from urllib.parse import parse_qs, urlsplit
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
+from threading import Event, Thread
 
 
 class DesktopExecutionError(RuntimeError):
@@ -95,13 +97,51 @@ class WinAppDesktop:
     def __init__(self, command: str = "winapp"):
         self.command = command
         self.checkpoint = None
+        self.shop_title = None
+        self.read_only = False
+        self._recovering_focus = False
+        self._active_hwnds = set()
 
-    def _run(self, *args: str, json_output: bool = False, allow_no_matches: bool = False, timeout_seconds: int = 20):
+    @contextmanager
+    def measure_execution(self, phase, update):
+        import ctypes
+        stop = Event()
+        occupied = [0.0]
+        started = time.monotonic()
+
+        def sample():
+            previous = time.monotonic()
+            active = False
+            while not stop.wait(0.025):
+                current = time.monotonic()
+                if active:
+                    occupied[0] += current - previous
+                active = ctypes.windll.user32.GetForegroundWindow() in self._active_hwnds
+                previous = current
+            if active:
+                occupied[0] += time.monotonic() - previous
+
+        monitor = Thread(target=sample, daemon=True)
+        monitor.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            monitor.join()
+            update(timing={f"{phase}_execution_seconds": round(time.monotonic() - started, 3),
+                           f"front_occupied_{phase}_seconds": round(occupied[0], 3)})
+
+    def _run(self, *args: str, json_output: bool = False, allow_no_matches: bool = False, timeout_seconds: int = 20, _retried=False):
         if self.checkpoint:
             self.checkpoint()
         try:
             result = subprocess.run([self.command, "ui", *args], capture_output=True, text=True, timeout=timeout_seconds, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            if not _retried and args[0] in {"list-windows", "search", "inspect", "get-value"}:
+                return self._run(*args, json_output=json_output, allow_no_matches=allow_no_matches,
+                                 timeout_seconds=60, _retried=True)
+            raise DesktopExecutionError("WinApp 操作或查询超时；结果需核验，未重试输入动作") from exc
+        except OSError as exc:
             raise DesktopExecutionError("WinApp UIA CLI 无法启动或响应；未判定客户端登录状态，也未操作客户") from exc
         if result.returncode:
             if allow_no_matches and json_output and not result.stderr:
@@ -118,6 +158,11 @@ class WinAppDesktop:
                 code = "uia_error"
             if not isinstance(code, str) or not code.replace("_", "").isalnum():
                 code = "uia_error"
+            # Only retry an explicit refusal before input; never retry a timeout or ambiguous action.
+            if code == "foreground_not_target" and "-w" in args and not (_retried or self.read_only or self._recovering_focus):
+                self._focus(int(args[args.index("-w") + 1]))
+                return self._run(*args, json_output=json_output, allow_no_matches=allow_no_matches,
+                                 timeout_seconds=timeout_seconds, _retried=True)
             raise DesktopExecutionError(f"Windows UI Automation {args[0]} 失败（{code}）；已停止当前操作")
         if json_output:
             try:
@@ -126,39 +171,87 @@ class WinAppDesktop:
                 raise DesktopExecutionError("Windows UI Automation 返回格式无效") from exc
         return result.stdout
 
-    def _windows(self, *, workbench: bool = False):
+    @staticmethod
+    def _native_windows():
+        """EnumWindows also sees hidden/tray windows; verify the executable, not only its title."""
+        import ctypes
+        from ctypes import wintypes
+
+        user, kernel = ctypes.windll.user32, ctypes.windll.kernel32
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        user.GetForegroundWindow.restype = wintypes.HWND
+        result = []
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+        user.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user.IsWindowVisible.argtypes = [wintypes.HWND]
+        user.IsIconic.argtypes = [wintypes.HWND]
+
+        def visit(hwnd, _):
+            length = user.GetWindowTextLengthW(hwnd)
+            if not length:
+                return True
+            title = ctypes.create_unicode_buffer(length + 1)
+            user.GetWindowTextW(hwnd, title, len(title))
+            if not (title.value.endswith("-1688商家工作台") or title.value.endswith("-接待中心")):
+                return True
+            pid = wintypes.DWORD()
+            user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            process = kernel.OpenProcess(0x1000, False, pid.value)
+            if not process:
+                return True
+            try:
+                path, size = ctypes.create_unicode_buffer(32768), wintypes.DWORD(32768)
+                if kernel.QueryFullProcessImageNameW(process, 0, path, ctypes.byref(size)) and Path(path.value).name.casefold() == "aliworkbench.exe":
+                    result.append({"hwnd": int(hwnd), "processId": pid.value, "processName": "AliWorkbench",
+                                   "title": title.value, "isForeground": user.GetForegroundWindow() == hwnd,
+                                   "isVisible": bool(user.IsWindowVisible(hwnd)), "isMinimized": bool(user.IsIconic(hwnd))})
+            finally:
+                kernel.CloseHandle(process)
+            return True
+
+        callback = callback_type(visit)
+        if not user.EnumWindows(callback, 0):
+            raise DesktopExecutionError("无法枚举当前交互桌面的客户端窗口；登录状态未知")
+        return result
+
+    def _client_windows(self):
         windows = self._run("list-windows", "--json", json_output=True)
+        known = {int(w["hwnd"]) for w in windows}
+        windows.extend(w for w in self._native_windows() if int(w["hwnd"]) not in known)
+        return windows
+
+    def _windows(self, *, workbench: bool = False):
+        windows = self._client_windows()
         candidates = [window for window in windows
                       if window.get("processName", "").casefold() == "aliworkbench"]
         if workbench:
             candidates = [window for window in candidates if "商家工作台" in window.get("title", "")]
+        if self.shop_title:
+            candidates = [w for w in candidates if w.get("title") in {self.shop_title + "-1688商家工作台", self.shop_title + "-接待中心"}]
         foreground = [window for window in candidates if window.get("isForeground")]
         matches = foreground if len(foreground) == 1 else [
             window for window in candidates if "商家工作台" in window.get("title", "")]
         if not matches:
             matches = [window for window in candidates if "接待中心" in window.get("title", "")]
-        if not matches and len(candidates) == 1:
-            # The client keeps a single top-level window while switching between workbench and reception UI.
-            matches = candidates
         if len(matches) != 1:
             if not candidates:
                 raise DesktopExecutionError("未找到可控的 1688 窗口；无法判断客户端是否登录，请确认工作台进程和交互桌面状态")
             raise DesktopExecutionError("1688 工作台窗口不唯一或不可用；已停止，未判定为未登录")
-        try:
-            import ctypes
-            handle = int(matches[0]["hwnd"])
-            if ctypes.windll.user32.IsIconic(handle):
-                if self.checkpoint:
-                    self.checkpoint()
-                ctypes.windll.user32.ShowWindow(handle, 9)
-        except (AttributeError, OSError, ValueError, TypeError):
-            pass
+        self.shop_title = matches[0]["title"].removesuffix("-1688商家工作台").removesuffix("-接待中心")
         return matches[0]
 
     def _chat_window(self):
-        windows = self._run("list-windows", "--json", json_output=True)
+        windows = self._client_windows()
         matches = [window for window in windows if window.get("processName", "").casefold() == "aliworkbench"
                    and "接待中心" in window.get("title", "")]
+        if self.shop_title:
+            matches = [w for w in matches if w.get("title") == self.shop_title + "-接待中心"]
         if len(matches) > 1:
             workbenches = [window for window in windows if window.get("processName", "").casefold() == "aliworkbench"
                            and window.get("title", "").endswith("-1688商家工作台")]
@@ -230,12 +323,58 @@ class WinAppDesktop:
             raise DesktopExecutionError("会话文档身份与目标客户不匹配")
         return node, document_text
 
+    def _activate(self, hwnd: int):
+        import ctypes
+        from ctypes import wintypes
+
+        user = ctypes.windll.user32
+        user.GetForegroundWindow.restype = wintypes.HWND
+        user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user.BringWindowToTop.argtypes = [wintypes.HWND]
+        user.SetForegroundWindow.argtypes = [wintypes.HWND]
+        windows = self._native_windows()
+        before = next((w for w in windows if int(w["hwnd"]) == hwnd), None)
+        if not before:
+            raise DesktopExecutionError("原 AliWorkbench 窗口已失效；未启动新客户端，登录状态未知")
+        shop = before["title"].removesuffix("-1688商家工作台").removesuffix("-接待中心")
+        if self.shop_title and shop != self.shop_title:
+            raise DesktopExecutionError("目标窗口店铺与任务绑定店铺不一致")
+        self.shop_title = shop
+        self._active_hwnds.update(w["hwnd"] for w in windows if w["title"] in {shop + "-1688商家工作台", shop + "-接待中心"})
+        if self.checkpoint:
+            self.checkpoint()
+        if before["isMinimized"] or not before["isVisible"]:
+            user.ShowWindow(hwnd, 9 if before["isMinimized"] else 5)
+        if user.GetForegroundWindow() != hwnd:
+            user.BringWindowToTop(hwnd)
+            user.SetForegroundWindow(hwnd)
+        for _ in range(10):
+            if user.GetForegroundWindow() == hwnd:
+                break
+            time.sleep(0.05)
+        after = next((w for w in self._native_windows() if int(w["hwnd"]) == hwnd), None)
+        if not after or (after["processId"], after["title"]) != (before["processId"], before["title"]) or not after["isVisible"] or not after["isForeground"]:
+            raise DesktopExecutionError("原客户端窗口恢复后身份或前台核验失败（foreground_not_target）；未执行输入")
+
     def _focus(self, hwnd: int):
         import ctypes
-        if ctypes.windll.user32.IsIconic(hwnd):
-            if self.checkpoint:
-                self.checkpoint()
-            ctypes.windll.user32.ShowWindow(hwnd, 9)
+        self._recovering_focus = True
+        try:
+            for attempt in range(2):
+                try:
+                    self._activate(hwnd)
+                    self._focus_control(hwnd)
+                    if ctypes.windll.user32.GetForegroundWindow() != hwnd:
+                        raise DesktopExecutionError("聚焦后目标窗口未保持前台（foreground_not_target）")
+                    return
+                except DesktopExecutionError as exc:
+                    if attempt or "foreground_not_target" not in str(exc):
+                        raise
+        finally:
+            self._recovering_focus = False
+
+    def _focus_control(self, hwnd: int):
+        import ctypes
         tree = self._run("inspect", "-w", str(hwnd), "-d", "1", "--json", json_output=True)
         windows = tree.get("windows", []) if isinstance(tree, dict) else []
         elements = windows[0].get("elements", []) if windows else []
@@ -459,7 +598,7 @@ class WinAppDesktop:
                 "authorization_evidence": explicit if explicit and not denied else None}
 
     def list_customers(self, category: str, update, *, first_only: bool = False, eligible_limit: int | None = None, test_scope: bool = False):
-        """Read every page and include only rows with visible stable login and explicit marketing consent."""
+        """Lock the first five for test_scope; the legacy reader retains its consent checks."""
         self.checkpoint = lambda: update()
         window = self._windows(workbench=True)
         hwnd = int(window["hwnd"])
@@ -467,7 +606,12 @@ class WinAppDesktop:
         documents = [n for n in self._search(hwnd, "客户管理", "Document") if n.get("type") == "Document" and n.get("name") == "客户管理"]
         if not documents:
             update(step="打开客户管理")
-            entry = self._one(hwnd, "客户管理", "Hyperlink")
+            entries = [n for n in self._search(hwnd, "客户管理", "Hyperlink") if n.get("name") == "客户管理" and n.get("type") == "Hyperlink"]
+            if not entries:
+                entries = [self._restore_workbench_page(hwnd)]
+            if len(entries) != 1:
+                raise DesktopExecutionError("客户管理入口不唯一，未切换页面")
+            entry = entries[0]
             self._run("invoke", entry["selector"], "-w", str(hwnd), "--action", "invoke", "--json")
         update(step="恢复客户管理页面顶部")
         document = self._one(hwnd, "客户管理", "Document")
@@ -488,11 +632,14 @@ class WinAppDesktop:
             document = self._one(hwnd, "客户管理", "Document")
             self._run("scroll", document["selector"], "-w", str(hwnd), "--wheel", "-4", "--json")
             if first_only:
-                return [self._first_customer(hwnd, label)]
-            customers = [self._first_customer(hwnd, label, index=index) for index in range(5)]
+                return [dict(self._first_customer(hwnd, label), shop_title=self.shop_title)]
+            items, _ = self._customer_page(hwnd)
+            if len(items) < 5:
+                raise DesktopExecutionError("第一页不足五位可识别客户，未翻页补充")
+            customers = [self._row_identity(row, label) for row in items[:5]]
             if len({row['nickname'] for row in customers}) != 5:
                 raise DesktopExecutionError("第一页前五位身份不唯一，未扩大范围")
-            return customers
+            return [dict(row, shop_title=self.shop_title) for row in customers]
         customers, visited_pages = [], set()
         while True:
             tree = self._inspect(hwnd)
@@ -504,15 +651,10 @@ class WinAppDesktop:
                 break
             visited_pages.add(page)
             parsed = [self._parse_customer_row(row, label) for row in rows]
-            if test_scope:
-                parsed = [dict(row, eligible=bool(row["customer_key"] and row["nickname"]),
-                               authorization_evidence="用户明确授权本次前 5 位连续测试") for row in parsed]
             customers.extend(parsed)
             update(screenshot=self._capture(hwnd), step=f"已读取 {len(customers)} 条{label}列表记录")
             if eligible_limit is not None and sum(customer["eligible"] for customer in customers) >= eligible_limit:
                 break
-            if first_only:
-                return customers[:1]
             next_buttons = [node for node in self._search(hwnd, "下一页", "Button")
                             if node.get("name", node.get("Name")) == "下一页" and not node.get("isOffscreen", False)]
             if len(next_buttons) != 1 or next_buttons[0].get("isEnabled") is False:
@@ -521,7 +663,37 @@ class WinAppDesktop:
             self._run("invoke", next_buttons[0]["selector"], "-w", str(hwnd), "--action", "invoke", "--json")
         return customers
 
-    def _first_customer(self, hwnd, label, *, index=0, scrolled=False):
+    def _restore_workbench_page(self, hwnd):
+        """The native home button survives business-detail tabs that hide the customer menu."""
+        import shutil
+        from PIL import Image, ImageOps
+
+        root = next(_nodes(self._run("inspect", "-w", str(hwnd), "-d", "1", "--json", json_output=True)))
+        image = Image.open(BytesIO(self._capture(hwnd))).convert("RGB")
+        relative = image.size == (root["width"], root["height"])
+        x, y = (0, 0) if relative else (int(root["x"]), int(root["y"]))
+        # shortcut: native Qt home label occupies x40..96/y12..40; recalibrate if its toolbar changes.
+        if root["width"] < 600 or root["height"] < 400:
+            raise DesktopExecutionError("工作台原生导航栏范围不匹配，未切换页面")
+        crop = ImageOps.expand(image.crop((x + 40, y + 12, x + 96, y + 40)).resize((224, 112)), border=20, fill="white")
+        payload = BytesIO()
+        crop.save(payload, format="PNG")
+        command = shutil.which("tesseract") or str(Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tesseract-OCR" / "tesseract.exe")
+        result = subprocess.run([command, "stdin", "stdout", "-l", "chi_sim", "--psm", "7"], input=payload.getvalue(), capture_output=True, timeout=15, check=False)
+        if result.returncode or _norm(result.stdout.decode("utf-8")).replace(" ", "") != "工作台":
+            raise DesktopExecutionError("当前标签缺少客户管理，且原生“工作台”按钮未核验通过；登录状态未知")
+        if self.checkpoint:
+            self.checkpoint()
+        self._click_screen_point((int(root["x"]) + 68, int(root["y"]) + 26), hwnd)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            entries = [n for n in self._search(hwnd, "客户管理", "Hyperlink") if n.get("name") == "客户管理" and n.get("type") == "Hyperlink"]
+            if len(entries) == 1:
+                return entries[0]
+            time.sleep(0.2)
+        raise DesktopExecutionError("返回原生工作台后客户管理未就绪；未启动新客户端")
+
+    def _customer_page(self, hwnd):
         previous = self._one(hwnd, "上一页", "ListItem")
         if previous.get("isEnabled") is not False:
             raise DesktopExecutionError("无法证明当前为第一页；未选择客户")
@@ -535,28 +707,35 @@ class WinAppDesktop:
         items = [n for n in _nodes(rows) if n.get("type") == "DataItem" and n.get("name")]
         if not items:
             raise DesktopExecutionError("第一页首位客户没有可核对的身份文字")
-        # Do not infer a login ID from a display nickname or table position.
+        return items, max(tables, key=lambda n: n.get("x", 0))
+
+    @staticmethod
+    def _row_identity(row, label):
+        import re
+        texts = [n.get("name", "") for n in _nodes(row) if n.get("type") == "Text"]
+        if len(texts) != 3 or not re.fullmatch(r"L\d+", texts[0]) or _norm(row["name"]) != _norm(" ".join(texts)):
+            raise DesktopExecutionError("客户行的等级、昵称和状态不能唯一分离")
+        # The list supplies a display identity; the chat must independently verify its login ID.
+        return {"customer_key": "preview:first:" + texts[1], "nickname": texts[1], "category": label,
+                "eligible": False, "authorization_evidence": None}
+
+    def _first_customer(self, hwnd, label, *, index=0, scrolled=False):
+        items, right = self._customer_page(hwnd)
         if len(items) <= index:
             raise DesktopExecutionError("第一页不足五位可识别客户，未翻页补充")
         row = items[index]
         if row.get("width", 0) <= 0 or row.get("height", 0) <= 0:
-            if index and not scrolled:
+            if not scrolled:
                 self._run("scroll-into-view", row["selector"], "-w", str(hwnd), "--json")
                 return self._first_customer(hwnd, label, index=index, scrolled=True)
             raise DesktopExecutionError("第一页首行当前不可见；未选择屏幕外的其他客户")
-        import re
-        texts = [n.get("name", "") for n in _nodes(row) if n.get("type") == "Text"]
-        if len(texts) != 3 or not re.fullmatch(r"L\d+", texts[0]) or _norm(row["name"]) != _norm(" ".join(texts)):
-            raise DesktopExecutionError("第一页首行的等级、昵称和状态不能唯一分离")
-        right = max(tables, key=lambda n: n.get("x", 0))
+        identity = self._row_identity(row, label)
         actions = self._run("inspect", right["selector"], "-w", str(hwnd), "-d", "3", "--json", json_output=True)
         action_rows = [n for n in _nodes(actions) if n.get("type") == "DataItem" and n.get("name")]
         buttons = [n for n in _nodes(action_rows[index]) if n.get("type") == "Button" and n.get("name") == "旺旺洽谈"] if len(action_rows) > index else []
         if len(buttons) != 1 or buttons[0].get("height", 0) <= 0 or not (row["y"] <= buttons[0].get("y", 0) < row["y"] + row["height"]):
             raise DesktopExecutionError("第一页首行身份列与旺旺按钮无法按同行位置唯一绑定")
-        # This is a display identity for a non-sending task, never a marketing login/consent claim.
-        return {"customer_key": "preview:first:" + texts[1], "nickname": texts[1], "category": label,
-                "eligible": False, "authorization_evidence": None, "_contact": buttons[0]}
+        return dict(identity, _contact=buttons[0])
 
     def _customer_contact(self, hwnd: int, recipient):
         key, nickname = recipient["customer_key"], recipient["nickname"]
@@ -583,6 +762,7 @@ class WinAppDesktop:
 
     def prepare_customer(self, task, recipient, update):
         self.checkpoint = lambda: update()
+        self.shop_title = recipient.get("shop_title")
         if task.execution_mode in {"desktop_preview", "desktop_single", "desktop_batch5"}:
             prepare_started = time.monotonic()
             hwnd = int(self._windows(workbench=True)["hwnd"])
@@ -602,10 +782,8 @@ class WinAppDesktop:
                 self._prepare_full_draft(task, recipient, chat_hwnd, update)
             else:
                 self._preview_draft(task, recipient, chat_hwnd, update)
-            update(timing={"input_verify_seconds": round(time.monotonic() - started, 3),
-                           "front_occupied_prepare_seconds": round(time.monotonic() - prepare_started, 3)})
+            update(timing={"input_verify_seconds": round(time.monotonic() - started, 3)})
             return True
-        prepare_started = time.monotonic()
         window = self._windows(workbench=True)
         hwnd = int(window["hwnd"])
         self._focus(hwnd)
@@ -630,8 +808,7 @@ class WinAppDesktop:
         update(timing={"open_chat_seconds": round(time.monotonic() - started, 3)})
         started = time.monotonic()
         self._prepare_full_draft(task, recipient, chat_hwnd, update)
-        update(timing={"input_verify_seconds": round(time.monotonic() - started, 3),
-                       "front_occupied_prepare_seconds": round(time.monotonic() - prepare_started, 3)})
+        update(timing={"input_verify_seconds": round(time.monotonic() - started, 3)})
 
     def _preview_editor_snapshot(self, hwnd, nickname):
         import shutil
@@ -787,6 +964,7 @@ class WinAppDesktop:
         if recipient.get("send_attempts", 0):
             raise DesktopExecutionError("本次发送动作已经占用，禁止再次点击", may_have_sent=True)
         self.checkpoint = lambda: update()
+        self.shop_title = recipient.get("shop_title")
         started = time.monotonic()
         hwnd = int(self._chat_window()["hwnd"])
         self._focus(hwnd)
@@ -823,8 +1001,10 @@ class WinAppDesktop:
         update(claim_send=True, timing={"send_preparation_seconds": round(time.monotonic() - started, 3)},
                step="发送动作已持久化占用，仅执行一次点击", screenshot=screenshot)
         try:
+            click_started = time.monotonic()
             self._click_screen_point(point, hwnd)
-            update(step="已执行一次发送点击，仅核验结果，不重发")
+            update(timing={"send_click_seconds": round(time.monotonic() - click_started, 3)},
+                   step="已执行一次发送点击，仅核验结果，不重发")
             echo_started = time.monotonic()
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
@@ -833,8 +1013,7 @@ class WinAppDesktop:
                 if any(term in history for term in ("发送失败", "重试发送", "消息发送失败")):
                     raise DesktopExecutionError("点击后出现发送失败提示；禁止重发", may_have_sent=True)
                 if self._single_echo_matches(history, task):
-                    update(timing={"echo_verify_seconds": round(time.monotonic() - echo_started, 3),
-                                   "front_occupied_send_seconds": round(time.monotonic() - started, 3)},
+                    update(timing={"echo_verify_seconds": round(time.monotonic() - echo_started, 3)},
                            screenshot=self._capture(hwnd), step="唯一完整消息、原链接和 Offer ID 回显已核对")
                     return
                 if matches > 1:
@@ -866,11 +1045,13 @@ class WinAppDesktop:
 
     def verify_single_result(self, task, recipient, update):
         """Observation only: never focus, type, claim, or click when reconciling an unknown send."""
+        self.shop_title = recipient.get("shop_title")
+        self.read_only = True
         hwnd = int(self._chat_window()["hwnd"])
         _, history = self._document(hwnd, recipient["nickname"])
         if not self._single_echo_matches(history, task):
             raise DesktopExecutionError("只读复核未通过，保持 unknown，不重发", may_have_sent=True)
-        update(screenshot=self._capture(hwnd), step="只读复核：唯一正文与同一消息商品卡片原链接一致")
+        update(step="只读复核：唯一正文与同一消息商品卡片原链接一致")
 
     def _ocr_send_button(self, screenshot, root, doc):
         import shutil

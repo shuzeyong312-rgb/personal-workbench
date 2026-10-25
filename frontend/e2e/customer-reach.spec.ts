@@ -1,6 +1,44 @@
 import { expect, test } from "@playwright/test";
 import { installApiMock } from "./support/api-mock";
 
+test("confirms the locked desktop five once and offers read-only unknown reconciliation", async ({ page }) => {
+  await installApiMock(page, { competitors: [] });
+  const recipients = Array.from({ length: 5 }, (_, i) => ({
+    recipient_id: `r${i}`, customer_key: `login:buyer-${i}`, nickname: `buyer-${i}`, category: "已成单客户", sequence: i + 1,
+    eligible: true, authorization_evidence: "本次固定五客任务", status: i === 0 ? "awaiting_confirmation" : "pending",
+    matched_customer: i === 0 ? "buyer-0" : null, draft_verified: i === 0,
+  }));
+  let campaign = { id: "batch-five", execution_mode: "desktop_batch5", customer_category: "ordered", message_text: "测试正文", product_url: "https://detail.1688.com/offer/1.html", content_fingerprint: "batch-content", status: "awaiting_confirmation", step: "名单已锁定", current_recipient_id: "r0", recipients, created_at: "2026-10-25T00:00:00Z", statistics: { success_rate: 0, total_seconds: 10, front_occupied_seconds: 4, average_processing_seconds: 2 } };
+  let confirmations = 0;
+  let rechecks = 0;
+  await page.route("**/api/customer-reach/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/mode")) return route.fulfill({ json: { mode: "desktop" } });
+    if (path.endsWith("/campaigns")) return route.fulfill({ json: [campaign] });
+    if (path.endsWith("/confirm")) {
+      confirmations += 1;
+      expect(route.request().postDataJSON()).toEqual({ campaign_id: "batch-five", recipient_id: "r0", customer_key: "login:buyer-0", content_fingerprint: "batch-content", confirm_batch: true, recipient_keys: recipients.map((r) => r.customer_key) });
+      campaign = { ...campaign, status: "unknown", step: "结果待核实" };
+      return route.fulfill({ json: campaign });
+    }
+    if (path.endsWith("/recheck-result")) {
+      rechecks += 1;
+      campaign = { ...campaign, status: "success", step: "复核并接续完成" };
+      return route.fulfill({ json: campaign });
+    }
+    return route.fulfill({ status: 404, json: {} });
+  });
+  await page.goto("/");
+  await page.locator(".workspace-sidebar").getByRole("button", { name: "客户触达", exact: true }).click();
+  await expect(page.getByText("5. buyer-4", { exact: true })).toBeVisible();
+  await expect(page.getByText("4.0 秒", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "确认按名单连续发送五位客户", exact: true }).click();
+  await page.getByRole("button", { name: "只读复核结果", exact: true }).click();
+  await expect(page.getByText("复核并接续完成", { exact: true })).toBeVisible();
+  expect(confirmations).toBe(1);
+  expect(rechecks).toBe(1);
+});
+
 test("creates an ordered outreach campaign and confirms each customer against its content", async ({ page }) => {
   await installApiMock(page, { competitors: [] });
   let campaign: Record<string, unknown> | null = null;
