@@ -519,8 +519,25 @@ def _campaign_work(campaign_id: str) -> None:
                 "error_reason": "本次连续测试仅处理前 5 位符合条件客户" if eligible and not duplicate and not within_limit else "重复或缺少稳定客户标识" if duplicate else None,
                 "processed_at": None,
                 "shop_title": row.get("shop_title"),
+                "customer_document": row.get("customer_document"),
                 "timing": row.get("timing", {}),
             })
+        if mode == "desktop_batch5":
+            with Session(engine) as db:
+                campaign = db.get(CustomerReachCampaign, campaign_id)
+                prior = list(db.scalars(select(CustomerReachCampaign).where(
+                    CustomerReachCampaign.id != campaign_id,
+                    CustomerReachCampaign.content_fingerprint == campaign.content_fingerprint)))
+            for recipient in recipients:
+                matches = [r for previous in prior for r in previous.recipients
+                           if r.get("customer_key") == recipient["customer_key"] and r.get("shop_title") == recipient.get("shop_title")]
+                if any(r.get("status") == "unknown" or (r.get("send_attempts") and r.get("send_result") != "verified") for r in matches):
+                    _campaign_update(campaign_id, status="failed", step="历史发送结果需先核验，未重新发送",
+                                     error_reason="同客户同内容已有不确定发送记录，请复核原任务", finished_at=datetime.now(timezone.utc))
+                    return
+                if any(r.get("send_result") == "verified" for r in matches):
+                    recipient.update(status="skipped", send_result="not_sent", step="相同内容已成功触达，未重复发送",
+                                     error_reason="历史任务已核验成功", processed_at=datetime.now(timezone.utc).isoformat())
         if not _campaign_update(campaign_id, recipients=recipients, step=f"读取到 {len(recipients)} 位客户，开始按顺序核对"):
             return
 

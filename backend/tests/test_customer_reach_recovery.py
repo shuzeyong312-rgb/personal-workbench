@@ -219,6 +219,33 @@ def test_batch_confirmation_requires_a_locked_shop(batch):
     assert sends == []
 
 
+@pytest.mark.parametrize("prior_result", ["verified", "unknown"])
+def test_new_batch_never_repeats_prior_same_content_send(batch, prior_result):
+    from sqlalchemy.orm import Session
+    from app.models import CustomerReachCampaign
+    from datetime import datetime, timezone
+    reach, engine, sends, drain = batch
+    with Session(engine) as db:
+        original = db.get(CustomerReachCampaign, "batch")
+        row = dict(original.recipients[0], status="success" if prior_result == "verified" else "unknown",
+                   send_attempts=1, send_result=prior_result)
+        db.add(CustomerReachCampaign(id="prior", customer_category="ordered", message_text=original.message_text,
+            product_url=original.product_url, content_fingerprint=original.content_fingerprint, execution_mode="desktop_batch5",
+            status=row["status"], step="prior", recipients=[row], created_at=datetime.now(timezone.utc)))
+        original.recipients = []
+        original.status = "pending"
+        db.commit()
+    reach._campaign_work("batch")
+    with Session(engine) as db:
+        campaign = db.get(CustomerReachCampaign, "batch")
+        if prior_result == "unknown":
+            assert campaign.status == "failed"
+        else:
+            assert campaign.recipients[0]["status"] == "skipped"
+            assert len(campaign.recipients) == 5
+    assert sends == []
+
+
 def test_wrong_shop_window_is_never_activated(monkeypatch):
     adapter = WinAppDesktop()
     adapter.shop_title = "expected"

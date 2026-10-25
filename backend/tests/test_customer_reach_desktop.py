@@ -170,7 +170,7 @@ def test_one_filters_same_name_document_and_link(monkeypatch):
 
 def test_preview_requires_proven_first_page(monkeypatch):
     adapter = WinAppDesktop()
-    monkeypatch.setattr(adapter, '_one', lambda *a: {'isEnabled': True})
+    monkeypatch.setattr(adapter, '_one', lambda *a: {'selector': 'document', 'isEnabled': True})
     monkeypatch.setattr(adapter, '_run', lambda *a, **kw: pytest.fail('must not inspect another page'))
     with pytest.raises(DesktopExecutionError, match='第一页'):
         adapter._first_customer(1, '已成单客户')
@@ -246,17 +246,24 @@ def test_preview_binds_first_row_in_document_order_and_matching_action_row(monke
                  children=[node('Text', 'L6'), node('Text', '首位买家'), node('Text', '未流失')])
     offscreen = node('DataItem', 'L6 其他买家 未流失', y=0, width=0, height=0)
     tables = [node('Table', x=10, width=1200, height=1000), node('Table', x=10, width=200, height=1000), node('Table', x=1000, width=150, height=1000)]
-    calls = iter([tables, [first, offscreen], [node('DataItem', '操作', children=[node('Button', '旺旺洽谈', y=button_y, height=20)])]])
+    action = node('DataItem', '操作', children=[node('Button', '旺旺洽谈', y=button_y, height=20)])
+    calls = iter([tables, [first, offscreen], [action], action])
+    commands = []
     monkeypatch.setattr(adapter, '_one', lambda h, text, kind: {'isEnabled': False} if text == '上一页' else {'selector': 'document'})
-    monkeypatch.setattr(adapter, '_run', lambda *a, **kw: next(calls))
+    def run(*args, **kwargs):
+        commands.append(args)
+        return next(calls)
+    monkeypatch.setattr(adapter, '_run', run)
     if valid:
         result = adapter._first_customer(1, '已成单客户')
         assert result['nickname'] == '首位买家'
         assert result['customer_key'] == 'preview:first:首位买家'
         assert not result['eligible'] and result['authorization_evidence'] is None
+        assert commands[2][commands[2].index('-d') + 1] == '2'
+        assert commands[3][1] == action['selector']
     else:
         with pytest.raises(DesktopExecutionError, match='同行位置'):
-            adapter._first_customer(1, '已成单客户')
+            adapter._first_customer(1, '已成单客户', scrolled=True)
 
 @pytest.mark.parametrize('foreground,allowed', [(99, True), (100, False)])
 def test_root_focus_error_is_allowed_only_for_verified_foreground(monkeypatch, foreground, allowed):
@@ -329,7 +336,7 @@ def test_batch_fifth_customer_uses_document_order_without_replacing_missing_row(
     actions = [{"type": "DataItem", "selector": f"action-{i}", "name": "action", "children": [
         {"type": "Button", "name": "旺旺洽谈", "selector": f"contact-{i}", "y": 130 + i * 100, "height": 20}
     ]} for i in range(count)]
-    responses = iter([tables, rows, actions])
+    responses = iter([tables, rows, actions, actions[-1]])
     monkeypatch.setattr(adapter, "_one", lambda _h, text, _kind: {"isEnabled": False} if text == "上一页" else {"selector": "document"})
     monkeypatch.setattr(adapter, "_run", lambda *_args, **_kwargs: next(responses))
     if count == 4:

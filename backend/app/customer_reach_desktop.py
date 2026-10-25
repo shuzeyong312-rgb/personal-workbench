@@ -101,6 +101,8 @@ class WinAppDesktop:
         self.read_only = False
         self._recovering_focus = False
         self._active_hwnds = set()
+        self.customer_root = None
+        self.command_timings = []
 
     @contextmanager
     def measure_execution(self, phase, update):
@@ -129,20 +131,27 @@ class WinAppDesktop:
             stop.set()
             monitor.join()
             update(timing={f"{phase}_execution_seconds": round(time.monotonic() - started, 3),
-                           f"front_occupied_{phase}_seconds": round(occupied[0], 3)})
+                           f"front_occupied_{phase}_seconds": round(occupied[0], 3),
+                           f"{phase}_uia_commands": list(self.command_timings)})
 
     def _run(self, *args: str, json_output: bool = False, allow_no_matches: bool = False, timeout_seconds: int = 20, _retried=False):
         if self.checkpoint:
             self.checkpoint()
+        command_started = time.monotonic()
         try:
             result = subprocess.run([self.command, "ui", *args], capture_output=True, text=True, timeout=timeout_seconds, check=False)
         except subprocess.TimeoutExpired as exc:
+            self.command_timings.append({"verb": args[0], "seconds": round(time.monotonic() - command_started, 3)})
+            command_started = None
             if not _retried and args[0] in {"list-windows", "search", "inspect", "get-value"}:
                 return self._run(*args, json_output=json_output, allow_no_matches=allow_no_matches,
                                  timeout_seconds=60, _retried=True)
             raise DesktopExecutionError("WinApp 操作或查询超时；结果需核验，未重试输入动作") from exc
         except OSError as exc:
             raise DesktopExecutionError("WinApp UIA CLI 无法启动或响应；未判定客户端登录状态，也未操作客户") from exc
+        finally:
+            if command_started is not None:
+                self.command_timings.append({"verb": args[0], "seconds": round(time.monotonic() - command_started, 3)})
         if result.returncode:
             if allow_no_matches and json_output and not result.stderr:
                 try:
@@ -263,7 +272,25 @@ class WinAppDesktop:
         return matches[0]
 
     def _search(self, hwnd: int, text: str, control_type: str | None = None):
+        if text == "客户管理" and control_type == "Document":
+            if self.customer_root and self.customer_root[0] == hwnd:
+                current = self._run("inspect", self.customer_root[1], "-w", str(hwnd), "-d", "1", "--json", json_output=True)
+                documents = [n for n in _nodes(current) if n.get("type") == "Document" and n.get("name") == text]
+                if len(documents) == 1:
+                    return documents
+                self.customer_root = None
+            tree = self._run("inspect", "-w", str(hwnd), "-d", "4", "--json", json_output=True)
+            documents = [n for n in _nodes(tree) if n.get("type") == "Document" and n.get("name") == text]
+            outer = [n for n in _nodes(tree) if n.get("type") == "Document"]
+            if not documents and len(outer) == 1:
+                nested = self._run("search", text, "-w", str(hwnd), "--root", outer[0]["selector"], "--type", "Document", "--json",
+                                   json_output=True, allow_no_matches=True)
+                documents = [n for n in _nodes(nested) if n.get("type") == "Document" and n.get("name") == text]
+            self.customer_root = (hwnd, documents[0]["selector"]) if len(documents) == 1 else None
+            return documents
         args = ["search", text, "-w", str(hwnd), "--json"]
+        if self.customer_root and self.customer_root[0] == hwnd:
+            args.extend(["--root", self.customer_root[1]])
         if control_type:
             args.extend(["--type", control_type])
         result = self._run(*args, json_output=True, allow_no_matches=True)
@@ -604,6 +631,7 @@ class WinAppDesktop:
         hwnd = int(window["hwnd"])
         self._focus(hwnd)
         documents = [n for n in self._search(hwnd, "客户管理", "Document") if n.get("type") == "Document" and n.get("name") == "客户管理"]
+        label = "已成单客户" if category == "ordered" else "询盘客户"
         if not documents:
             update(step="打开客户管理")
             entries = [n for n in self._search(hwnd, "客户管理", "Hyperlink") if n.get("name") == "客户管理" and n.get("type") == "Hyperlink"]
@@ -620,7 +648,6 @@ class WinAppDesktop:
         self._run("click", self._one(hwnd, "全部客户明细", "Text")["selector"], "-w", str(hwnd), "--json")
         update(step="打开客户资产")
         self._run("click", self._one(hwnd, "客户资产", "Text")["selector"], "-w", str(hwnd), "--json")
-        label = "已成单客户" if category == "ordered" else "询盘客户"
         candidates = [node for node in self._search(hwnd, label, "TabItem")
                       if node.get("type") == "TabItem" and str(node.get("name", "")).startswith(label) and not node.get("isOffscreen", False)]
         if len(candidates) != 1:
@@ -634,12 +661,7 @@ class WinAppDesktop:
             if first_only:
                 return [dict(self._first_customer(hwnd, label), shop_title=self.shop_title)]
             items, _ = self._customer_page(hwnd)
-            if len(items) < 5:
-                raise DesktopExecutionError("第一页不足五位可识别客户，未翻页补充")
-            customers = [self._row_identity(row, label) for row in items[:5]]
-            if len({row['nickname'] for row in customers}) != 5:
-                raise DesktopExecutionError("第一页前五位身份不唯一，未扩大范围")
-            return [dict(row, shop_title=self.shop_title) for row in customers]
+            return self._locked_five(items, label)
         customers, visited_pages = [], set()
         while True:
             tree = self._inspect(hwnd)
@@ -662,6 +684,14 @@ class WinAppDesktop:
             update(step=f"读取{label}列表下一页")
             self._run("invoke", next_buttons[0]["selector"], "-w", str(hwnd), "--action", "invoke", "--json")
         return customers
+
+    def _locked_five(self, items, label):
+        if len(items) < 5:
+            raise DesktopExecutionError("第一页不足五位可识别客户，未翻页补充")
+        customers = [self._row_identity(row, label) for row in items[:5]]
+        if len({row['nickname'] for row in customers}) != 5:
+            raise DesktopExecutionError("第一页前五位身份不唯一，未扩大范围")
+        return [dict(row, shop_title=self.shop_title, customer_document=self.customer_root) for row in customers]
 
     def _restore_workbench_page(self, hwnd):
         """The native home button survives business-detail tabs that hide the customer menu."""
@@ -694,10 +724,10 @@ class WinAppDesktop:
         raise DesktopExecutionError("返回原生工作台后客户管理未就绪；未启动新客户端")
 
     def _customer_page(self, hwnd):
+        document = self._one(hwnd, "客户管理", "Document")
         previous = self._one(hwnd, "上一页", "ListItem")
         if previous.get("isEnabled") is not False:
             raise DesktopExecutionError("无法证明当前为第一页；未选择客户")
-        document = self._one(hwnd, "客户管理", "Document")
         tree = self._run("inspect", document["selector"], "-w", str(hwnd), "-d", "2", "--json", json_output=True)
         tables = [n for n in _nodes(tree) if n.get("type") == "Table" and n.get("height", 0) > 100]
         if len(tables) != 3:
@@ -730,10 +760,18 @@ class WinAppDesktop:
                 return self._first_customer(hwnd, label, index=index, scrolled=True)
             raise DesktopExecutionError("第一页首行当前不可见；未选择屏幕外的其他客户")
         identity = self._row_identity(row, label)
-        actions = self._run("inspect", right["selector"], "-w", str(hwnd), "-d", "3", "--json", json_output=True)
+        actions = self._run("inspect", right["selector"], "-w", str(hwnd), "-d", "2", "--json", json_output=True)
         action_rows = [n for n in _nodes(actions) if n.get("type") == "DataItem" and n.get("name")]
-        buttons = [n for n in _nodes(action_rows[index]) if n.get("type") == "Button" and n.get("name") == "旺旺洽谈"] if len(action_rows) > index else []
+        if len(action_rows) <= index:
+            raise DesktopExecutionError("操作列缺少对应顺位，未选择其他客户")
+        action = self._run("inspect", action_rows[index]["selector"], "-w", str(hwnd), "-d", "3", "--json", json_output=True)
+        buttons = [n for n in _nodes(action) if n.get("type") == "Button" and n.get("name") == "旺旺洽谈"]
         if len(buttons) != 1 or buttons[0].get("height", 0) <= 0 or not (row["y"] <= buttons[0].get("y", 0) < row["y"] + row["height"]):
+            if not scrolled:
+                self._run("scroll-into-view", row["selector"], "-w", str(hwnd), "--json")
+                document = self._one(hwnd, "客户管理", "Document")
+                self._run("scroll", document["selector"], "-w", str(hwnd), "--wheel", "-3", "--json")
+                return self._first_customer(hwnd, label, index=index, scrolled=True)
             raise DesktopExecutionError("第一页首行身份列与旺旺按钮无法按同行位置唯一绑定")
         return dict(identity, _contact=buttons[0])
 
@@ -767,6 +805,9 @@ class WinAppDesktop:
             prepare_started = time.monotonic()
             hwnd = int(self._windows(workbench=True)["hwnd"])
             self._focus(hwnd)
+            saved_document = recipient.get("customer_document")
+            if saved_document and saved_document[0] == hwnd:
+                self.customer_root = tuple(saved_document)
             first = self._first_customer(hwnd, recipient["category"], index=recipient["sequence"] - 1) if task.execution_mode == "desktop_batch5" else self._first_customer(hwnd, recipient["category"])
             if first["customer_key"] != recipient["customer_key"] or first["nickname"] != recipient["nickname"]:
                 raise DesktopExecutionError("第一页首位客户身份发生变化，未打开会话")
@@ -906,7 +947,12 @@ class WinAppDesktop:
 
     @staticmethod
     def _check_refusal(history):
-        if any(term in history for term in ("拒绝营销", "拒收", "退订", "不要再发", "别再发", "不要打扰", "不需要推广", "不要发广告")):
+        import re
+        if any(term in history for term in ("拒绝营销", "拒收广告", "拒收推广", "拒收营销", "拒收消息", "退订", "不要再发", "别再发", "不要打扰", "不需要推广", "不要发广告")):
+            raise DesktopExecutionError("当前客户记录含明确拒收表达，未发送")
+        # Parcel refusal is not a refusal of messages; ambiguous refusal still stops.
+        non_logistics = re.sub(r"(?:收件人|收货人|快递|包裹|货物)(?:已|被)?拒收|拒收(?:包裹|快递|货物|商品)", "", history)
+        if "拒收" in non_logistics:
             raise DesktopExecutionError("当前客户记录含明确拒收表达，未发送")
 
     def _read_qt_editor(self, hwnd, nickname):
