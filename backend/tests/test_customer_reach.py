@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -224,3 +225,35 @@ def test_simulated_campaign_confirms_each_recipient_and_resumes_without_repeatin
         app.state.collection_session_factory = previous_factory
         engine.dispose()
         database_file.unlink(missing_ok=True)
+
+
+def test_desktop_batch_stops_after_first_five_eligible_customers(tmp_path, monkeypatch):
+    from app import customer_reach
+
+    engine = create_engine(f"sqlite:///{(tmp_path / 'batch-five.db').as_posix()}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(database, "engine", engine)
+    rows = [
+        {"customer_key": f"login:buyer-{index}", "nickname": f"买家 {index}", "category": "ordered",
+         "eligible": True, "authorization_evidence": "营销授权：已授权"}
+        for index in range(1, 8)
+    ]
+    captured = {}
+    monkeypatch.setattr(customer_reach_desktop.WinAppDesktop,
+                        "list_customers", lambda _self, _category, _update, **kwargs: captured.update(kwargs) or rows)
+    monkeypatch.setattr(customer_reach_desktop.WinAppDesktop, "prepare_customer", lambda *_args: True)
+    with Session(engine) as db:
+        db.add(CustomerReachCampaign(
+            id="batch-five", customer_category="ordered", message_text="文案", product_url="https://detail.1688.com/offer/1.html",
+            content_fingerprint="f" * 64, execution_mode="desktop_batch5", status="pending", step="等待执行", recipients=[],
+            created_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+    customer_reach._campaign_work("batch-five")
+    with Session(engine) as db:
+        campaign = db.get(CustomerReachCampaign, "batch-five")
+        assert captured["eligible_limit"] == 5
+        assert [row["status"] for row in campaign.recipients] == ["awaiting_confirmation", "pending", "pending", "pending", "pending", "skipped", "skipped"]
+        assert campaign.recipients[5]["error_reason"] == "本次连续测试仅处理前 5 位符合条件客户"
+        assert campaign.recipients[0]["timing"]["awaiting_confirmation_at"]
+    engine.dispose()

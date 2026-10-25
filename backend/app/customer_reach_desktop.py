@@ -45,16 +45,62 @@ def _children_text(node) -> str:
     return " ".join(str(item.get("name", item.get("Name", ""))) for item in _walk(node))
 
 
+def _clipboard_text(value=None):
+    """Use Unicode clipboard text without a shell or an extra desktop dependency."""
+    import ctypes
+    from ctypes import wintypes
+
+    user, kernel = ctypes.windll.user32, ctypes.windll.kernel32
+    user.GetClipboardData.restype = wintypes.HANDLE
+    user.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user.SetClipboardData.restype = wintypes.HANDLE
+    kernel.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel.GlobalAlloc.restype = wintypes.HANDLE
+    kernel.GlobalLock.argtypes = [wintypes.HANDLE]
+    kernel.GlobalLock.restype = ctypes.c_void_p
+    kernel.GlobalUnlock.argtypes = [wintypes.HANDLE]
+    kernel.GlobalFree.argtypes = [wintypes.HANDLE]
+    if not user.OpenClipboard(None):
+        raise DesktopExecutionError("无法打开剪贴板，未输入文字")
+    try:
+        if value is None:
+            handle = user.GetClipboardData(13)
+            if not handle:
+                return ""
+            pointer = kernel.GlobalLock(handle)
+            if not pointer:
+                raise DesktopExecutionError("无法读取剪贴板")
+            try:
+                return ctypes.wstring_at(pointer)
+            finally:
+                kernel.GlobalUnlock(handle)
+        data = (value + "\0").encode("utf-16-le")
+        handle = kernel.GlobalAlloc(0x0002, len(data))
+        if not handle:
+            raise DesktopExecutionError("剪贴板内存分配失败")
+        pointer = kernel.GlobalLock(handle)
+        if not pointer:
+            kernel.GlobalFree(handle)
+            raise DesktopExecutionError("剪贴板内存不可写")
+        ctypes.memmove(pointer, data, len(data))
+        kernel.GlobalUnlock(handle)
+        if not user.EmptyClipboard() or not user.SetClipboardData(13, handle):
+            kernel.GlobalFree(handle)
+            raise DesktopExecutionError("剪贴板写入失败")
+    finally:
+        user.CloseClipboard()
+
+
 class WinAppDesktop:
     def __init__(self, command: str = "winapp"):
         self.command = command
         self.checkpoint = None
 
-    def _run(self, *args: str, json_output: bool = False, allow_no_matches: bool = False):
+    def _run(self, *args: str, json_output: bool = False, allow_no_matches: bool = False, timeout_seconds: int = 20):
         if self.checkpoint:
             self.checkpoint()
         try:
-            result = subprocess.run([self.command, "ui", *args], capture_output=True, text=True, timeout=20, check=False)
+            result = subprocess.run([self.command, "ui", *args], capture_output=True, text=True, timeout=timeout_seconds, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise DesktopExecutionError("WinApp UIA CLI 无法启动或响应；未判定客户端登录状态，也未操作客户") from exc
         if result.returncode:
@@ -113,6 +159,12 @@ class WinAppDesktop:
         windows = self._run("list-windows", "--json", json_output=True)
         matches = [window for window in windows if window.get("processName", "").casefold() == "aliworkbench"
                    and "接待中心" in window.get("title", "")]
+        if len(matches) > 1:
+            workbenches = [window for window in windows if window.get("processName", "").casefold() == "aliworkbench"
+                           and window.get("title", "").endswith("-1688商家工作台")]
+            if len(workbenches) == 1:
+                title = workbenches[0]["title"].removesuffix("-1688商家工作台") + "-接待中心"
+                matches = [window for window in matches if window.get("title") == title]
         if len(matches) != 1:
             raise DesktopExecutionError("未能唯一识别接待中心窗口")
         return matches[0]
@@ -142,6 +194,7 @@ class WinAppDesktop:
         handle, path = tempfile.mkstemp(suffix=".png", dir=data_dir)
         os.close(handle)
         try:
+            self._focus(hwnd)
             self._run("screenshot", "-w", str(hwnd), "--capture-screen", "--output", path, "--json")
             return Path(path).read_bytes()
         except OSError as exc:
@@ -228,6 +281,7 @@ class WinAppDesktop:
         labels = [label for label in labels
                   if label.get("name", label.get("Name")) == "发送"
                   and label.get("type", label.get("controlType")) in {"Text", "Button"}
+                  and label.get("isEnabled", True) is not False
                   and not label.get("isOffscreen", False)]
         if len(labels) != 1:
             raise DesktopExecutionError("UIA 未能唯一识别可见的发送按钮文字；已停止发送")
@@ -367,7 +421,7 @@ class WinAppDesktop:
                matched_customer=task.customer_nickname, draft_verified=True, screenshot=screenshot)
 
     def _inspect(self, hwnd: int):
-        return self._run("inspect", "-w", str(hwnd), "-d", "12", "--json", json_output=True)
+        return self._run("inspect", "-w", str(hwnd), "-d", "12", "--json", json_output=True, timeout_seconds=60)
 
     @staticmethod
     def _row_nodes(tree):
@@ -392,6 +446,11 @@ class WinAppDesktop:
         if name_match:
             nickname = name_match.group(1)
         login = re.search(r"(?:会员登录名|登录名|买家账号|客户账号|买家ID|客户ID)\s*[:：]\s*([\w@.-]+)", text, re.I)
+        if not login:
+            compact = re.fullmatch(r"L\d+\s+([^\s]+)\s+.+", nickname)
+            if compact:
+                nickname = compact.group(1)
+                login = re.match(r"(.+)", nickname)
         key = f"login:{login.group(1)}" if login else ""
         denied = any(term in text for term in ("拒绝营销", "不同意营销", "已退订", "未授权营销"))
         explicit = next((term for term in ("营销授权：已授权", "已同意营销", "允许营销触达", "同意接收营销") if term in text), "")
@@ -399,7 +458,7 @@ class WinAppDesktop:
                 "eligible": bool(key and nickname and explicit and not denied),
                 "authorization_evidence": explicit if explicit and not denied else None}
 
-    def list_customers(self, category: str, update, *, first_only: bool = False):
+    def list_customers(self, category: str, update, *, first_only: bool = False, eligible_limit: int | None = None, test_scope: bool = False):
         """Read every page and include only rows with visible stable login and explicit marketing consent."""
         self.checkpoint = lambda: update()
         window = self._windows(workbench=True)
@@ -424,11 +483,16 @@ class WinAppDesktop:
             raise DesktopExecutionError(f"无法唯一识别“{label}”分类；已停止")
         update(step=f"筛选{label}")
         self._run("click", candidates[0]["selector"], "-w", str(hwnd), "--json")
-        if first_only:
+        if first_only or test_scope:
             update(step="滚动显示第一页首位客户")
             document = self._one(hwnd, "客户管理", "Document")
             self._run("scroll", document["selector"], "-w", str(hwnd), "--wheel", "-4", "--json")
-            return [self._first_customer(hwnd, label)]
+            if first_only:
+                return [self._first_customer(hwnd, label)]
+            customers = [self._first_customer(hwnd, label, index=index) for index in range(5)]
+            if len({row['nickname'] for row in customers}) != 5:
+                raise DesktopExecutionError("第一页前五位身份不唯一，未扩大范围")
+            return customers
         customers, visited_pages = [], set()
         while True:
             tree = self._inspect(hwnd)
@@ -439,8 +503,14 @@ class WinAppDesktop:
             if page in visited_pages:
                 break
             visited_pages.add(page)
-            customers.extend(self._parse_customer_row(row, label) for row in rows)
+            parsed = [self._parse_customer_row(row, label) for row in rows]
+            if test_scope:
+                parsed = [dict(row, eligible=bool(row["customer_key"] and row["nickname"]),
+                               authorization_evidence="用户明确授权本次前 5 位连续测试") for row in parsed]
+            customers.extend(parsed)
             update(screenshot=self._capture(hwnd), step=f"已读取 {len(customers)} 条{label}列表记录")
+            if eligible_limit is not None and sum(customer["eligible"] for customer in customers) >= eligible_limit:
+                break
             if first_only:
                 return customers[:1]
             next_buttons = [node for node in self._search(hwnd, "下一页", "Button")
@@ -451,7 +521,7 @@ class WinAppDesktop:
             self._run("invoke", next_buttons[0]["selector"], "-w", str(hwnd), "--action", "invoke", "--json")
         return customers
 
-    def _first_customer(self, hwnd, label):
+    def _first_customer(self, hwnd, label, *, index=0, scrolled=False):
         previous = self._one(hwnd, "上一页", "ListItem")
         if previous.get("isEnabled") is not False:
             raise DesktopExecutionError("无法证明当前为第一页；未选择客户")
@@ -466,8 +536,13 @@ class WinAppDesktop:
         if not items:
             raise DesktopExecutionError("第一页首位客户没有可核对的身份文字")
         # Do not infer a login ID from a display nickname or table position.
-        row = items[0]
+        if len(items) <= index:
+            raise DesktopExecutionError("第一页不足五位可识别客户，未翻页补充")
+        row = items[index]
         if row.get("width", 0) <= 0 or row.get("height", 0) <= 0:
+            if index and not scrolled:
+                self._run("scroll-into-view", row["selector"], "-w", str(hwnd), "--json")
+                return self._first_customer(hwnd, label, index=index, scrolled=True)
             raise DesktopExecutionError("第一页首行当前不可见；未选择屏幕外的其他客户")
         import re
         texts = [n.get("name", "") for n in _nodes(row) if n.get("type") == "Text"]
@@ -476,7 +551,7 @@ class WinAppDesktop:
         right = max(tables, key=lambda n: n.get("x", 0))
         actions = self._run("inspect", right["selector"], "-w", str(hwnd), "-d", "3", "--json", json_output=True)
         action_rows = [n for n in _nodes(actions) if n.get("type") == "DataItem" and n.get("name")]
-        buttons = [n for n in _nodes(action_rows[0]) if n.get("type") == "Button" and n.get("name") == "旺旺洽谈"] if action_rows else []
+        buttons = [n for n in _nodes(action_rows[index]) if n.get("type") == "Button" and n.get("name") == "旺旺洽谈"] if len(action_rows) > index else []
         if len(buttons) != 1 or buttons[0].get("height", 0) <= 0 or not (row["y"] <= buttons[0].get("y", 0) < row["y"] + row["height"]):
             raise DesktopExecutionError("第一页首行身份列与旺旺按钮无法按同行位置唯一绑定")
         # This is a display identity for a non-sending task, never a marketing login/consent claim.
@@ -508,24 +583,37 @@ class WinAppDesktop:
 
     def prepare_customer(self, task, recipient, update):
         self.checkpoint = lambda: update()
-        if task.execution_mode == "desktop_preview":
+        if task.execution_mode in {"desktop_preview", "desktop_single", "desktop_batch5"}:
+            prepare_started = time.monotonic()
             hwnd = int(self._windows(workbench=True)["hwnd"])
             self._focus(hwnd)
-            first = self._first_customer(hwnd, recipient["category"])
+            first = self._first_customer(hwnd, recipient["category"], index=recipient["sequence"] - 1) if task.execution_mode == "desktop_batch5" else self._first_customer(hwnd, recipient["category"])
             if first["customer_key"] != recipient["customer_key"] or first["nickname"] != recipient["nickname"]:
                 raise DesktopExecutionError("第一页首位客户身份发生变化，未打开会话")
-            update(step="打开已重新核对的第一页首位客户旺旺")
+            update(timing={"locate_seconds": round(time.monotonic() - prepare_started, 3)}, step="打开已重新核对的第一页客户旺旺")
+            started = time.monotonic()
             self._run("invoke", first["_contact"]["selector"], "-w", str(hwnd), "--action", "invoke", "--json")
             chat_hwnd = int(self._chat_window()["hwnd"])
             self._focus(chat_hwnd)
             self._document(chat_hwnd, recipient["nickname"])
-            self._preview_draft(task, recipient, chat_hwnd, update)
+            update(timing={"open_chat_seconds": round(time.monotonic() - started, 3)})
+            started = time.monotonic()
+            if task.execution_mode in {"desktop_single", "desktop_batch5"}:
+                self._prepare_full_draft(task, recipient, chat_hwnd, update)
+            else:
+                self._preview_draft(task, recipient, chat_hwnd, update)
+            update(timing={"input_verify_seconds": round(time.monotonic() - started, 3),
+                           "front_occupied_prepare_seconds": round(time.monotonic() - prepare_started, 3)})
             return True
-        window = self._windows()
+        prepare_started = time.monotonic()
+        window = self._windows(workbench=True)
         hwnd = int(window["hwnd"])
         self._focus(hwnd)
+        started = time.monotonic()
         contact = self._customer_contact(hwnd, recipient)
+        update(timing={"locate_seconds": round(time.monotonic() - started, 3)})
         update(step=f"打开第 {recipient['sequence']} 位客户旺旺")
+        started = time.monotonic()
         self._run("scroll-into-view", contact["selector"], "-w", str(hwnd), "--json")
         contact = self._customer_contact(hwnd, recipient)
         self._run("invoke", contact["selector"], "-w", str(hwnd), "--action", "invoke", "--json")
@@ -539,19 +627,11 @@ class WinAppDesktop:
                           if node.get("name", node.get("Name")) == stable_login and not node.get("isOffscreen", False)]
         if len(identity_nodes) != 1 or task.customer_nickname not in text:
             raise DesktopExecutionError("聊天窗口未能同时核对客户昵称和稳定登录标识")
-        body = task.message_text + "\n" + task.product_url
-        if task.message_text in text or task.product_url in text:
-            raise DesktopExecutionError("会话记录中已有相同内容；为避免重复发送，已停止")
-        update(screenshot=self._capture(chat_hwnd), step="向当前会话可见编辑区填写草稿")
-        self._click_document_input(doc, chat_hwnd)
-        self._run("send-keys", body, "-w", str(chat_hwnd), "--via", "send-input", "--verbatim", "--json")
-        screenshot = self._capture(chat_hwnd)
-        update(screenshot=screenshot)
-        _, draft = self._document(chat_hwnd, task.customer_nickname)
-        if _norm(draft).count(_norm(body)) != 1:
-            raise DesktopExecutionError("可见草稿与预期不一致；禁止发送")
-        update(screenshot=self._capture(chat_hwnd), status="awaiting_confirmation",
-               step="客户身份和可见草稿已核验，等待本客户确认", matched_customer=task.customer_nickname, draft_verified=True)
+        update(timing={"open_chat_seconds": round(time.monotonic() - started, 3)})
+        started = time.monotonic()
+        self._prepare_full_draft(task, recipient, chat_hwnd, update)
+        update(timing={"input_verify_seconds": round(time.monotonic() - started, 3),
+                       "front_occupied_prepare_seconds": round(time.monotonic() - prepare_started, 3)})
 
     def _preview_editor_snapshot(self, hwnd, nickname):
         import shutil
@@ -639,7 +719,195 @@ class WinAppDesktop:
                preview_state={**state, "cleanup_required": False, "restored": True})
 
     def send_customer(self, task, recipient, update):
-        self.send(task, update)
+        if task.execution_mode == "desktop_preview":
+            raise DesktopExecutionError("非发送验收任务禁止发送")
+        self._send_single(task, recipient, update)
+
+    @staticmethod
+    def _message_body(task):
+        return task.message_text + "\n" + task.product_url
+
+    @staticmethod
+    def _check_refusal(history):
+        if any(term in history for term in ("拒绝营销", "拒收", "退订", "不要再发", "别再发", "不要打扰", "不需要推广", "不要发广告")):
+            raise DesktopExecutionError("当前客户记录含明确拒收表达，未发送")
+
+    def _read_qt_editor(self, hwnd, nickname):
+        from uuid import uuid4
+        point, _, _ = self._preview_editor_snapshot(hwnd, nickname)
+        self._click_screen_point(point, hwnd)
+        previous = _clipboard_text()
+        sentinel = str(uuid4())
+        try:
+            _clipboard_text(sentinel)
+            self._run("send-keys", "ctrl+a", "-w", str(hwnd), "--via", "send-input", "--json")
+            self._run("send-keys", "ctrl+c", "-w", str(hwnd), "--via", "send-input", "--json")
+            copied = _clipboard_text()
+            self._run("send-keys", "ctrl+end", "-w", str(hwnd), "--via", "send-input", "--json")
+            if copied == sentinel:
+                _, visible, _ = self._preview_editor_snapshot(hwnd, nickname)
+                if visible:
+                    raise DesktopExecutionError("可见编辑区与复制结果不一致")
+                return ""
+            return copied.replace("\r\n", "\n").replace("\r", "\n")
+        finally:
+            _clipboard_text(previous)
+
+    def _prepare_full_draft(self, task, recipient, hwnd, update):
+        _, history = self._document(hwnd, recipient["nickname"])
+        self._check_refusal(history)
+        update(preview_state={"verified_chat_login_id": recipient["customer_key"].split(":", 1)[-1],
+                              "refusal_check": "no_explicit_refusal_in_loaded_records",
+                              "authorization_scope": recipient.get("authorization_evidence")})
+        body = self._message_body(task)
+        if _norm(task.message_text) in _norm(history):
+            raise DesktopExecutionError("聊天记录已有相同完整消息，未重复发送")
+        current = self._read_qt_editor(hwnd, recipient["nickname"])
+        if current and current != body:
+            raise DesktopExecutionError("可见编辑区已有其他草稿，未覆盖")
+        if not current:
+            point, _, _ = self._preview_editor_snapshot(hwnd, recipient["nickname"])
+            self._click_screen_point(point, hwnd)
+            previous = _clipboard_text()
+            try:
+                _clipboard_text(body)
+                update(step="向已核对的 Qt 可见编辑区粘贴完整文案和链接")
+                self._run("send-keys", "ctrl+v", "-w", str(hwnd), "--via", "send-input", "--json")
+            finally:
+                _clipboard_text(previous)
+        if self._read_qt_editor(hwnd, recipient["nickname"]) != body:
+            raise DesktopExecutionError("Qt 可见编辑区完整回读与预期不一致，未发送")
+        self._run("send-keys", "ctrl+home", "-w", str(hwnd), "--via", "send-input", "--json")
+        update(screenshot=self._capture(hwnd), step="完整草稿已逐字回读，核对开头")
+        self._run("send-keys", "ctrl+end", "-w", str(hwnd), "--via", "send-input", "--json")
+        update(status="awaiting_confirmation", step="完整中文、Emoji、换行和链接已回读一致，未发送",
+               screenshot=self._capture(hwnd), matched_customer=recipient["nickname"], draft_verified=True)
+
+    def _send_single(self, task, recipient, update):
+        if recipient.get("send_attempts", 0):
+            raise DesktopExecutionError("本次发送动作已经占用，禁止再次点击", may_have_sent=True)
+        self.checkpoint = lambda: update()
+        started = time.monotonic()
+        hwnd = int(self._chat_window()["hwnd"])
+        self._focus(hwnd)
+        _, history = self._document(hwnd, recipient["nickname"])
+        self._check_refusal(history)
+        body = self._message_body(task)
+        if _norm(task.message_text) in _norm(history):
+            raise DesktopExecutionError("当前聊天记录已有完整相同消息，未重复发送")
+        if self._read_qt_editor(hwnd, recipient["nickname"]) != body:
+            raise DesktopExecutionError("发送前 Qt 可见草稿不一致，未发送")
+        root = next(_nodes(self._run("inspect", "-w", str(hwnd), "-d", "1", "--json", json_output=True)))
+        labels = self._search(hwnd, "发送")
+        screenshot = self._capture(hwnd)
+        from PIL import Image
+        size = Image.open(BytesIO(screenshot)).size
+        relative = size == (root["width"], root["height"])
+        bounds = dict(root)
+        if relative:
+            bounds.update(x=0, y=0)
+            labels = [dict(n, x=n.get("x", 0) - root["x"], y=n.get("y", 0) - root["y"]) for n in labels]
+        visible_labels = [n for n in labels if n.get("name") == "发送" and n.get("type") in {"Text", "Button"} and not n.get("isOffscreen", False)]
+        if visible_labels:
+            point = self._send_button_point(screenshot, bounds, labels)
+        else:
+            doc, _ = self._document(hwnd, recipient["nickname"])
+            offset_x, offset_y = (root["x"], root["y"]) if relative else (0, 0)
+            point = self._ocr_send_button(screenshot, bounds, dict(doc, x=doc["x"]-offset_x, y=doc["y"]-offset_y))
+        if relative:
+            point = (point[0] + root["x"], point[1] + root["y"])
+        _, history = self._document(hwnd, recipient["nickname"])
+        self._check_refusal(history)
+        if _norm(task.message_text) in _norm(history):
+            raise DesktopExecutionError("点击前已有相同消息，未发送")
+        update(claim_send=True, timing={"send_preparation_seconds": round(time.monotonic() - started, 3)},
+               step="发送动作已持久化占用，仅执行一次点击", screenshot=screenshot)
+        try:
+            self._click_screen_point(point, hwnd)
+            update(step="已执行一次发送点击，仅核验结果，不重发")
+            echo_started = time.monotonic()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                _, history = self._document(hwnd, recipient["nickname"])
+                matches = _norm(history).count(_norm(body))
+                if any(term in history for term in ("发送失败", "重试发送", "消息发送失败")):
+                    raise DesktopExecutionError("点击后出现发送失败提示；禁止重发", may_have_sent=True)
+                if self._single_echo_matches(history, task):
+                    update(timing={"echo_verify_seconds": round(time.monotonic() - echo_started, 3),
+                                   "front_occupied_send_seconds": round(time.monotonic() - started, 3)},
+                           screenshot=self._capture(hwnd), step="唯一完整消息、原链接和 Offer ID 回显已核对")
+                    return
+                if matches > 1:
+                    raise DesktopExecutionError("存在多个完整消息回显，禁止重发", may_have_sent=True)
+                time.sleep(0.5)
+            raise DesktopExecutionError("一次点击后回显尚无法确认，禁止重发", may_have_sent=True)
+        except Exception as exc:
+            if isinstance(exc, DesktopExecutionError):
+                exc.may_have_sent = True
+                raise
+            raise DesktopExecutionError("一次点击后核验异常，禁止重发", may_have_sent=True) from exc
+
+    @staticmethod
+    def _single_echo_matches(history, task):
+        import re
+
+        source, message = _norm(history), _norm(task.message_text)
+        if source.count(message) != 1 or source.count(task.product_url) != 1 or re.findall(r"https?://[^\s]+", source).count(task.product_url) != 1:
+            return False
+        start = source.index(message) + len(message)
+        end = source.find(task.product_url, start)
+        if end < start or end-start > 500:
+            return False
+        # A rendered product card inserts metadata before its URL; a new message boundary must not.
+        gap = source[start:end]
+        if any(term in gap for term in ("未读", "已读", "发送失败", "重试")) or re.search(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}", gap):
+            return False
+        return not any(term in source for term in ("发送失败", "重试发送", "消息发送失败"))
+
+    def verify_single_result(self, task, recipient, update):
+        """Observation only: never focus, type, claim, or click when reconciling an unknown send."""
+        hwnd = int(self._chat_window()["hwnd"])
+        _, history = self._document(hwnd, recipient["nickname"])
+        if not self._single_echo_matches(history, task):
+            raise DesktopExecutionError("只读复核未通过，保持 unknown，不重发", may_have_sent=True)
+        update(screenshot=self._capture(hwnd), step="只读复核：唯一正文与同一消息商品卡片原链接一致")
+
+    def _ocr_send_button(self, screenshot, root, doc):
+        import shutil
+        from PIL import Image, ImageOps
+
+        image = Image.open(BytesIO(screenshot)).convert("RGB")
+        left = max(0, int(doc["x"] + doc["width"] * .75))
+        right = min(image.width, int(doc["x"] + doc["width"]))
+        top = max(0, int(root.get("y", 0) + root["height"] * .90))
+        bottom = min(image.height, int(root.get("y", 0) + root["height"] * .99))
+        points = []
+        for y in range(top, bottom):
+            for x in range(left, right):
+                red, green, blue = image.getpixel((x, y))
+                if blue >= 110 and blue > red * 1.3 and blue > green * 1.05:
+                    points.append((x, y))
+        if not points:
+            raise DesktopExecutionError("实时编辑区右下方没有可核验的启用发送按钮")
+        x0, y0 = min(x for x, y in points), min(y for x, y in points)
+        x1, y1 = max(x for x, y in points) + 1, max(y for x, y in points) + 1
+        width, height = x1-x0, y1-y0
+        if not 40 <= width <= 150 or not 14 <= height <= 60 or len(points)/(width*height) < .60:
+            raise DesktopExecutionError("发送按钮蓝色区域不唯一或布局已变化")
+        crop = image.crop((x0+int(width*.12), y0+int(height*.125), x0+int(width*.65), y0+int(height*.875)))
+        crop = ImageOps.expand(ImageOps.invert(crop.convert("L")).resize((crop.width*4, crop.height*4)), border=20, fill=255)
+        payload = BytesIO()
+        crop.save(payload, format="PNG")
+        command = shutil.which("tesseract") or str(Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tesseract-OCR" / "tesseract.exe")
+        args = [command, "stdin", "stdout", "-l", "chi_sim", "--psm", "7"]
+        if os.getenv("TESSDATA_PREFIX"):
+            args.extend(["--tessdata-dir", os.environ["TESSDATA_PREFIX"]])
+        result = subprocess.run(args, input=payload.getvalue(), capture_output=True, timeout=15, check=False)
+        recognized = result.stdout.decode("utf-8").strip().replace(" ", "").strip("|丨")
+        if result.returncode or recognized != "发送":
+            raise DesktopExecutionError("实时蓝色按钮的中文 OCR 不是唯一“发送”，未点击")
+        # Click the text half of the verified button, keeping clear of its dropdown arrow.
+        return x0+int(width*.40), y0+height//2
 
     def send(self, task, update):
         if getattr(task, "execution_mode", None) == "desktop_preview":

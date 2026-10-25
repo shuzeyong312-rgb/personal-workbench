@@ -10,7 +10,7 @@ type Recipient = {
 };
 type Campaign = {
   id: string; customer_category: "ordered" | "inquiry"; message_text: string; product_url: string;
-  content_fingerprint: string; execution_mode: "simulated" | "desktop" | "desktop_preview"; status: string; step: string;
+  content_fingerprint: string; execution_mode: "simulated" | "desktop" | "desktop_preview" | "desktop_single" | "desktop_batch5"; status: string; step: string;
   recipients: Recipient[]; current_recipient_id: string | null; error_reason: string | null;
   created_at: string; started_at: string | null; finished_at: string | null;
 };
@@ -37,6 +37,7 @@ export function CustomerReachPage() {
   const [category, setCategory] = useState<"ordered" | "inquiry">("ordered");
   const [message, setMessage] = useState("");
   const [url, setUrl] = useState("");
+  const [singleCustomer, setSingleCustomer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"simulated" | "desktop">("simulated");
@@ -63,7 +64,8 @@ export function CustomerReachPage() {
     event.preventDefault(); setBusy(true); setError("");
     try {
       const campaign = await request<Campaign>("/campaigns", {
-        method: "POST", body: JSON.stringify({ customer_category: category, message_text: message, product_url: url }),
+        method: "POST", body: JSON.stringify({ customer_category: category, message_text: message, product_url: url,
+          ...(singleCustomer.trim() ? { single_customer_nickname: singleCustomer.trim() } : {}) }),
       });
       setSelected(campaign.id); setMessage(""); setUrl(""); await refresh();
     } catch (err) { setError(err instanceof Error ? err.message : "创建失败"); }
@@ -81,7 +83,7 @@ export function CustomerReachPage() {
     finally { setBusy(false); }
   }
 
-  async function act(action: "confirm" | "pause" | "cancel" | "resume" | "skip-current") {
+  async function act(action: "confirm" | "pause" | "cancel" | "resume" | "skip-current" | "recheck-result") {
     if (!current) return;
     setBusy(true); setError("");
     try {
@@ -109,6 +111,7 @@ export function CustomerReachPage() {
           <label>客户分类<select value={category} onChange={(event) => setCategory(event.target.value as "ordered" | "inquiry")}><option value="ordered">已成单客户</option><option value="inquiry">询盘客户</option></select></label>
           <label>新品推广文案<textarea required maxLength={10000} rows={6} value={message} onChange={(event) => setMessage(event.target.value)} placeholder="输入需要发送的完整文案" /></label>
           <label>商品链接<input required type="url" maxLength={2048} value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://detail.1688.com/offer/..." /></label>
+          {mode === "desktop" && <label>单客一次测试昵称（留空按普通推广规则）<input maxLength={255} value={singleCustomer} onChange={(event) => setSingleCustomer(event.target.value)} placeholder="须与已成单客户第一页首位客户完全一致" /></label>}
           <button className="primary-button" disabled={busy || !message.trim() || !url.trim()} type="submit">创建并开始</button>
         </form>
         <p className="reach-safety-note">没有明确授权的客户会跳过；每位客户都需单独确认。结果不确定时停止队列且不会重发。</p>
@@ -134,7 +137,7 @@ export function CustomerReachPage() {
         {["pending", "locating", "preparing"].includes(current.status) && <><button className="secondary-button" disabled={busy} onClick={() => void act("pause")}>暂停</button><button className="secondary-button" disabled={busy} onClick={() => void act("cancel")}>取消</button></>}
         {current.status === "paused" && <><button className="secondary-button" disabled={busy} onClick={() => void act("resume")}>继续</button><button className="secondary-button" disabled={busy} onClick={() => void act("cancel")}>取消</button></>}
         {current.status === "success" && <p>{current.execution_mode === "simulated" ? "模拟完成：未向客户发送消息" : "队列处理完成，结果按客户记录保存"}</p>}
-        {current.status === "unknown" && <p>请先核对当前客户的聊天记录；系统不会自动重发或继续队列。</p>}
+        {current.status === "unknown" && <><p>请先核对当前客户的聊天记录；系统不会自动重发或继续队列。</p>{current.execution_mode === "desktop_single" && <button className="secondary-button" disabled={busy} onClick={() => void act("recheck-result")}>只读复核结果</button>}</>}
       </div>
       <div className="reach-runtime"><h3>运行时截图</h3><img src={`/api/customer-reach/campaigns/${current.id}/screenshot`} alt="当前桌面执行步骤截图" onError={(event) => { event.currentTarget.hidden = true; }} /><p>截图仅供核对当前客户和可见草稿；模拟执行器不会产生桌面截图。</p></div>
     </section>}
