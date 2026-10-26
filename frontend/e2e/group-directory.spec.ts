@@ -196,3 +196,17 @@ test("deleting the last group on page two reduces total pages and returns to pag
   await expect(page.locator(".group-unassigned-row")).toContainText("2 个商品尚未归入竞品组");
   await mock.expectNoUnexpectedApi();
 });
+
+test("list-first view can switch to cards and back without losing the group filter", async ({ page }) => {
+  const { mock } = await openDirectory(page);
+  await expect(page.locator(".group-directory-grid")).toHaveClass(/view-list/);
+  await page.getByLabel("分组筛选").selectOption("changed");
+  await expect(page.locator(".group-directory-card")).toHaveCount(3);
+  await page.getByRole("group", { name: "视图切换" }).getByRole("button", { name: "卡片" }).click();
+  await expect(page.locator(".group-directory-grid")).toHaveClass(/view-cards/);
+  await expect(page.locator(".group-directory-card")).toHaveCount(3);
+  await page.getByRole("group", { name: "视图切换" }).getByRole("button", { name: "列表" }).click();
+  await expect(page.locator(".group-directory-grid")).toHaveClass(/view-list/);
+  await expect(page.locator(".group-directory-card")).toHaveCount(3);
+  await mock.expectNoUnexpectedApi();
+});

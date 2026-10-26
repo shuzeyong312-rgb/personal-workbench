@@ -922,3 +922,52 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .position-event-summary summary, .dashboard-ordinary-groups > summary { cursor: pointer; padding-block: 12px; }
 .position-event-summary details[open] > summary { border-bottom: 1px solid var(--border-color, #e4e9f2); }
 .dashboard-ordinary-groups { margin-top: 12px; }
+
+/* Competitor group directory V2 — list-first with optional compact cards. */
+.main-content[data-page="groups"] .group-directory-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:0 0 15px;padding:16px 4px;border:1px solid #dde1e6;border-radius:9px;background:#fff}
+.main-content[data-page="groups"] .group-directory-stats>div,.main-content[data-page="groups"] .group-directory-stats>button{min-width:0;padding:0 13px;border:0;border-right:1px solid #e8eaee;text-align:left;background:transparent;display:flex;flex-direction:column;gap:4px}
+.main-content[data-page="groups"] .group-directory-stats>*:last-child{border-right:0}
+.main-content[data-page="groups"] .group-directory-stats button{cursor:pointer}
+.main-content[data-page="groups"] .group-directory-stats button:hover{background:#f7faff}
+.main-content[data-page="groups"] .group-directory-stats span{color:#718094;font-size:11px}
+.main-content[data-page="groups"] .group-directory-stats strong{font-size:23px;line-height:1.2;font-weight:750;font-variant-numeric:tabular-nums;color:#20242c}
+.main-content[data-page="groups"] .group-directory-stats strong.is-blue{color:#2563eb}
+.main-content[data-page="groups"] .group-directory-stats strong.is-orange{color:#b97525}
+.main-content[data-page="groups"] .group-directory-summary{font-size:11px;margin:-4px 0 9px}
+.main-content[data-page="groups"] .group-directory-workspace{background:#fff;border:1px solid #dde1e6;border-radius:9px;overflow:hidden;margin-bottom:12px}
+.main-content[data-page="groups"] .group-directory-tabs{display:flex;gap:5px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid #edf0f3}
+.main-content[data-page="groups"] .group-directory-tabs button{padding:6px 12px;border:0;border-radius:6px;color:#647286;background:transparent;font-size:12px;cursor:pointer}
+.main-content[data-page="groups"] .group-directory-tabs button:hover{background:#f3f6fc}
+.main-content[data-page="groups"] .group-directory-tabs button.is-active{color:#2563eb;background:#eaf1ff;font-weight:700}
+.main-content[data-page="groups"] .group-directory-tabs small{margin-left:3px;opacity:.7}
+.main-content[data-page="groups"] .group-directory-toolbar{margin:0;padding:11px 13px;border:0;box-shadow:none;align-items:end;gap:10px}
+.main-content[data-page="groups"] .group-directory-toolbar .group-directory-select{min-width:130px;flex:0 1 144px}
+.main-content[data-page="groups"] .group-directory-views{display:flex;align-items:center;gap:2px;align-self:end;border-radius:7px;padding:3px;background:#f1f3f6;border:1px solid #e7e9ed}
+.main-content[data-page="groups"] .group-directory-views button{border:0;border-radius:5px;padding:5px 10px;background:transparent;color:#647286;cursor:pointer;font-size:12px}
+.main-content[data-page="groups"] .group-directory-views button.is-active{background:#fff;color:#2563eb;font-weight:700;box-shadow:0 1px 3px #20242c1b}
+.main-content[data-page="groups"] .group-directory-result-count{font-size:11px;color:#7b8795;margin:0 0 9px}
+.main-content[data-page="groups"] .group-directory-grid.view-list{display:grid;grid-template-columns:minmax(0,1fr);gap:6px}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card{display:grid;grid-template-columns:minmax(145px,1.1fr) minmax(135px,.9fr) minmax(320px,2fr) minmax(135px,auto);align-items:center;min-height:70px;gap:12px;padding:11px 13px;border-radius:8px;overflow:visible}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card-heading{min-width:0;gap:5px}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-name{font-size:13px}
+.main-content[data-page="groups"] .group-directory-heading-main{display:flex;align-items:center;gap:7px;min-width:0}
+.main-content[data-page="groups"] .group-directory-expand{flex:0 0 20px;width:20px;height:20px;border:1px solid #dde2ea;border-radius:5px;color:#7c899b;background:#fff;cursor:pointer}
+.main-content[data-page="groups"] .group-directory-status{padding:2px 6px;border-radius:5px;background:#ebf6ef;color:#24764e;font-size:10px;white-space:nowrap;font-weight:650}
+.main-content[data-page="groups"] .group-directory-status.is-partial{background:#fff1df;color:#ad6821}
+.main-content[data-page="groups"] .group-directory-status.is-empty{background:#f1f3f6;color:#7b8492}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-coverage{gap:3px 7px;font-size:11px}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-coverage strong{font-size:16px}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-facts{padding:0;border:0;gap:9px;grid-template-columns:minmax(0,1.2fr) minmax(0,.6fr) minmax(0,1.05fr)}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-facts dt{font-size:10px;color:#7b8795}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-facts dd{font-size:11px;margin:2px 0 0}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card-footer{padding:0;margin:0;gap:5px;white-space:nowrap}
+.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card-footer .detail-button{padding:5px 7px;min-height:28px;font-size:11px}
+.main-content[data-page="groups"] .group-directory-expanded{grid-column:1/-1;display:flex;gap:14px 25px;flex-wrap:wrap;margin:0;padding:12px;border-top:1px solid #e8eff8;background:#f6f9ff}
+.main-content[data-page="groups"] .group-directory-expanded dt{font-size:10px;color:#8090a5}
+.main-content[data-page="groups"] .group-directory-expanded dd{font-size:12px;color:#36445a;font-weight:650;margin:3px 0 0}
+.main-content[data-page="groups"] .group-directory-grid.view-cards .group-directory-card{min-height:198px;gap:9px}
+.main-content[data-page="groups"] .group-directory-grid.view-cards .group-directory-name{font-size:14px}
+.main-content[data-page="groups"] .group-directory-card{overflow:visible}
+@media(max-width:1220px){.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card{grid-template-columns:minmax(120px,1fr) minmax(120px,.9fr) minmax(255px,1.9fr) minmax(130px,auto)}.main-content[data-page="groups"] .group-directory-stats>div,.main-content[data-page="groups"] .group-directory-stats>button{padding:0 9px}}
+@media(max-width:950px){.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card-footer{justify-content:end}.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-facts{padding-top:0}}
+@media(max-width:680px){.main-content[data-page="groups"] .group-directory-stats span{font-size:9px}.main-content[data-page="groups"] .group-directory-stats strong{font-size:17px}.main-content[data-page="groups"] .group-directory-stats>div,.main-content[data-page="groups"] .group-directory-stats>button{padding:0 5px}.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card{grid-template-columns:minmax(0,1fr)}.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-facts{border-top:1px solid #edf0f3;padding-top:9px}.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card-footer{justify-content:end}}
