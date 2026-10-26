@@ -1149,8 +1149,26 @@ type OwnProductAction = "bind" | "replace" | "unbind";
 
 function GroupMoreMenu({ onRename, onDelete }: { onRename: () => void; onDelete: () => void }) {
   const [open, setOpen] = useState(false);
-  return <div className="group-more-menu">
-    <button type="button" className="detail-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((current) => !current)}>更多</button>
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    root.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    const dismiss = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [open]);
+  return <div className="group-more-menu" ref={root} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }} onKeyDown={(event) => {
+    if (event.key === "Escape" && open) { event.preventDefault(); setOpen(false); trigger.current?.focus(); }
+    if (open && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const items = Array.from(root.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') || []);
+      const index = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    }
+  }}>
+    <button ref={trigger} type="button" className="detail-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((current) => !current)}>更多</button>
     {open && <div className="group-more-popover" role="menu">
       <button type="button" role="menuitem" onClick={() => { setOpen(false); onRename(); }}>重命名竞品组</button>
       <button type="button" role="menuitem" className="more-menu-danger" onClick={() => { setOpen(false); onDelete(); }}>删除竞品组</button>
@@ -1193,12 +1211,12 @@ export function filterAndSortCompetitorGroups(groups: readonly CompetitorGroupSu
 function CompetitorGroupCard({ group, view, expanded, onExpand, onViewCompetitors, onViewAnalysis, onRename, onDelete }: { group: CompetitorGroupSummary; view: GroupDirectoryView; expanded: boolean; onExpand: () => void; onViewCompetitors: () => void; onViewAnalysis: () => void; onRename: () => void; onDelete: () => void }) {
   const stoppedCount = group.competitor_count - group.active_count;
   const coverageStatus = group.competitor_count === 0 ? "空分组" : stoppedCount > 0 ? "部分停止" : "全部监控";
-  return <article className="group-directory-card" data-group-id={group.id}>
+  return <article className="group-directory-card" role="listitem" aria-label={group.name} data-group-id={group.id}>
     <header className="group-directory-card-heading"><div className="group-directory-heading-main"><button type="button" className="group-directory-name" title={group.name} onClick={onViewAnalysis}>{group.name}</button>{view === "list" && <button type="button" className="group-directory-expand" aria-label={expanded ? "收起 " + group.name + " 摘要" : "展开 " + group.name + " 摘要"} aria-expanded={expanded} onClick={onExpand}>{expanded ? "−" : "+"}</button>}</div>{view === "cards" && <GroupMoreMenu onRename={onRename} onDelete={onDelete} />}</header>
     <div className="group-directory-coverage"><strong>{group.competitor_count}</strong><span>个竞品</span><span>监控中 {group.active_count}/{group.competitor_count}</span>{stoppedCount > 0 && <span>已停止 {stoppedCount} 个</span>}<span className={"group-directory-status " + (stoppedCount > 0 ? "is-partial" : group.competitor_count === 0 ? "is-empty" : "")}>{coverageStatus}</span></div>
     <dl className="group-directory-facts">
       <div><dt>竞品价格范围</dt><dd title="链接展示价范围，不代表同规格竞品比较价">{formatGroupPriceRange(group)}</dd></div>
-      <div><dt>今日变化</dt><dd className={group.changed_competitors_today > 0 ? "group-directory-changed" : "group-directory-muted"}>{group.changed_competitors_today || "—"}</dd></div>
+      <div><dt>今日变化</dt><dd className={group.changed_competitors_today > 0 ? "group-directory-changed" : "group-directory-muted"}>{group.changed_competitors_today} 个竞品</dd></div>
       <div><dt>最近变化</dt><dd className="group-directory-latest" title={formatGroupLatestChange(group.last_change_at)}>{formatGroupLatestChange(group.last_change_at)}</dd></div>
     </dl>
     <footer className="group-directory-card-footer"><button type="button" className="detail-button" onClick={onViewAnalysis}>组分析</button><button type="button" className="detail-button" onClick={onViewCompetitors}>查看竞品</button>{view === "list" && <GroupMoreMenu onRename={onRename} onDelete={onDelete} />}</footer>
@@ -1274,7 +1292,7 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
         <div className="group-directory-results">
           <div className="group-directory-result-count">显示 {groups.length} / {summary.groups.length} 个分组</div>
           {view === "list" && groups.length > 0 && <div className="group-directory-list-head" aria-hidden="true"><span>分组名称</span><span>竞品数量 / 监控状态</span><span>竞品价格 / 今日变化 / 最近变化</span><span>操作</span></div>}
-          {pageGroups.length > 0 ? <div className={"group-directory-grid " + (view === "list" ? "view-list" : "view-cards")}>{pageGroups.map(group => <CompetitorGroupCard key={group.id} group={group} view={view} expanded={expandedId === group.id} onExpand={() => setExpandedId((current) => current === group.id ? null : group.id)} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} />)}</div> : <section className="group-directory-no-results"><strong>没有符合条件的竞品组</strong><span>调整搜索或筛选条件后重试。</span></section>}
+          {pageGroups.length > 0 ? <div role="list" aria-label="竞品组" className={"group-directory-grid " + (view === "list" ? "view-list" : "view-cards")}>{pageGroups.map(group => <CompetitorGroupCard key={group.id} group={group} view={view} expanded={expandedId === group.id} onExpand={() => setExpandedId((current) => current === group.id ? null : group.id)} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} />)}</div> : <section className="group-directory-no-results"><strong>没有符合条件的竞品组</strong><span>调整搜索或筛选条件后重试。</span></section>}
           <PaginationBar total={groups.length} itemLabel="个竞品组" pageSize={10} page={currentPage} totalPages={totalPages} onPrevious={() => setPage(currentPage - 1)} onNext={() => setPage(currentPage + 1)} previousDisabled={currentPage === 1} nextDisabled={currentPage === totalPages} />
         </div>
       </>}

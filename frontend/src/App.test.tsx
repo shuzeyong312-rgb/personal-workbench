@@ -1361,6 +1361,17 @@ test("applies group navigation intent and clears it for normal list navigation",
   expect(applyInitialGroupFilter({ ...defaultCompetitorFilters, groupId: 1 }, null).groupId).toBe("all");
 });
 
+test("price sorting keeps missing prices last and preserves ties without losing one-sided or zero prices", () => {
+  const groups = [
+    { ...groupSummary, id: 1, price_min: null, price_max: null },
+    { ...groupSummary, id: 2, price_min: null, price_max: "9.00" },
+    { ...groupSummary, id: 3, price_min: "0.00", price_max: "1.00" },
+    { ...groupSummary, id: 4, price_min: "9.00", price_max: null },
+    { ...groupSummary, id: 5, price_min: null, price_max: null },
+  ];
+  expect(filterAndSortCompetitorGroups(groups, "", "all", "price").map(group => group.id)).toEqual([3, 2, 4, 1, 5]);
+});
+
 test("renders group page loading, error, full empty, unassigned and normal states", () => {
   const loading = renderToStaticMarkup(<GroupPage summary={null} status="loading" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
   const error = renderToStaticMarkup(<GroupPage summary={null} status="error" error="请求失败" onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);
