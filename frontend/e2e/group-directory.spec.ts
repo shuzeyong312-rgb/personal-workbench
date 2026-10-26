@@ -210,3 +210,13 @@ test("list-first view can switch to cards and back without losing the group filt
   await expect(page.locator(".group-directory-card")).toHaveCount(3);
   await mock.expectNoUnexpectedApi();
 });
+
+test("compact list exposes the group summary and management action in the last column", async ({ page }) => {
+  const { mock } = await openDirectory(page);
+  await expect(page.locator(".group-directory-list-head")).toBeVisible();
+  await expect(page.locator(".group-directory-card").first().locator(".group-directory-card-footer").getByRole("button", { name: "更多" })).toBeVisible();
+  await page.locator(".group-directory-card").first().getByRole("button", { name: /展开.*摘要/ }).click();
+  await expect(page.locator(".group-directory-expanded")).toContainText("我方基准商品");
+  await page.locator(".group-directory-card").first().getByRole("button", { name: /收起.*摘要/ }).click();
+  await mock.expectNoUnexpectedApi();
+});
