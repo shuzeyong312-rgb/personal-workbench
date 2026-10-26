@@ -1350,6 +1350,8 @@ test("filters and stably sorts competitor groups by search, change, monitoring a
   expect(filterAndSortCompetitorGroups(groups, "", "incomplete", "recent").map(item => item.id)).toEqual([1, 3, 4]);
   expect(filterAndSortCompetitorGroups(groups, "", "all", "recent").map(item => item.id)).toEqual([2, 1, 3, 4]);
   expect(filterAndSortCompetitorGroups(groups, "", "all", "count").map(item => item.id)).toEqual([2, 3, 1, 4]);
+  expect(filterAndSortCompetitorGroups(groups, "", "empty", "recent")).toEqual([]);
+  expect(filterAndSortCompetitorGroups(groups, "", "all", "changes").map(item => item.id)).toEqual([2, 4, 1, 3]);
   expect(filterAndSortCompetitorGroups(groups, "", "all", "name").map(item => item.id)).toEqual([2, 3, 4, 1]);
 });
 
@@ -1357,6 +1359,17 @@ test("applies group navigation intent and clears it for normal list navigation",
   expect(applyInitialGroupFilter(defaultCompetitorFilters, 1).groupId).toBe(1);
   expect(applyInitialGroupFilter(defaultCompetitorFilters, "unassigned").groupId).toBe("unassigned");
   expect(applyInitialGroupFilter({ ...defaultCompetitorFilters, groupId: 1 }, null).groupId).toBe("all");
+});
+
+test("price sorting keeps missing prices last and preserves ties without losing one-sided or zero prices", () => {
+  const groups = [
+    { ...groupSummary, id: 1, price_min: null, price_max: null },
+    { ...groupSummary, id: 2, price_min: null, price_max: "9.00" },
+    { ...groupSummary, id: 3, price_min: "0.00", price_max: "1.00" },
+    { ...groupSummary, id: 4, price_min: "9.00", price_max: null },
+    { ...groupSummary, id: 5, price_min: null, price_max: null },
+  ];
+  expect(filterAndSortCompetitorGroups(groups, "", "all", "price").map(group => group.id)).toEqual([3, 2, 4, 1, 5]);
 });
 
 test("renders group page loading, error, full empty, unassigned and normal states", () => {
@@ -1381,6 +1394,10 @@ test("renders group page loading, error, full empty, unassigned and normal state
   expect(normal).toContain('class="filter-card group-directory-toolbar"');
   expect(normal).toContain('class="filter-field filter-search"');
   expect(normal).toContain("清除筛选");
+  expect(normal).toContain("快捷筛选");
+  expect(normal).toContain("视图切换");
+  expect(normal).toContain("今日有变化");
+  expect(normal).toContain("部分停止");
   expect(normal).toContain("共 1 个竞品组");
   expect(normal).toContain("第 1 / 1 页");
   const bound = renderToStaticMarkup(<GroupPage summary={{ groups: [{ ...groupSummary, own_product: { id: 7, offer_id: "700", title: "我的基准商品", shop_name: "我的店铺", main_image_url: null, status: "active", is_active: true } }], unassigned: { ...groupMetrics, competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null } }} status="ready" error={null} onRetry={noop} onCreate={noop} onViewCompetitors={noop} onRename={noop} onDelete={noop} onOwnProduct={noop} onNavigate={noop} />);

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { installApiMock } from "./support/api-mock";
 import { detail } from "./fixtures/group-position";
 
@@ -120,10 +120,12 @@ test("group name opens analysis and rename and delete prompts remain available",
 
 test("wide desktop screenshots and narrow layout keep the directory usable", async ({ page }, testInfo) => {
   await openDirectory(page, makeGroups(8));
-  for (const width of [1440, 1600]) {
-    await page.setViewportSize({ width, height: 1000 });
+  for (const width of [1024, 1280, 1440, 1600]) {
+    await page.setViewportSize({ width, height: 720 });
     await expect(page.locator(".group-directory-card")).toHaveCount(8);
     await expect(page.getByRole("button", { name: "清除筛选" })).toBeVisible();
+    await page.getByRole("group", { name: "视图切换" }).getByRole("button", { name: "列表" }).click();
+    expect(await page.locator(".group-directory-workspace").evaluate(element => element.clientHeight)).toBeGreaterThan(100);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`competitor-groups-${width}.png`), fullPage: true });
   }
@@ -136,6 +138,14 @@ test("wide desktop screenshots and narrow layout keep the directory usable", asy
   await expect(page.locator('[data-group-id="1"] .group-directory-facts > div').last().locator("dd")).toHaveText("2026年10月15日 08:00");
   expect(await page.locator('[data-group-id="1"] .group-directory-facts > div').last().locator("dd").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("competitor-groups-390.png"), fullPage: true });
+  await page.locator('[data-group-id="1"]').getByRole("button", { name: /展开.*摘要/ }).click();
+  await expect(page.locator(".group-directory-expanded")).toContainText("Portable Warmer");
+  expect(await page.locator(".group-directory-expanded").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("competitor-groups-expanded-390.png"), fullPage: true });
+  await page.getByRole("group", { name: "视图切换" }).getByRole("button", { name: "卡片" }).click();
+  await page.screenshot({ path: testInfo.outputPath("competitor-groups-cards-390.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({ path: testInfo.outputPath("competitor-groups-cards-1440.png"), fullPage: true });
 });
 
 test("pagination follows filtered sorting, clears to page one, and excludes unassigned", async ({ page }) => {
@@ -194,5 +204,99 @@ test("deleting the last group on page two reduces total pages and returns to pag
   await expect(page.locator(".pagination-bar")).toContainText("第 1 / 1 页");
   await expect(page.locator(".group-directory-card")).toHaveCount(10);
   await expect(page.locator(".group-unassigned-row")).toContainText("2 个商品尚未归入竞品组");
+  await mock.expectNoUnexpectedApi();
+});
+
+test("list-first view can switch to cards and back without losing the group filter", async ({ page }) => {
+  const { mock } = await openDirectory(page);
+  await expect(page.locator(".group-directory-grid")).toHaveClass(/view-list/);
+  await page.getByLabel("分组筛选").selectOption("changed");
+  await page.getByLabel("分组排序").selectOption("price");
+  const ids = () => page.getByRole("list", { name: "竞品组", exact: true }).getByRole("listitem").evaluateAll(rows => rows.map(row => row.getAttribute("data-group-id")));
+  expect(await ids()).toEqual(["4", "5", "1"]);
+  await expect(page.locator(".group-directory-card")).toHaveCount(3);
+  await page.getByRole("group", { name: "视图切换" }).getByRole("button", { name: "卡片" }).click();
+  await expect(page.locator(".group-directory-grid")).toHaveClass(/view-cards/);
+  expect(await ids()).toEqual(["4", "5", "1"]);
+  await expect(page.locator(".group-directory-card")).toHaveCount(3);
+  await page.getByRole("group", { name: "视图切换" }).getByRole("button", { name: "列表" }).click();
+  await expect(page.locator(".group-directory-grid")).toHaveClass(/view-list/);
+  expect(await ids()).toEqual(["4", "5", "1"]);
+  await expect(page.locator(".group-directory-card")).toHaveCount(3);
+  await mock.expectNoUnexpectedApi();
+});
+
+test("compact list exposes the group summary and management action in the last column", async ({ page }) => {
+  const { mock } = await openDirectory(page);
+  await expect(page.locator(".group-directory-list-head")).toBeVisible();
+  await expect(page.locator(".group-directory-card").first().locator(".group-directory-card-footer").getByRole("button", { name: "更多" })).toBeVisible();
+  await page.locator(".group-directory-card").first().getByRole("button", { name: /展开.*摘要/ }).click();
+  await expect(page.locator(".group-directory-expanded")).toContainText("我方基准商品");
+  await page.locator(".group-directory-card").first().getByRole("button", { name: /收起.*摘要/ }).click();
+  await mock.expectNoUnexpectedApi();
+});
+
+test("management menu supports keyboard dismissal, focus return and outside click in both views", async ({ page }) => {
+  await openDirectory(page);
+  for (const view of ["列表", "卡片"]) {
+    await page.getByRole("group", { name: "视图切换" }).getByRole("button", { name: view }).click();
+    const trigger = page.locator('[data-group-id="1"]').getByRole("button", { name: "更多" });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("menuitem", { name: "重命名竞品组" })).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("menuitem", { name: "删除竞品组" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await trigger.click();
+    await page.getByRole("heading", { name: "竞品分组", exact: true }).click();
+    await expect(page.getByRole("menu")).toHaveCount(0);
+  }
+});
+
+test("known zero changes and empty groups remain distinct from unknown prices", async ({ page }) => {
+  await openDirectory(page, [...groups, { ...groups[2], id: 7, name: "Empty", competitor_count: 0, active_count: 0 }]);
+  await expect(page.locator('[data-group-id="3"] .group-directory-facts')).toContainText("0 个竞品");
+  await expect(page.locator('[data-group-id="3"]')).toContainText("暂无价格");
+  await page.getByLabel("分组排序").selectOption("price");
+  await expect(page.locator(".group-directory-card").first()).toHaveAttribute("data-group-id", "2");
+  await page.getByRole("group", { name: "快捷筛选" }).getByRole("button", { name: "空分组" }).click();
+  await expect(page.locator(".group-directory-card")).toHaveCount(1);
+  await expect(page.locator('[data-group-id="7"]')).toContainText("空分组");
+  await page.getByLabel("分组筛选").selectOption("incomplete");
+  await expect(page.locator('[data-group-id="7"]')).toHaveCount(0);
+});
+
+test("summary request loading, failure, retry, full empty and unassigned-only states", async ({ page }, testInfo) => {
+  const mock = await installApiMock(page, { competitors: [] });
+  const pending: Route[] = [];
+  await page.route("**/api/competitor-groups/summary", route => { pending.push(route); });
+  await page.goto("/");
+  await page.getByRole("button", { name: "竞品分组", exact: true }).click();
+  await expect(page.getByText("正在加载竞品组…")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("groups-loading.png") });
+  await expect.poll(() => pending.length).toBe(1);
+  await pending.shift()!.fulfill({ status: 503, json: { message: "摘要暂不可用" } });
+  await expect(page.getByText("加载失败", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("groups-error.png") });
+  await page.getByRole("button", { name: "重试", exact: true }).click();
+  await expect(page.getByText("正在加载竞品组…")).toBeVisible();
+  await expect.poll(() => pending.length).toBe(1);
+  const unassigned = { competitor_count: 0, active_count: 0, price_min: null, price_max: null, changed_competitors_today: 0, last_change_at: null };
+  await pending.shift()!.fulfill({ json: { groups: [], unassigned } });
+  await expect(page.getByText("还没有竞品组", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "新增竞品组" }).last().click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath("groups-empty.png") });
+  await page.getByRole("button", { name: "竞品列表", exact: true }).click();
+  await page.getByRole("button", { name: "竞品分组", exact: true }).click();
+  await expect.poll(() => pending.length).toBe(1);
+  await pending.shift()!.fulfill({ json: { groups: [], unassigned: { ...unassigned, competitor_count: 2 } } });
+  await expect(page.getByText("还没有竞品组", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".group-unassigned-row")).toContainText("2 个商品尚未归入竞品组");
+  await page.locator(".group-unassigned-row").getByRole("button", { name: "查看竞品" }).click();
+  await expect(page.getByLabel("竞品组", { exact: true })).toHaveValue("unassigned");
   await mock.expectNoUnexpectedApi();
 });
