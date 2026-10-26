@@ -968,7 +968,9 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 
 /* V2 list column headings and action placement. */
 .main-content[data-page="groups"] .group-directory-list-head{display:grid;grid-template-columns:minmax(160px,1.1fr) minmax(180px,1fr) minmax(380px,2fr) 132px;gap:16px;padding:12px 16px;margin-bottom:0;background:#f6f7f8;border:1px solid #dde1e6;border-bottom:0;border-radius:8px 8px 0 0;color:#626b78;font-size:12px;font-weight:650}
-.main-content[data-page="groups"] .group-directory-list-head span:last-child{text-align:right}
+.main-content[data-page="groups"] .group-directory-list-head>span:last-child{text-align:right}
+.main-content[data-page="groups"] .group-directory-list-facts-head{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.6fr) minmax(0,1.05fr);gap:9px}
+.main-content[data-page="groups"] .group-directory-list-facts-head>span{min-width:0}
 .main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-card-footer .group-more-menu>.detail-button{min-height:32px;padding:5px 8px;font-size:12px}
 @media(max-width:1220px){.main-content[data-page="groups"] .group-directory-list-head{grid-template-columns:minmax(120px,1fr) minmax(150px,1fr) minmax(285px,1.8fr) 132px}}
 @media(max-width:950px){.main-content[data-page="groups"] .group-directory-list-head{display:none}}

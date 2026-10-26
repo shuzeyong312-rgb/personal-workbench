@@ -226,6 +226,7 @@ test("list-first view can switch to cards and back without losing the group filt
 test("compact list removes redundant controls and keeps management in the last column", async ({ page }) => {
   const { mock } = await openDirectory(page);
   await expect(page.locator(".group-directory-list-head")).toBeVisible();
+  await expect(page.locator(".group-directory-list-facts-head > span")).toHaveText(["竞品价格范围", "今日变化", "最近变化"]);
   await expect(page.locator(".group-directory-expand")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "组分析", exact: true })).toHaveCount(0);
   await expect(page.locator(".group-directory-card").first().locator(".group-directory-card-footer").getByRole("button", { name: "更多" })).toBeVisible();

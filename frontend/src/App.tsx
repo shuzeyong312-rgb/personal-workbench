@@ -1288,7 +1288,7 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
         </section></div>
         <div className="group-directory-results">
           <div className="group-directory-result-count">显示 {groups.length} / {summary.groups.length} 个分组</div>
-          {view === "list" && groups.length > 0 && <div className="group-directory-list-head" aria-hidden="true"><span>分组名称</span><span>竞品数量 / 监控状态</span><span>竞品价格 / 今日变化 / 最近变化</span><span>操作</span></div>}
+          {view === "list" && groups.length > 0 && <div className="group-directory-list-head" aria-hidden="true"><span>分组名称</span><span>竞品数量 / 监控状态</span><span className="group-directory-list-facts-head"><span>竞品价格范围</span><span>今日变化</span><span>最近变化</span></span><span>操作</span></div>}
           {pageGroups.length > 0 ? <div role="list" aria-label="竞品组" className={"group-directory-grid " + (view === "list" ? "view-list" : "view-cards")}>{pageGroups.map(group => <CompetitorGroupCard key={group.id} group={group} view={view} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} />)}</div> : <section className="group-directory-no-results"><strong>没有符合条件的竞品组</strong><span>调整搜索或筛选条件后重试。</span></section>}
           <PaginationBar total={groups.length} itemLabel="个竞品组" pageSize={10} page={currentPage} totalPages={totalPages} onPrevious={() => setPage(currentPage - 1)} onNext={() => setPage(currentPage + 1)} previousDisabled={currentPage === 1} nextDisabled={currentPage === totalPages} />
         </div>
