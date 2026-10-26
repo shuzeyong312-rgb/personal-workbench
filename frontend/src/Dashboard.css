@@ -3,7 +3,8 @@
 .main-content-dashboard .dashboard-page-header h1 { color: var(--ui-ink); font-size: 28px; letter-spacing: -.025em; }
 .main-content-dashboard .page-description,
 .main-content-dashboard .dashboard-shop-context { color: var(--ui-muted); }
-.main-content-dashboard .dashboard-header-actions { flex-wrap: wrap; justify-content: flex-end; }
+.main-content-dashboard .dashboard-header-actions { flex-wrap: wrap; justify-content: flex-end; gap: 24px; }
+.main-content-dashboard .dashboard-header-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .main-content-dashboard .primary-button { box-shadow: none; background: var(--ui-accent); }
 .main-content-dashboard .secondary-button,
 .main-content-dashboard .detail-button { color: var(--ui-accent); border-color: var(--ui-border); background: var(--ui-surface); box-shadow: none; }
