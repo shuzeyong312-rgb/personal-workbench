@@ -48,7 +48,7 @@ test("directory search, filters, stable sorting, actions, and empty state work",
   await expect(page.locator(".group-directory-expand")).toHaveCount(0);
   await expect(page.locator('[data-group-id="2"]')).toContainText("8/8");
   await expect(page.locator('[data-group-id="3"]')).toContainText("1/3");
-  await expect(page.locator('[data-group-id="3"]')).toContainText("已停止 2 个");
+  await expect(page.locator('[data-group-id="3"]')).toContainText("停止 2");
   await expect(page.locator('[data-group-id="1"]')).not.toContainText("Portable Warmer Long Product Name");
   await expect(page.locator('[data-group-id="2"]')).not.toContainText("尚未绑定");
   expect(await ids()).toEqual([1, 2, 5, 3, 4, 6]);
@@ -226,6 +226,7 @@ test("list-first view can switch to cards and back without losing the group filt
 test("compact list removes redundant controls and keeps management in the last column", async ({ page }) => {
   const { mock } = await openDirectory(page);
   await expect(page.locator(".group-directory-list-head")).toBeVisible();
+  await expect(page.locator(".group-directory-list-coverage-head > span")).toHaveText(["竞品数量", "监控状态"]);
   await expect(page.locator(".group-directory-list-facts-head > span")).toHaveText(["竞品价格范围", "今日变化", "最近变化"]);
   await expect(page.locator(".group-directory-expand")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "组分析", exact: true })).toHaveCount(0);
