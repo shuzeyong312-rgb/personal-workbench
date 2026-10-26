@@ -26,6 +26,15 @@ async function openDirectory(page: Page, dataGroups = groups) {
     const id = Number(new URL(route.request().url()).pathname.split("/").at(-2));
     return route.fulfill({ json: { ...detail, group: { ...detail.group, id, name: dataGroups.find(group => group.id === id)!.name } } });
   });
+  // Group detail independently fetches the event page; keep this fixture authoritative.
+  await page.route(/\/api\/competitor-groups\/\d+\/events(?:\?.*)?$/, route => {
+    const query = new URL(route.request().url()).searchParams;
+    return route.fulfill({ json: {
+      ...detail.event_page,
+      range: query.get("range") ?? detail.event_page.range,
+      mode: query.get("mode") ?? detail.event_page.mode,
+    } });
+  });
   await page.goto("/");
   await page.getByRole("button", { name: "竞品分组", exact: true }).click();
   return { mock, setGroups: (next: typeof dataGroups) => { currentGroups = next; } };

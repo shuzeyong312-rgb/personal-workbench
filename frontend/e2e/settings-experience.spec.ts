@@ -39,7 +39,7 @@ test("drafts survive category and page changes; invalid values never submit", as
   await interval.fill("");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await expect(interval).toBeFocused();
-  await expect(page.getByRole("alert")).toContainText("范围内的整数");
+  await expect(page.getByRole("alert")).toContainText("数值须在范围内");
   await page.screenshot({ path: testInfo.outputPath("validation.png") });
   expect(puts).toBe(0);
   await categories.getByRole("button", { name: /^基础设置/ }).click();

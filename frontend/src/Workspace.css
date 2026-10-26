@@ -149,6 +149,10 @@
   .workspace-shell:has(> [data-page="home"]) .workspace-sidebar nav > .nav-item:last-child { margin-top: 12px; padding-top: 12px; }
   .workspace-shell:has(> [data-page="home"]) .workspace-sidebar .sidebar-note { margin-top: 12px; padding-top: 8px; }
 }
+@media (min-width: 1101px) and (max-height: 740px) {
+  /* Keep Home's task navigation visible without a sidebar scroll at short heights. */
+  .workspace-shell:has(> [data-page="home"]) .workspace-sidebar .sidebar-note { display: none; }
+}
 @media (min-width: 761px) and (max-width: 1100px) {
   .home-heading { grid-template-columns: minmax(0, 1fr) minmax(200px, .8fr); gap: 8px; }
   .home-workspaces { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }
