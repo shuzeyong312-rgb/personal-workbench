@@ -67,6 +67,28 @@ test("dashboard shows persisted attempt and retry progress in the existing live 
   expect(html).toContain("结束采集");
 });
 
+test("dashboard shows the next scheduled check and makes pause and end actions distinct", () => {
+  const html = renderToStaticMarkup(createElement(DashboardPage, {
+    data: null,
+    attention: null,
+    attentionStatus: "loading",
+    attentionError: null,
+    status: "loading",
+    error: null,
+    batchState: { ...idleBatchState, auto_collection_enabled: true, auto_collection_strategy: "fixed_daily", next_auto_collection_at: "2026-10-26 09:30", status: "running", total: 2, runner_active: true },
+    onRetry: noop,
+    onRetryAttention: noop,
+    onNavigate: noop,
+    onToggleBatchPause: noop,
+    onEndBatch: noop,
+  }));
+  expect(html).toContain("下次自动采集：<strong>2026-10-26 09:30</strong>");
+  expect(html).toContain("后端本地时间，计划检查时间");
+  expect(html).toContain("collection-pause-button");
+  expect(html).toContain("collection-end-button");
+  expect(html).toContain("role=\"progressbar\"");
+});
+
 
 test("elapsed time uses actual timestamps and explicit missing boundaries", () => {
   expect(collectionDuration("2026-10-14T00:00:00Z", "2026-10-14T00:05:10Z")).toBe("5分10秒");

@@ -539,7 +539,8 @@ test("renders cooling state in dashboard collection overview", () => {
 test("renders resting state in dashboard collection overview and preserves idle", () => {
   const resting = renderDashboard({ batchState: { ...idleBatchState, status: "resting", total: 3, completed: 1, remaining: 2, resting_remaining_seconds: 17, runner_active: true } });
   expect(resting).not.toContain("当前无采集任务");
-  expect(resting).toContain('class="overview-status overview-status-running">计划休息</span>');
+  expect(resting).toContain('class="overview-status overview-status-waiting" role="status" aria-live="polite" aria-atomic="true"');
+  expect(resting).toContain("计划休息");
   expect(resting).toContain("计划休息中");
   expect(resting).toContain("休息剩余 17 秒 · 已完成 1 / 3 · 剩余 2");
   expect(resting).toContain('role="progressbar"');

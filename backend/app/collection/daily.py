@@ -53,6 +53,23 @@ def _scheduled_times(settings: dict[str, object]) -> list[str]:
     ]
 
 
+def next_auto_collection_at(
+    settings: dict[str, object], now: datetime | None = None, local_tz: object | None = None,
+) -> str | None:
+    if not settings["auto_collection_enabled"] or settings["auto_collection_strategy"] == "rolling_24h":
+        return None
+    checked_at = _as_utc(now or datetime.now(timezone.utc))
+    tz = local_tz or datetime.now().astimezone().tzinfo or timezone.utc
+    local_now = checked_at.astimezone(tz)
+    candidates = [
+        _boundary(local_now + timedelta(days=offset), value, tz)
+        for offset in (0, 1)
+        for value in _scheduled_times(settings)
+    ]
+    next_at = min((value for value in candidates if value > checked_at), default=None)
+    return next_at.astimezone(tz).strftime("%Y-%m-%d %H:%M") if next_at else None
+
+
 def _latest_occurrence(now: datetime, settings: dict[str, object], local_tz: object) -> datetime | None:
     points = [_boundary(now, value, local_tz) for value in _scheduled_times(settings)]
     return max((point for point in points if point <= now), default=None)

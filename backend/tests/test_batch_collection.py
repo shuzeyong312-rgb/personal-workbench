@@ -1185,6 +1185,9 @@ def test_live_batch_status_keeps_runtime_outcome_and_adds_persistence_state(
     assert body["outcome_code"] == "success"
     assert body["lifecycle_status"] in {None, "created", "running", "terminal"}
     assert body["batch_outcome_code"] is None
+    assert body["auto_collection_enabled"] is True
+    assert body["auto_collection_strategy"] == "rolling_24h"
+    assert body["next_auto_collection_at"] is None
 
 
 def test_live_batch_status_includes_current_product_title(

@@ -45,7 +45,28 @@
 .main-content-dashboard .dashboard-attention-state strong { color: var(--ui-ink); font-size: 16px; }
 .main-content-dashboard .dashboard-attention-state > span { max-width: 50ch; line-height: 1.7; }
 .main-content-dashboard .dashboard-attention-state .dashboard-icon { width: 28px; height: 28px; color: var(--ui-muted); }
-.main-content-dashboard .collection-overview-actions { flex-wrap: wrap; gap: 8px; }
+.main-content-dashboard .collection-overview-controls { display: flex; flex: 1 0 100%; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; width: 100%; }
+.main-content-dashboard .collection-overview-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.main-content-dashboard .collection-overview-controls .overview-status { display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--ui-muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.main-content-dashboard .collection-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #8a94a3; }
+.main-content-dashboard .overview-status-running { color: #2459a8; }
+.main-content-dashboard .overview-status-running .collection-status-dot { background: #2563eb; }
+.main-content-dashboard .overview-status-waiting { color: #805217; }
+.main-content-dashboard .overview-status-waiting .collection-status-dot,
+.main-content-dashboard .overview-status-warning .collection-status-dot { background: #bb7a1f; }
+.main-content-dashboard .overview-status-warning { color: #805217; }
+.main-content-dashboard .overview-status-quiet .collection-status-dot { background: #8a94a3; }
+.main-content-dashboard .collection-overview-actions .collection-pause-button,
+.main-content-dashboard .collection-overview-actions .collection-end-button { display: inline-flex; width: auto; height: auto; min-width: 44px; min-height: 44px; box-sizing: border-box; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; border: 1px solid transparent; border-radius: 8px; box-shadow: none; font-size: 13px; font-weight: 600; transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out; }
+.main-content-dashboard .collection-overview-actions .collection-pause-button { min-width: 112px; color: #2459a8; border-color: #d6e4fa; background: #eff5ff; }
+.main-content-dashboard .collection-overview-actions .collection-pause-button:hover:not(:disabled) { border-color: #bfd3f1; background: #e6efff; box-shadow: none; transform: none; }
+.main-content-dashboard .collection-overview-actions .collection-end-button { color: #9b4141; background: transparent; }
+.main-content-dashboard .collection-overview-actions .collection-end-button:hover:not(:disabled) { border-color: #f0dede; background: #fff5f5; box-shadow: none; transform: none; }
+.main-content-dashboard .collection-overview-actions button:active:not(:disabled) { box-shadow: none; transform: none; }
+.main-content-dashboard .collection-overview-actions .collection-pause-button:active:not(:disabled) { background: #dce9ff; }
+.main-content-dashboard .collection-overview-actions .collection-end-button:active:not(:disabled) { background: #fee2e2; color: #7f1d1d; }
+.main-content-dashboard .collection-overview-actions button:disabled { opacity: .6; cursor: default; }
+.main-content-dashboard .collection-overview-actions svg { width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .main-content-dashboard .collection-summary-grid { grid-template-columns: 1fr 1fr; padding: 8px 20px; }
 .main-content-dashboard .collection-summary-grid > div { padding: 12px 0; border: 0; }
 .main-content-dashboard .collection-summary-grid > div:first-child { grid-column: 1 / -1; border-bottom: 1px solid var(--ui-border); }
@@ -55,6 +76,8 @@
 .main-content-dashboard .collection-summary-grid > div:first-child strong,
 .main-content-dashboard .collection-summary-grid > div:last-child strong { font-size: 14px; white-space: normal; }
 .main-content-dashboard .dashboard-collection-note { margin: 0 20px 16px; color: var(--ui-muted); font-size: 12px; line-height: 1.6; }
+.main-content-dashboard .dashboard-next-collection { display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 20px 16px; color: var(--ui-muted); font-size: 12px; line-height: 1.6; }
+.main-content-dashboard .dashboard-next-collection strong { color: var(--ui-ink); font-weight: 600; }
 .main-content-dashboard .collection-batch { margin: 0 20px 16px; border-color: var(--ui-border); background: #f6f7f8; color: var(--ui-ink); }
 .main-content-dashboard .collection-batch-heading { flex-wrap: wrap; gap: 8px; }
 .main-content-dashboard .collection-batch-current { flex-wrap: wrap; }
@@ -62,9 +85,6 @@
 .main-content-dashboard .collection-batch-meta,
 .main-content-dashboard .collection-batch-current span { color: var(--ui-muted); }
 .main-content-dashboard .collection-batch-verification_required { background: #fff8eb; border-color: #ecd6b4; }
-.main-content-dashboard .overview-status { color: var(--ui-muted); background: #f6f7f8; border-color: var(--ui-border); white-space: normal; }
-.main-content-dashboard .overview-status-running { color: #2459a8; background: #eff5ff; }
-.main-content-dashboard .overview-status-warning { color: #805217; background: #fff8eb; border-color: #ecd6b4; }
 .main-content-dashboard .text-link-button { appearance: none; min-height: 32px; padding: 4px 0; border: 0; background: transparent; color: var(--ui-accent); cursor: pointer; }
 .main-content-dashboard .dashboard-history { border-block: 1px solid var(--ui-border); color: var(--ui-muted); font-size: 13px; }
 .main-content-dashboard .dashboard-history > summary { padding: 16px 4px; cursor: pointer; color: var(--ui-ink); }
@@ -86,6 +106,10 @@
   .main-content-dashboard .dashboard-work-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 680px) {
+  .main-content-dashboard .collection-overview-controls { gap: 8px; }
+  .main-content-dashboard .collection-overview-actions { gap: 4px; }
+  .main-content-dashboard .collection-overview-actions .collection-pause-button { min-width: 108px; }
+  .main-content-dashboard .collection-overview-actions .collection-end-button { padding-inline: 8px; }
   .main-content-dashboard .dashboard-stat-card { padding: 12px; }
   .main-content-dashboard .dashboard-attention-main { align-items: flex-start; }
   .main-content-dashboard .dashboard-attention-identity h3 { font-size: 14px; }

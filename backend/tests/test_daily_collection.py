@@ -121,6 +121,15 @@ def test_fixed_interval_uses_start_interval_count_and_advances_by_occurrence(fac
         assert "T05:30" in db.get(CollectionBatch, second.batch_id).scheduler_occurrence_key
 
 
+def test_next_auto_collection_time_matches_fixed_plans_and_has_no_rolling_time() -> None:
+    fixed = {"auto_collection_enabled": True, "auto_collection_strategy": "fixed_daily", "auto_collection_times": ["09:30", "17:30"], "auto_collection_time": "09:30", "auto_collection_interval_hours": 4, "auto_collection_daily_limit": 3}
+    assert daily.next_auto_collection_at(fixed, PRE, LOCAL) == "2026-10-06 09:30"
+    assert daily.next_auto_collection_at(fixed, POST, LOCAL) == "2026-10-06 17:30"
+    assert daily.next_auto_collection_at(fixed, datetime(2026, 10, 6, 18, tzinfo=LOCAL), LOCAL) == "2026-10-07 09:30"
+    assert daily.next_auto_collection_at({**fixed, "auto_collection_strategy": "rolling_24h"}, PRE, LOCAL) is None
+    assert daily.next_auto_collection_at({**fixed, "auto_collection_enabled": False}, PRE, LOCAL) is None
+
+
 def test_busy_runner_keeps_only_latest_fixed_point_and_next_day_is_new_occurrence(factory: sessionmaker[Session]) -> None:
     item = competitor(factory)
     settings(factory, auto_collection_times=["09:30", "13:30"], auto_collection_missed_policy="skip")

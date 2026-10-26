@@ -138,6 +138,9 @@ export function updatePageSelection(selectedIds: ReadonlySet<number>, pageIds: r
 }
 
 export type BatchState = {
+  auto_collection_enabled?: boolean;
+  auto_collection_strategy?: "rolling_24h" | "fixed_daily" | "fixed_interval";
+  next_auto_collection_at?: string | null;
   work_kind?: "collect_products" | "add_links";
   input_progress?: AddInputSummary | null;
   current_input_position?: number | null;
@@ -2030,13 +2033,16 @@ export function OwnProductDialog({ group, mode, competitors, loading, selectedId
 
 function CollectionOverview({ data, status, error, batchState, onRetry, onTogglePause, onEndBatch, onNavigate }: { data: DashboardData | null; status: DashboardStatus; error: string | null; batchState: BatchState; onRetry: () => void; onTogglePause: () => void; onEndBatch: () => void; onNavigate: (page: Page) => void }) {
   const summary = status === "ready" ? data?.collection_summary : null;
-  const busy = batchState.status === "running" || batchState.status === "resting" || batchState.status === "cooling_down" || batchState.runner_active || batchState.browser_open;
   const progress = batchState.total > 0 ? Math.min(100, (batchState.completed / batchState.total) * 100) : 0;
   const pausedWait = batchState.cooldown_remaining_seconds > 0 ? `风控冷却已暂停 · 剩余 ${formatBatchCooldown(batchState.cooldown_remaining_seconds)}` : batchState.resting_remaining_seconds > 0 ? `计划休息已暂停 · 剩余 ${formatBatchCooldown(batchState.resting_remaining_seconds)}` : null;
-  return <section className="table-card collection-overview"><div className="table-heading"><div><h2>采集状态概览</h2><span>数据库记录与当前批次</span></div><div className="collection-overview-actions">{batchState.status !== "idle" && <span className={busy ? "overview-status overview-status-running" : batchState.status === "verification_required" || batchState.failed > 0 || batchState.batch_outcome_code === "infrastructure_error" || batchState.batch_outcome_code === "interrupted" ? "overview-status overview-status-warning" : "overview-status"}>{batchState.status === "running" ? "采集中" : batchState.status === "pausing" ? "暂停中" : batchState.status === "paused" ? "已暂停" : batchState.status === "stopping" ? "结束中" : batchState.status === "stopped" ? "已结束" : batchState.status === "resting" ? "计划休息" : batchState.status === "cooling_down" ? "冷却中" : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务"}</span>}{batchState.runner_active && ["running", "pausing", "paused", "resting", "cooling_down"].includes(batchState.status) && <button type="button" className="secondary-button collection-pause-button" onClick={onTogglePause} disabled={batchState.status === "pausing"}>{batchState.status === "paused" ? "继续采集" : batchState.status === "pausing" ? "暂停中…" : "暂停采集"}</button>}{batchState.runner_active && ["running", "pausing", "paused", "stopping", "resting", "cooling_down", "verification_required"].includes(batchState.status) && <button type="button" className="secondary-button collection-end-button" onClick={onEndBatch} disabled={batchState.status === "stopping"}>{batchState.status === "stopping" ? "结束中…" : "结束采集"}</button>}</div></div>
+  const statusLabel = batchState.status === "running" ? "采集中" : batchState.status === "pausing" ? "正在暂停" : batchState.status === "paused" ? "已暂停" : batchState.status === "stopping" ? "正在结束" : batchState.status === "stopped" ? "已结束" : batchState.status === "resting" ? "计划休息" : batchState.status === "cooling_down" ? "冷却中" : batchState.status === "verification_required" ? "需要人工验证" : batchState.status === "completed" ? "最近批次完成" : "当前无采集任务";
+  const statusTone = batchState.status === "running" ? "running" : batchState.status === "verification_required" || batchState.failed > 0 || batchState.batch_outcome_code === "infrastructure_error" || batchState.batch_outcome_code === "interrupted" ? "warning" : batchState.status === "resting" || batchState.status === "cooling_down" ? "waiting" : "quiet";
+  const nextAutoText = batchState.auto_collection_enabled === false ? "自动采集未开启" : batchState.auto_collection_enabled !== true ? "正在读取计划…" : batchState.auto_collection_strategy === "rolling_24h" ? "滚动计划（按商品上次采集时间判断）" : batchState.next_auto_collection_at || "正在计算…";
+  return <section className="table-card collection-overview"><div className="table-heading"><div><h2>采集状态概览</h2><span>数据库记录与当前批次</span></div>{batchState.status !== "idle" && <div className="collection-overview-controls"><span className={`overview-status overview-status-${statusTone}`} role="status" aria-live="polite" aria-atomic="true"><span className="collection-status-dot" aria-hidden="true" />{statusLabel}</span><div className="collection-overview-actions">{batchState.runner_active && ["running", "pausing", "paused", "resting", "cooling_down"].includes(batchState.status) && <button type="button" className="secondary-button collection-pause-button" onClick={onTogglePause} disabled={batchState.status === "pausing"}><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">{batchState.status === "paused" ? <path d="M7 4.5v11l8-5.5-8-5.5Z" /> : <path d="M7 5v10M13 5v10" />}</svg>{batchState.status === "paused" ? "继续采集" : batchState.status === "pausing" ? "暂停中…" : "暂停采集"}</button>}{batchState.runner_active && ["running", "pausing", "paused", "stopping", "resting", "cooling_down", "verification_required"].includes(batchState.status) && <button type="button" className="secondary-button collection-end-button" onClick={onEndBatch} disabled={batchState.status === "stopping"}><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect x="5.5" y="5.5" width="9" height="9" rx="1" /></svg>{batchState.status === "stopping" ? "结束中…" : "结束采集"}</button>}</div></div>}</div>
     {status === "error" && <div className="dashboard-support-error" role="alert"><span>{error || "暂时无法获取采集统计和趋势。"}</span><button type="button" className="text-link-button" onClick={onRetry}>重试</button></div>}
     <div className="collection-summary-grid"><div><span>最近采集时间（含历史）</span><strong>{summary ? summary.last_collection_at ? formatDate(summary.last_collection_at) : "暂无采集记录" : status === "loading" ? "加载中…" : "暂不可用"}</strong></div><div><span>今日成功</span><strong>{summary ? summary.success_runs : "—"}</strong></div><div><span>今日失败</span><strong className={summary?.failed_runs ? "collection-value-error" : ""}>{summary ? summary.failed_runs : "—"}</strong></div><div><span>平均耗时</span><strong>{formatDuration(summary?.average_duration_seconds ?? null)}</strong></div></div>
     <p className="dashboard-collection-note">今日统计为采集次数，包含我方商品与竞品，非去重商品数。</p>
+    <p className="dashboard-next-collection">下次自动采集：<strong>{nextAutoText}</strong>{batchState.auto_collection_enabled && batchState.auto_collection_strategy !== "rolling_24h" && <span>（后端本地时间，计划检查时间）</span>}</p>
     <div className={`collection-batch collection-batch-${batchState.status}`}>
       {batchState.work_kind === "add_links" && batchState.input_progress ? <>
         <div className="collection-batch-heading"><strong>添加链接：已处理 {batchState.input_progress.processed}/{batchState.input_progress.total}</strong><span>{batchState.batch_outcome_code === "infrastructure_error" ? "基础设施异常中止" : batchState.batch_outcome_code === "interrupted" ? "进程中断" : batchState.status === "completed" ? batchState.input_progress.added ? batchState.input_progress.added === batchState.input_progress.total ? "全部新增" : "部分新增成功" : batchState.input_progress.technical_failed ? "添加失败" : "未新增" : batchState.status === "stopped" ? "用户已结束" : batchState.status === "paused" ? pausedWait || "已暂停" : batchState.status === "resting" ? `计划休息剩余 ${formatBatchCooldown(batchState.resting_remaining_seconds)}` : batchState.status === "verification_required" ? "需要验证，已停止访问" : "处理中"}</span></div>
@@ -3009,16 +3015,17 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
   useEffect(() => {
-    if (batchState.status !== "running" && batchState.status !== "pausing" && batchState.status !== "paused" && batchState.status !== "stopping" && batchState.status !== "resting" && batchState.status !== "cooling_down" && !(batchState.status === "verification_required" && batchState.browser_open)) return;
-    const timer = window.setInterval(() => { void loadBatchStatus(); }, 1500);
+    if (page !== "dashboard") return;
+    const active = ["running", "pausing", "paused", "stopping", "resting", "cooling_down"].includes(batchState.status) || batchState.status === "verification_required" && batchState.browser_open;
+    const timer = window.setInterval(() => { void loadBatchStatus(); }, active ? 1500 : 3000);
     return () => window.clearInterval(timer);
-  }, [batchState.status, batchState.browser_open]);
+  }, [page, batchState.status, batchState.browser_open]);
   function navigate(nextPage: Page, initialGroupFilter: InitialGroupFilter = null) {
     if (nextPage !== "detail") { latestDetailRequestId.current += 1; setDetailRangeLoading(false); }
     if (nextPage !== "group-detail") { latestGroupDetailRequestId.current += 1; setGroupDetailRangeLoading(false); }
     setListNavigationIntent((current) => ({ filter: nextPage === "competitors" ? initialGroupFilter : null, version: current.version + 1 }));
     setPage(nextPage);
-    if (nextPage === "dashboard") void loadDashboard();
+    if (nextPage === "dashboard") { void loadDashboard(); void loadBatchStatus(); }
     if (nextPage === "competitors" && !listLoaded) void loadCompetitors();
     if (nextPage === "own-products" && !ownListLoaded) void loadOwnProducts();
     if (nextPage === "groups") void loadGroups();

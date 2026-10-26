@@ -489,3 +489,28 @@ test("dashboard remains the single live collection progress and control surface"
   await page.screenshot({ path: acceptanceScreenshot(testInfo, "v1.2-live-dashboard.png"), fullPage: true });
   await mock.expectNoUnexpectedApi();
 });
+
+test("dashboard discovers an automatic batch that starts after the page opens", async ({ page }, testInfo) => {
+  const mock = await installApiMock(page, { competitors: competitors23 });
+  let statusPolls = 0;
+  const idle = { status: "idle", auto_collection_enabled: true, auto_collection_strategy: "fixed_daily", next_auto_collection_at: "2026-10-26 09:30", runner_active: false, browser_open: false };
+  const running = { ...idle, status: "running", total: 3, completed: 1, succeeded: 1, remaining: 2, runner_active: true, current_competitor_id: 1, current_competitor_title: "自动采集商品" };
+  await page.route("**/api/competitors/collect-batch/status", route => {
+    statusPolls += 1;
+    return route.fulfill({ json: statusPolls < 5 ? idle : running });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "竞品监控大屏", exact: true }).click();
+  await expect(page.getByText("下次自动采集：2026-10-26 09:30")).toBeVisible();
+  await expect(page.getByRole("progressbar")).toBeVisible({ timeout: 8000 });
+  await expect(page.getByText("自动采集商品")).toBeVisible();
+  await page.setViewportSize({ width: 366, height: 800 });
+  const pauseButton = page.getByRole("button", { name: "暂停采集" });
+  const endButton = page.getByRole("button", { name: "结束采集" });
+  const [pauseBox, endBox] = await Promise.all([pauseButton.boundingBox(), endButton.boundingBox()]);
+  expect(pauseBox?.height).toBeGreaterThanOrEqual(40);
+  expect(endBox?.height).toBeGreaterThanOrEqual(40);
+  expect(pauseBox?.y).toBe(endBox?.y);
+  await page.screenshot({ path: testInfo.outputPath("collection-controls-mobile.png"), fullPage: true });
+  await mock.expectNoUnexpectedApi();
+});

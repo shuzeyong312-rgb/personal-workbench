@@ -26,6 +26,7 @@ from app.collection.service import (
     collect_competitor,
     start_batch_task,
 )
+from app.collection.daily import next_auto_collection_at
 from app.collection.parser_1688 import parse_1688_url
 from app.database import get_db
 from app.models import ChangeEvent, CollectionAddInput, CollectionBatch, CollectionBatchItem, CollectionRun, Competitor, CompetitorGroup, OperatingMetricObservation, ProductSnapshot, SkuSnapshot
@@ -209,6 +210,9 @@ class BatchStatusResponse(BaseModel):
     operating_metrics_counts: dict[str, int]
     current_competitor_id: int | None
     current_competitor_title: str | None = None
+    auto_collection_enabled: bool = False
+    auto_collection_strategy: Literal["rolling_24h", "fixed_daily", "fixed_interval"] = "rolling_24h"
+    next_auto_collection_at: str | None = None
     browser_open: bool
     runner_active: bool
     auto_resume_attempt: int
@@ -604,8 +608,12 @@ async def collect_batch(
 @router.get("/collect-batch/status", response_model=BatchStatusResponse)
 def collect_batch_status(db: Session = Depends(get_db)) -> dict[str, object]:
     snapshot = BATCH_RUNTIME.snapshot()
+    settings = get_competitor_monitoring_settings(db)
     competitor_id = snapshot["current_competitor_id"]
     snapshot["current_competitor_title"] = db.scalar(select(Competitor.title).where(Competitor.id == competitor_id)) if competitor_id is not None else None
+    snapshot["auto_collection_enabled"] = settings["auto_collection_enabled"]
+    snapshot["auto_collection_strategy"] = settings["auto_collection_strategy"]
+    snapshot["next_auto_collection_at"] = next_auto_collection_at(settings)
     return snapshot
 
 
