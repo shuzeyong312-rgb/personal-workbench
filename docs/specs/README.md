@@ -4,7 +4,7 @@
 
 ## 阅读顺序与优先级
 
-1. [协作方式](../roadmap/vibe%20coding协作方式.md)：角色、Spec Review / Freeze、验证与 Git 授权。
+1. [正式工作流](../engineering/workflow.md)：S/M/L 分级、按需 Spec Review、验证、默认 Git 同步与独立审查。
 2. [产品](../product.md)、[架构](../architecture.md)、[数据模型](../data-model.md)、[UI 规范](../ui-system.md)、[开发规则](../coding-rules.md)：当前稳定事实与全局约束。
 3. 本索引 → 对应业务当前合同 → 被引用的旧合同未被替代部分。不要按文件名版本号或旧“待实现”字样判断是否需要重新开发。
 4. [重构计划书](../roadmap/competition-intelligence-restructuring-plan.md) 与 [历史 roadmap](../roadmap/competition-intelligence-roadmap.md)：未来顺序、判断与历史背景；research 只提供来源证据，不是生产合同。

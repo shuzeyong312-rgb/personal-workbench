@@ -8,4 +8,4 @@
   - `.agents/skills/emil-design-eng` — motion design or complex interaction details; use `find-animation-opportunities` / `review-animations` for motion audits and `animate` for requested implementation. Do not load for ordinary static UI changes.
   - `.agents/skills/react-best-practices` — only when changing React rendering, data flow, fetching, or performance; omit for CSS-only and backend-only work.
 - Choose the matching Dashboard, List, or Detail Reference before editing. Reuse existing components and CSS; add no dependency or animation library for ordinary interaction feedback.
-- For visual work, use the smallest matching Skill set, inspect the rendered result in a real browser when available, and follow the repository's Spec Review, Implementation, and Final Gate process for the task's risk.
+- For visual work, use the smallest matching Skill set, inspect the rendered result in a real browser when available, and follow the S/M/L verification and review requirements in `docs/engineering/workflow.md`.

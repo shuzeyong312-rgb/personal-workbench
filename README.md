@@ -51,14 +51,9 @@ npm --prefix frontend ci
 
 ## 文档与开发流程
 
-先读 [协作方式](docs/roadmap/vibe%20coding协作方式.md)，再读 [产品](docs/product.md)、[架构](docs/architecture.md)、[数据模型](docs/data-model.md)、[UI 规范](docs/ui-system.md)、[开发规则](docs/coding-rules.md) 和 [Spec 状态索引](docs/specs/README.md)。局部业务规则按索引查找后续正式 Spec，历史合同不直接改写为今天的规则。
+先读 [根准则](AGENTS.md) 和 [正式工作流](docs/engineering/workflow.md)，再按任务阅读 [产品](docs/product.md)、[架构](docs/architecture.md)、[数据模型](docs/data-model.md)、[UI 规范](docs/ui-system.md)、[编码规则](docs/coding-rules.md) 和 [业务 Spec 索引](docs/specs/README.md)。
 
-```text
-需求判断 → 必要 POC → Spec → 自检 / 纯 Spec 提交推送
-→ ChatGPT Spec Review / Freeze → 最小实现 / 自动验证
-→ 按风险人工验收 → 独立 Standards + Spec Review / Final Gate
-→ 获授权后聚焦 Commit / Push / 远端核验
-```
+按 S/M/L 风险走必要流程；相关验证与自审通过后默认自动 Commit/Push，远端同步后由 ChatGPT 独立 Review，再最终验收。Skills 选择与替代关系见 [工程 Skills](docs/engineering/skills.md)。
 
 常用验证（按任务范围选择）：E2E 首次使用需在 `frontend` 目录执行 `npx playwright install chromium`。QA 专用 Vite 端口为 5201，由配置自行启动，不启动 Backend；受控 mock 必须与真实 Backend 隔离。
 
