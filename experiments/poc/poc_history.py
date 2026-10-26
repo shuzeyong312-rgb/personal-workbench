@@ -54,7 +54,7 @@ def print_list(label, values):
 
 
 def main() -> None:
-    profile_dir = Path(__file__).parent / ".browser-profile"
+    profile_dir = Path(__file__).resolve().parents[2] / ".browser-profile"
     payloads = []
 
     with sync_playwright() as playwright:

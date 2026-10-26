@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright
 
 
 def main() -> None:
-    profile_dir = Path(__file__).parent / ".browser-profile"
+    profile_dir = Path(__file__).resolve().parents[2] / ".browser-profile"
 
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(

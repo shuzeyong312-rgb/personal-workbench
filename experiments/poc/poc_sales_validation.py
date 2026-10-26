@@ -16,7 +16,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "backend" / "data" / "personal_workbench.db"
 PROFILE_DIR = ROOT / ".browser-profile"
 API_NAME = "mtop.1688.pc.plugin.od.data.query"

@@ -12,7 +12,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "backend" / "data" / "personal_workbench.db"
 PROFILE_PATH = ROOT / ".browser-profile"
 MAX_SAMPLES = 5

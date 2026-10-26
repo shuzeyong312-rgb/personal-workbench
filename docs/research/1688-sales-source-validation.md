@@ -24,7 +24,7 @@
 
 ## 3. 数据来源与方法
 
-验证脚本为根目录 `poc_sales_validation.py`，独立读取本地 SQLite 中最多 5 个 active Competitor，使用本机 Chrome 和项目根目录 `.browser-profile`，通过 Playwright 监听真实浏览器响应，不构造签名、Token、Cookie 或请求头。
+验证脚本为实验目录 `experiments/poc/poc_sales_validation.py`，独立读取本地 SQLite 中最多 5 个 active Competitor，使用本机 Chrome 和项目根目录 `.browser-profile`，通过 Playwright 监听真实浏览器响应，不构造签名、Token、Cookie 或请求头。
 
 脚本允许现有浏览器扩展运行，并在每个商品页加载后等待插件请求。响应只在内存中解析，输出规范化观察结果；没有保存完整 response、Cookie、Token、headers 或登录信息。
 

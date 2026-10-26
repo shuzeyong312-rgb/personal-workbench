@@ -24,3 +24,21 @@ playwright-report/
 /docs/qa/*
 !/docs/qa/1688-client-automation-poc.md
 /frontend/test-results-settings/
+
+# Regenerable local caches and POC diagnostics.
+.pytest_cache/
+/.tmp/
+*.py[cod]
+/experiments/poc/poc_*_debug.json
+# SQLite files and sidecars may contain local business or test data.
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal

@@ -4,7 +4,7 @@
 
 验证当前专用 Chrome Profile 在 Playwright `headless=True` 下，是否能够稳定完成正式采集当前已经支持的商品数据获取。
 
-本轮只新增独立 POC `poc_headless_collection.py`，没有修改正式 collector、Parser、API、数据库、Frontend 或 `dev.ps1`。
+本轮只新增独立 POC `experiments/poc/poc_headless_collection.py`，没有修改正式 collector、Parser、API、数据库、Frontend 或 `dev.ps1`。
 
 ## 2. 测试环境
 

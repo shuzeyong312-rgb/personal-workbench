@@ -10,7 +10,7 @@
 4. 一个 Browser / Context 下并发使用 2 个 Page 是否可行；
 5. 并发 2 是否增加 `verification_required` 或造成字段串线。
 
-本轮新增独立 POC：`poc_background_batch_collection.py`。
+本轮新增独立 POC：`experiments/poc/poc_background_batch_collection.py`。
 
 ## 2. 现有正式架构确认
 

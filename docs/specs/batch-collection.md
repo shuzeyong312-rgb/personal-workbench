@@ -504,8 +504,8 @@ daily scheduler 保持现有规则：启动后约 30 秒首次 due-check，之�
 
 可参考但不可直接搬入正式代码：
 
-- `poc_background_batch_collection.py`：只参考 CDP 窗口移动/召回、headed Context 复用和验证暂停观察；它绕过正式 Service、数据库事务和 API，不是生产编排。
-- `poc_headless_collection.py`：只作为 headless FAIL 的证据；不得导入、复用或把 `headless=True` 带入正式 collector。
+- `experiments/poc/poc_background_batch_collection.py`：只参考 CDP 窗口移动/召回、headed Context 复用和验证暂停观察；它绕过正式 Service、数据库事务和 API，不是生产编排。
+- `experiments/poc/poc_headless_collection.py`：只作为 headless FAIL 的证据；不得导入、复用或把 `headless=True` 带入正式 collector。
 
 POC 中的样本数量、页面层并发、network 监听结果和临时超时控制不能被当作正式业务契约。正式实现继续使用现有 Parser、CollectorError 边界、Profile 路径和安全错误语义。
 

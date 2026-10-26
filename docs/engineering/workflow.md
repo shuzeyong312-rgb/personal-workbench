@@ -38,7 +38,9 @@ Spec 写问题、目标/非目标、当前源码基线、输入输出/业务规�
 从仓库根运行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest backend/tests
+Push-Location backend
+..\.venv\Scripts\python.exe -m pytest tests
+Pop-Location
 npm --prefix frontend test
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
@@ -46,7 +48,7 @@ npm --prefix frontend run qa:e2e
 git diff --check
 ```
 
-pytest 从 backend 工作目录运行等价命令 `python -m pytest tests`。测试复用内存/临时 SQLite 和依赖替换；scheduler 禁用变量是 `PERSONAL_WORKBENCH_DISABLE_SCHEDULER=1`，它不替代 DB 隔离。不得运行 dev.ps1、正式 migration、真实登录采集或客户发送来满足普通验证。Playwright 配置只启动 5201 Vite，API 由受控 mock 或 tests.library_browser_server 的临时数据库服务提供，不启动 8200 正式后端。部分 E2E 使用 Windows .venv/Scripts/python.exe，因此前端 CI 使用 Windows Runner 并安装 Python 测试依赖；Chromium 必须在包含浏览器测试的 Vitest 前安装。新增测试也必须保持隔离。
+pytest 须从 backend 工作目录运行 `python -m pytest tests`（使用项目虚拟环境）；部分迁移测试按当前目录读取 alembic.ini，不能直接在根目录运行 pytest backend/tests。测试复用内存/临时 SQLite 和依赖替换；scheduler 禁用变量是 `PERSONAL_WORKBENCH_DISABLE_SCHEDULER=1`，它不替代 DB 隔离。不得运行 dev.ps1、正式 migration、真实登录采集或客户发送来满足普通验证。Playwright 配置只启动 5201 Vite，API 由受控 mock 或 tests.library_browser_server 的临时数据库服务提供，不启动 8200 正式后端。部分 E2E 使用 Windows .venv/Scripts/python.exe，因此前端 CI 使用 Windows Runner 并安装 Python 测试依赖；Chromium 必须在包含浏览器测试的 Vitest 前安装。新增测试也必须保持隔离。
 
 ## Git 同步与阻断
 
