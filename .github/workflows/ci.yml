@@ -9,7 +9,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    # Desktop integration tests use Windows ctypes APIs.
+    runs-on: windows-latest
     timeout-minutes: 15
     env:
       PERSONAL_WORKBENCH_DISABLE_SCHEDULER: '1'
@@ -48,12 +49,25 @@ jobs:
       - run: ../.venv/Scripts/python.exe -m pip install -r ../backend/requirements.txt
       - run: npm ci
       - run: npx playwright install chromium
-      - run: npm test
-      - run: npm run typecheck
-      - run: npm run build
-      - run: npm run qa:e2e
+      - name: Frontend dependencies ready
+        id: frontend_ready
+        run: Write-Output "Frontend dependencies installed"
+      - name: Vitest
+        run: npm test
+      # Run all checks after successful setup, even when another check fails.
+      # Each failed check still marks the job red.
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.frontend_ready.outcome == 'success' }}
+        run: npm run typecheck
+      - name: Build
+        if: ${{ !cancelled() && steps.frontend_ready.outcome == 'success' }}
+        run: npm run build
+      - name: Playwright E2E
+        id: e2e
+        if: ${{ !cancelled() && steps.frontend_ready.outcome == 'success' }}
+        run: npm run qa:e2e
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: ${{ !cancelled() && steps.e2e.outcome == 'failure' }}
         with:
           name: playwright-failure
           path: |
