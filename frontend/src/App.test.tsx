@@ -1386,11 +1386,12 @@ test("renders group page loading, error, full empty, unassigned and normal state
   expect(onlyUnassigned).not.toContain("组分析");
   expect(onlyUnassigned).not.toContain("绑定我方商品");
   expect(normal).toContain("暖手宝");
-  expect(normal).toContain("3 个竞品");
+  expect(normal).toContain("<strong>3</strong><span>个竞品</span>");
   expect(normal).toContain("¥34.00 ~ ¥40.00");
   expect(normal).toContain("更多");
   expect(normal).toContain('class="group-directory-name"');
-  expect(normal).toContain(">组分析</button>");
+  expect(normal).not.toContain(">组分析</button>");
+  expect(normal).not.toContain("group-directory-expand");
   expect(normal).toContain('class="filter-card group-directory-toolbar"');
   expect(normal).toContain('class="filter-field filter-search"');
   expect(normal).toContain("清除筛选");

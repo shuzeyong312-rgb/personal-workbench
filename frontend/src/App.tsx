@@ -1208,19 +1208,18 @@ export function filterAndSortCompetitorGroups(groups: readonly CompetitorGroupSu
   }).map(({ group }) => group);
 }
 
-function CompetitorGroupCard({ group, view, expanded, onExpand, onViewCompetitors, onViewAnalysis, onRename, onDelete }: { group: CompetitorGroupSummary; view: GroupDirectoryView; expanded: boolean; onExpand: () => void; onViewCompetitors: () => void; onViewAnalysis: () => void; onRename: () => void; onDelete: () => void }) {
+function CompetitorGroupCard({ group, view, onViewCompetitors, onViewAnalysis, onRename, onDelete }: { group: CompetitorGroupSummary; view: GroupDirectoryView; onViewCompetitors: () => void; onViewAnalysis: () => void; onRename: () => void; onDelete: () => void }) {
   const stoppedCount = group.competitor_count - group.active_count;
   const coverageStatus = group.competitor_count === 0 ? "空分组" : stoppedCount > 0 ? "部分停止" : "全部监控";
   return <article className="group-directory-card" role="listitem" aria-label={group.name} data-group-id={group.id}>
-    <header className="group-directory-card-heading"><div className="group-directory-heading-main"><button type="button" className="group-directory-name" title={group.name} onClick={onViewAnalysis}>{group.name}</button>{view === "list" && <button type="button" className="group-directory-expand" aria-label={expanded ? "收起 " + group.name + " 摘要" : "展开 " + group.name + " 摘要"} aria-expanded={expanded} onClick={onExpand}>{expanded ? "−" : "+"}</button>}</div>{view === "cards" && <GroupMoreMenu onRename={onRename} onDelete={onDelete} />}</header>
+    <header className="group-directory-card-heading"><div className="group-directory-heading-main"><button type="button" className="group-directory-name" title={group.name} onClick={onViewAnalysis}>{group.name}</button></div>{view === "cards" && <GroupMoreMenu onRename={onRename} onDelete={onDelete} />}</header>
     <div className="group-directory-coverage"><strong>{group.competitor_count}</strong><span>个竞品</span><span>监控中 {group.active_count}/{group.competitor_count}</span>{stoppedCount > 0 && <span>已停止 {stoppedCount} 个</span>}<span className={"group-directory-status " + (stoppedCount > 0 ? "is-partial" : group.competitor_count === 0 ? "is-empty" : "")}>{coverageStatus}</span></div>
     <dl className="group-directory-facts">
       <div><dt>竞品价格范围</dt><dd title="链接展示价范围，不代表同规格竞品比较价">{formatGroupPriceRange(group)}</dd></div>
       <div><dt>今日变化</dt><dd className={group.changed_competitors_today > 0 ? "group-directory-changed" : "group-directory-muted"}>{group.changed_competitors_today} 个竞品</dd></div>
       <div><dt>最近变化</dt><dd className="group-directory-latest" title={formatGroupLatestChange(group.last_change_at)}>{formatGroupLatestChange(group.last_change_at)}</dd></div>
     </dl>
-    <footer className="group-directory-card-footer"><button type="button" className="detail-button" onClick={onViewAnalysis}>组分析</button><button type="button" className="detail-button" onClick={onViewCompetitors}>查看竞品</button>{view === "list" && <GroupMoreMenu onRename={onRename} onDelete={onDelete} />}</footer>
-    {expanded && <dl className="group-directory-expanded"><div><dt>我方基准商品</dt><dd>{group.own_product?.title || "未绑定"}</dd></div><div><dt>已停止监控</dt><dd>{stoppedCount} 个</dd></div><div><dt>今日变化竞品</dt><dd>{group.changed_competitors_today} 个</dd></div><div><dt>最近变化</dt><dd>{formatGroupLatestChange(group.last_change_at)}</dd></div></dl>}
+    <footer className="group-directory-card-footer"><button type="button" className="detail-button" onClick={onViewCompetitors}>查看竞品</button>{view === "list" && <GroupMoreMenu onRename={onRename} onDelete={onDelete} />}</footer>
   </article>;
 }
 
@@ -1247,7 +1246,6 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
   const [filter, setFilter] = useState<GroupDirectoryFilter>("all");
   const [sort, setSort] = useState<GroupDirectorySort>("recent");
   const [view, setView] = useState<GroupDirectoryView>("list");
-  const [expandedId, setExpandedId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const hasUnassigned = summary?.unassigned.competitor_count ? summary.unassigned.competitor_count > 0 : false;
   const isEmpty = status === "ready" && summary !== null && summary.groups.length === 0 && !hasUnassigned;
@@ -1261,15 +1259,14 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
   const partialGroups = summary ? summary.groups.filter(group => group.competitor_count > 0 && group.active_count < group.competitor_count).length : 0;
   const emptyGroups = summary ? summary.groups.filter(group => group.competitor_count === 0).length : 0;
   useEffect(() => { setPage((current) => Math.min(current, totalPages)); }, [totalPages]);
-  const changeFilter = (next: GroupDirectoryFilter) => { setFilter(next); setPage(1); setExpandedId(null); };
-  const clearFilters = () => { setQuery(""); setFilter("all"); setSort("recent"); setPage(1); setExpandedId(null); };
+  const changeFilter = (next: GroupDirectoryFilter) => { setFilter(next); setPage(1); };
+  const clearFilters = () => { setQuery(""); setFilter("all"); setSort("recent"); setPage(1); };
   return <AppShell page="groups" onNavigate={onNavigate} breadcrumb="竞品分组">
     <header className="page-header"><div><h1>竞品分组</h1><p className="page-description">按我方商品组织直接竞品，快速进入组内分析。</p></div><button type="button" className="primary-button" onClick={onCreate}>新增竞品组</button></header>
     {status === "loading" && <section className="table-card group-state-card state-panel"><div className="spinner" /><strong>正在加载竞品组…</strong></section>}
     {status === "error" && <section className="table-card group-state-card state-panel state-error"><strong>加载失败</strong><span>{error || "暂时无法获取竞品组。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></section>}
     {isEmpty && <section className="table-card group-state-card state-panel"><div className="empty-icon">＋</div><strong>还没有竞品组</strong><span>新增竞品组后，可按我方商品型号归集对应竞品进行对比监控。</span><button type="button" className="primary-button" onClick={onCreate}>新增竞品组</button></section>}
     {status === "ready" && summary && !isEmpty && <>
-      <div className="group-directory-summary">{summary.groups.length} 个商品组 · {totalCompetitors} 个竞品 · {totalActive} 个监控中</div>
       <div className="group-directory-stats" aria-label="分组概况">
         <button type="button" onClick={() => changeFilter("all")}><span>分组总数</span><strong>{summary.groups.length}</strong></button>
         <div><span>直接竞品（含未分组）</span><strong>{totalCompetitors}</strong></div>
@@ -1286,13 +1283,13 @@ export function GroupPage({ summary, status, error, onRetry, onCreate, onViewCom
           <div className="filter-field filter-search"><label htmlFor="group-directory-search">搜索</label><input id="group-directory-search" aria-label="搜索竞品组" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="组名或我方商品标题" /></div>
           <div className="filter-field group-directory-select"><label htmlFor="group-directory-filter">筛选</label><select id="group-directory-filter" aria-label="分组筛选" value={filter} onChange={(event) => { setFilter(event.target.value as GroupDirectoryFilter); setPage(1); }}><option value="all">全部分组</option><option value="changed">今日有变化</option><option value="incomplete">部分停止</option><option value="empty">空分组</option></select></div>
           <div className="filter-field group-directory-select"><label htmlFor="group-directory-sort">排序</label><select id="group-directory-sort" aria-label="分组排序" value={sort} onChange={(event) => { setSort(event.target.value as GroupDirectorySort); setPage(1); }}><option value="recent">最近变化优先</option><option value="changes">今日变化最多</option><option value="count">竞品数量最多</option><option value="price">最低价格优先</option><option value="name">组名排序</option></select></div>
-          <div className="group-directory-views" role="group" aria-label="视图切换"><button type="button" aria-pressed={view === "list"} className={view === "list" ? "is-active" : ""} onClick={() => { setView("list"); setExpandedId(null); }}>列表</button><button type="button" aria-pressed={view === "cards"} className={view === "cards" ? "is-active" : ""} onClick={() => { setView("cards"); setExpandedId(null); }}>卡片</button></div>
+          <div className="group-directory-views" role="group" aria-label="视图切换"><button type="button" aria-pressed={view === "list"} className={view === "list" ? "is-active" : ""} onClick={() => setView("list")}>列表</button><button type="button" aria-pressed={view === "cards"} className={view === "cards" ? "is-active" : ""} onClick={() => setView("cards")}>卡片</button></div>
           <button type="button" className="text-button group-directory-clear" onClick={clearFilters}>清除筛选</button>
         </section></div>
         <div className="group-directory-results">
           <div className="group-directory-result-count">显示 {groups.length} / {summary.groups.length} 个分组</div>
           {view === "list" && groups.length > 0 && <div className="group-directory-list-head" aria-hidden="true"><span>分组名称</span><span>竞品数量 / 监控状态</span><span>竞品价格 / 今日变化 / 最近变化</span><span>操作</span></div>}
-          {pageGroups.length > 0 ? <div role="list" aria-label="竞品组" className={"group-directory-grid " + (view === "list" ? "view-list" : "view-cards")}>{pageGroups.map(group => <CompetitorGroupCard key={group.id} group={group} view={view} expanded={expandedId === group.id} onExpand={() => setExpandedId((current) => current === group.id ? null : group.id)} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} />)}</div> : <section className="group-directory-no-results"><strong>没有符合条件的竞品组</strong><span>调整搜索或筛选条件后重试。</span></section>}
+          {pageGroups.length > 0 ? <div role="list" aria-label="竞品组" className={"group-directory-grid " + (view === "list" ? "view-list" : "view-cards")}>{pageGroups.map(group => <CompetitorGroupCard key={group.id} group={group} view={view} onViewCompetitors={() => onViewCompetitors(group.id)} onViewAnalysis={() => onViewAnalysis(group.id)} onRename={() => onRename(group)} onDelete={() => onDelete(group)} />)}</div> : <section className="group-directory-no-results"><strong>没有符合条件的竞品组</strong><span>调整搜索或筛选条件后重试。</span></section>}
           <PaginationBar total={groups.length} itemLabel="个竞品组" pageSize={10} page={currentPage} totalPages={totalPages} onPrevious={() => setPage(currentPage - 1)} onNext={() => setPage(currentPage + 1)} previousDisabled={currentPage === 1} nextDisabled={currentPage === totalPages} />
         </div>
       </>}
