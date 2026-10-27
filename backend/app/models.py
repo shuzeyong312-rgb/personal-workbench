@@ -7,6 +7,21 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+class ToolboxItem(Base):
+    __tablename__ = "toolbox_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    builtin_key: Mapped[str | None] = mapped_column(String(32), unique=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    name_key: Mapped[str] = mapped_column(String(300), nullable=False, unique=True)
+    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[str] = mapped_column(String(200), nullable=False)
+    url: Mapped[str | None] = mapped_column(String(2048), unique=True)
+    favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    __table_args__ = (CheckConstraint("(kind = 'builtin' AND builtin_key IS NOT NULL AND url IS NULL) OR (kind = 'site' AND builtin_key IS NULL AND url IS NOT NULL)", name="ck_toolbox_item_kind"),)
+
+
 class CompetitorGroup(Base):
     __tablename__ = "competitor_groups"
 

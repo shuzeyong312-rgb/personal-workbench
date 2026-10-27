@@ -107,3 +107,7 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | --- | --- | --- |
 | [group-analysis-dynamics-first-v1.md](group-analysis-dynamics-first-v1.md) | 草稿，待独立 Spec Review；未冻结，未授权实施 | 大屏按现有关注等级分区并折叠一般变化；组分析以竞品动态为默认标签，与商品对比共用工作区；相关 SKU 变化合并呈现并保留原事件证据。 |
 
+## 常用工具箱 V1（2026-10-27）
+
+[toolbox-v1.md](toolbox-v1.md) 已按 [Issue #2 独立 Spec Review](https://github.com/shuzeyong312-rgb/personal-workbench/issues/2#issuecomment-6432882718) 的有条件通过裁决修订；实现后的固定 SHA 仍需独立 Code Review 和用户验收。
+

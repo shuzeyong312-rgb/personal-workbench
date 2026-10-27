@@ -29,6 +29,7 @@ from app.dashboard import router as dashboard_router
 from app.settings import router as settings_router
 from app.product_library import router as product_library_router
 from app.customer_reach import recover_customer_reach_tasks, router as customer_reach_router
+from app.toolbox import router as toolbox_router
 
 
 DAILY_COLLECTION_INTERVAL_SECONDS = 60
@@ -122,10 +123,13 @@ app.include_router(dashboard_router)
 app.include_router(settings_router)
 app.include_router(product_library_router)
 app.include_router(customer_reach_router)
+app.include_router(toolbox_router)
 
 
 @app.exception_handler(RequestValidationError)
 async def product_library_validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/api/toolbox/"):
+        return JSONResponse(status_code=422, content={"code": "invalid_request", "message": "请求字段或格式无效"})
     if request.url.path.startswith("/api/product-library/"):
         code = "invalid_decisions" if request.url.path.endswith("/confirm") else "invalid_product"
         return JSONResponse(status_code=422, content={"code": code, "message": "请求字段或格式无效"})
