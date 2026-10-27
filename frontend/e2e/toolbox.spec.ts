@@ -54,6 +54,18 @@ test("catalog and local image processing", async ({ page }, testInfo) => {
   await page.locator('input[type="file"]').setInputFiles({ name: "invalid.png", mimeType: "image/png", buffer: Buffer.from("not an image") });
   await page.getByRole("button", { name: "开始处理" }).click(); await expect(page.getByText("文件不是支持的 JPG、PNG 或 WebP 图片")).toBeVisible();
   await page.getByRole("button", { name: "清空", exact: true }).click();
+  await page.locator('input[type="file"]').setInputFiles([{ name: "bad.png", mimeType: "image/png", buffer: Buffer.from("invalid") }, { name: "good.png", mimeType: "image/png", buffer }]);
+  await page.getByRole("button", { name: "开始处理" }).click();
+  await expect(page.getByText("成功 1 张，失败 1 张")).toBeVisible();
+  await expect(page.getByRole("button", { name: "批量 ZIP 下载" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "下载结果" })).toBeVisible();
+  await page.getByRole("button", { name: "清空", exact: true }).click();
+  const largeImage = await page.evaluate(() => { const c = document.createElement("canvas"); c.width = c.height = 3500; c.getContext("2d")!.fillRect(0, 0, 3500, 3500); return c.toDataURL("image/png").split(",")[1]; });
+  await page.locator('input[type="file"]').setInputFiles({ name: "large.png", mimeType: "image/png", buffer: Buffer.from(largeImage, "base64") });
+  await page.getByRole("button", { name: "开始处理" }).click();
+  await expect(page.getByText("大图预览已缩小；下载文件保持实际尺寸。")).toBeVisible();
+  expect(await page.locator('img[alt="原图预览"]').evaluate(node => (node as HTMLImageElement).naturalWidth)).toBeLessThanOrEqual(600);
+  await page.getByRole("button", { name: "清空", exact: true }).click();
   const samples = await page.evaluate(() => { const c = document.createElement("canvas"); c.width = 500; c.height = 300; const ctx = c.getContext("2d")!; const data = ctx.createImageData(c.width, c.height); for (let i = 0; i < data.data.length; i += 4) { data.data[i] = (i * 17) % 251; data.data[i + 1] = (i * 31) % 253; data.data[i + 2] = (i * 43) % 255; data.data[i + 3] = i % 8 === 0 ? 0 : 255; } ctx.putImageData(data, 0, 0); return [c.toDataURL("image/png"), c.toDataURL("image/jpeg"), c.toDataURL("image/webp")].map(x => x.split(",")[1]); });
   await page.locator('input[type="file"]').setInputFiles(["png", "jpeg", "webp"].map((ext, index) => ({ name: `sample.${ext}`, mimeType: `image/${ext}`, buffer: Buffer.from(samples[index], "base64") })));
   await page.getByRole("button", { name: "图片压缩", exact: true }).click(); await page.getByRole("radio", { name: /目标文件大小/ }).check(); await page.getByLabel("目标 KB（20–20000）").fill("20");
