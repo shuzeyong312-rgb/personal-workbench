@@ -4,11 +4,24 @@
 
 ## 流程与角色
 
-需求判断 → 源码核对 → 任务分级 → 按需 Spec / POC → Codex 实现 → 自动测试 → 自审与修复 → Commit / Push → ChatGPT 独立 Review → 必要修复与再次 Push → 最终验收。
+默认跨会话协作链路（按 S/M/L 风险裁剪）：
+
+用户 + ChatGPT 确认需求与验收，按需确认 UI 原型 → ChatGPT 建立 GitHub Issue 作为任务入口并关联原型 → Codex 从 GitHub 读取任务、核对真实源码并分级，按需编写 Spec / 隔离 POC → **需要时由 ChatGPT 独立 Spec Review，审查意见留在 GitHub** → Codex 按审查结论继续开发、测试、自审和修复 → Commit / Push → **ChatGPT 对固定 SHA 独立 Code Review，审查意见留在 GitHub** → Codex 按需修复、再次 Push、ChatGPT 审新 SHA → 用户最终验收。
+
+GitHub Issue 是跨会话任务管理与交接的**默认入口，不是强制门槛**；没有 Issue 时可使用已确认的需求、仓库 Spec 或本轮明确指令继续。无需先让 ChatGPT 编写长篇实施提示词，也不要求审查通过后新开 Codex 会话。
+
+用户决定目标、关键业务取舍、原型确认与最终验收；ChatGPT 协助明确需求、按需维护 Issue/已确认原型，负责必要的独立 Spec Review 和 Push 后独立 Code Review；Codex 负责审阅需求可行性、核对源码、技术 Spec、实现、隔离验证、自审、修复和同步。Codex 对 ChatGPT 编写的 Issue 也必须提出独立的源码与风险判断，而不是直接照抄。ChatGPT 不代替 Codex 修改业务代码；用户明确授权的文档、Issue 或原型维护不视为业务代码实施。
 
 只有稳定事实变化才更新长期核心文档；局部业务规则放 Spec，POC 放 Research，普通 Bug 不强制更新历史 Spec。
 
-用户决定目标、关键业务取舍与最终验收；Codex 可自主完成需求判断、源码核对、实现、隔离验证、自审和同步；ChatGPT 对推送后的固定 Commit 独立核对需求、源码和 Diff。无需先由 ChatGPT 编写实施提示词才能开展已授权任务。
+## Issue、Spec、原型及审查交接
+
+- **Issue 管任务**：写清目标、已确认范围、非目标、可观察验收条件与当前状态，链接相关 Spec、已确认 UI 原型、提交和审查意见。它是长期交接索引，不是必须复制一整份技术 Spec 的地方；Issue # 等简短入口足以让 Codex 找到任务。
+- **Spec 管正式合同**：Codex 在源码核对后按风险补齐数据/API、兼容迁移、错误边界、技术权衡与测试方案。已有 Issue 的确认内容可通过稳定链接引用，避免大段抄写；不能因为技术实现方便而改写已确认的业务行为。L 级正式 Spec 放 `docs/specs/`；S 级无需正式 Spec，M 按需短 Spec。
+- **原型管视觉与交互**：由用户确认，作为原型文件在 GitHub 可访问时才宣称已入库；引用具体路径/提交。原型脚本不等于生产代码，原型里的技术默认值不自动升级为用户确认的业务合同。Codex 自行从 GitHub 获取文件，不要求用户在 ChatGPT 和本地项目之间搬运。
+- **独立 Spec Review（需要时）**：ChatGPT 在实现前对照 Issue 的已确认需求、原型、正式 Spec 和真实源码审查遗漏、冲突、越界与高风险技术决定。结论注明固定 Spec SHA、阻断项/可接受的技术裁决，优先直接评论到对应 GitHub Issue 或审查文档。只有明确通过或有条件通过且阻断问题已按裁决收敛，才继续相关高风险实现；重大新争议需再审或由用户决策，不机械反复审查原文。
+- **独立 Code Review**：Codex 推送后，ChatGPT 按固定 base/head SHA 读取 GitHub Diff、相关代码和测试，在关联的 GitHub Issue/审查记录中留下结论与问题。Codex 读取 GitHub 评论自行修复并推送新 SHA；不能用 Codex 自审或 CI 替代这一独立审查。
+- **减少转述**：Issue/Spec/原型/Review 链接是唯一交接线索，同一 Codex 会话可在 Review 后继续；新窗口可选。每次交接只需任务编号或链接及最新审查入口，不复制整份需求或长提示词。GitHub 写入不可用时须明确说明并交付可复制的审查结论，不得假称已同步。
 
 ## 风险分级
 
@@ -62,6 +75,8 @@ pytest 须从 backend 工作目录运行 `python -m pytest tests`（使用项目
 
 ## 审查与验收
 
+Spec Review 与 Code Review 属于不同关口：前者只在新正式合同和 L 级等必要场景于实现前进行，后者按固定提交在 Push 后进行。两者的决策、修复状态及对应 SHA 均优先记录到关联 GitHub Issue/审查文档，以免重复传递。
+
 Codex 提交前自审：需求符合性、业务合同、失败/回归、质量、测试证据、变更范围和敏感信息。Push 后交给 ChatGPT 的材料：base/head 完整 SHA、GitHub Diff/Commit、适用需求/Spec、测试命令结果、未覆盖边界与已知问题。
 
 ChatGPT 必须从 GitHub 读取相同 SHA 的 Diff、相连源码与测试，独立判断；不能只复述 Codex 报告。发现给出文件/行、触发条件、影响和优先级。P0/P1 及影响本次验收的 P2 是阻断项；其他建议不扩大任务。Codex 在原范围修复、验证并自动再次 Commit/Push，独立审查必须覆盖新的 head。未有独立 ChatGPT 证据时标“待审”，无访问能力标“无法执行”，不得用自审或 CI 替代。
@@ -70,4 +85,4 @@ ChatGPT 必须从 GitHub 读取相同 SHA 的 Diff、相连源码与测试，独
 
 ## Skills 入口
 
-见 [Skills 审计与替代验证](skills.md)。不强制 issue tracker、全量加载前端 Skills 或每次双代理；独立 ChatGPT Review 的位置固定在 Push 后。
+见 [Skills 审计与替代验证](skills.md)。Issue 是跨会话交接的默认入口但非门槛；不强制全量加载前端 Skills 或每次双代理。必要的独立 Spec Review 在实现前，独立 ChatGPT Code Review 固定在 Push 后。
