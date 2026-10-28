@@ -1,35 +1,36 @@
-# 工作浏览器管理 V1（草案，待独立 Spec Review）
+# 工作浏览器管理 V1（修订草案，待独立复审）
 
-需求：[Issue #3](https://github.com/shuzeyong312-rgb/personal-workbench/issues/3)。基线：`09296d9c4790e3715b739ad0679caa801f5f616c`。风险：L（共享浏览器、调度和并发）。本草案不代表审查通过或实现完成。
+需求：[Issue #3](https://github.com/shuzeyong312-rgb/personal-workbench/issues/3)；[首次独立 Review](https://github.com/shuzeyong312-rgb/personal-workbench/issues/3#issuecomment-6459524899)；源码基线 `09296d9c4790e3715b739ad0679caa801f5f616c`。风险 L。证据和未覆盖项见 [隔离研究](../research/work-browser-issue-3-poc.md)。本草案未通过复审，不授权功能实施。
 
-## 问题与边界
+## 目标与范围
 
-正式采集的 `_launch_context` 使用项目根目录 `.browser-profile`、本机 Chrome、可见窗口，并排除 Playwright 的 `--disable-extensions` 默认参数。采购助手读取依赖唯一可见标题和指定区域；`source_unavailable` 不能证明扩展未安装，也可能是页面、登录、扩展注入或定位条件变化。未访问用户 Profile、真实 1688 或正式数据库，根因尚未确认。
+设置页添加工作浏览器模块，使用采集进程解析的项目根目录 `.browser-profile` 和 `_launch_context` 的 Chrome、headed、扩展参数。用户自行登录、切换账号及检查扩展。不同 checkout 的路径不同：必须从正式 Backend 所在项目启动；本工作树的 Profile 不等于正式 Profile。不得读取、展示、复制、删除或重建 Profile 或凭据，不自动安装扩展，不改变指标、历史、验证和调度合同。
 
-设置页新增独立的工作浏览器操作模块，让用户维护正式采集使用的同一 Profile。不得创建、复制、清空或迁移 Profile，不处理凭证，不自动安装插件，不修改指标解析、历史值、风控或调度规则。不同 checkout 的项目根目录不同；测试工作树的 Profile 不是正式安装的 Profile，实际运行必须使用采集进程自身解析出的路径。
+浏览器状态仅说明占用及最近操作错误；扩展显示「未自动检测，需人工验证」。区域缺失不能证明扩展缺失。用户在工作 Chrome 的 `chrome://extensions/` 检查扩展，在真实商品页确认助手区域，关闭整个浏览器，再按原流程受控采集核对八项指标及诊断；安装扩展不能证明恢复。
 
-## 候选方案与待审裁决
+## 互斥与支持边界
 
-1. 管理与采集复用 `_launch_context`，不接受客户端提供路径、命令、URL 或启动参数；管理入口启动的上下文在专属线程内持有，线程负责所有 Playwright 操作和关闭，避免同步 Playwright 跨线程使用。用户在该窗口自行操作扩展和账号。
-2. 管理线程在启动前通过 `acquire_collection_slot()` 获取既有 `COLLECTION_LOCK`，并由同一线程持有至整个 context 关闭、启动失败或退出清理；既有 `BATCH_RUNTIME` reservation 必须同时参与判断，避免已预留批次被抢占。重复请求同步到同一管理状态，不得启动第二个 context。采集、添加链接、手动批次与自动计划均通过现有占用协议拒绝或延后，不能产生错误的持久批次或更改既有调度合同。
-3. 状态只报告空闲、管理中、采集中或未知；启动中亦视为占用。关闭全部窗口、启动异常、Playwright 断开和正常 shutdown 均释放资源；shutdown 包括禁用 scheduler 的 lifespan 分支。Backend 崩溃或重启后不能依赖进程内锁判断 Profile 空闲：须先用隔离 POC 验证 Chrome 子进程退出与遗留进程占用行为；无法证明安全时返回未知/占用并拒绝启动，不能删除锁文件或强杀未知 Chrome。多 Backend 进程之间的协调和 Chrome 已有进程占用是审查阻断点，不能仅靠 Python `RLock` 宣称安全。
-4. 仅暴露本地固定用途状态与启动操作，失败返回稳定、脱敏的消息；不得泄露路径内容、Cookie、Token 或原始异常。写接口需限定可信本地 Host、Origin/跨站请求与内容类型，明确 Vite 同源代理和无 Origin 客户端处理；不以 CORS 本身作为 CSRF 防护。具体策略须审查并覆盖 DNS rebinding 与跨站表单请求，不能破坏现有 API。
-5. 设置模块保留原模块草稿与保存行为；状态未知或采集中不启动。启动后用户可在工作 Chrome 手动访问 `chrome://extensions/` 和商品页；不要求新增快捷操作。关闭整个浏览器后才允许采集。
+V1 支持 Windows、本项目一个活跃 Backend worker；多 worker 不作为正常运行方式，但须安全拒绝争用。原进程内 `COLLECTION_LOCK` 和 `BATCH_RUNTIME` 保留：所有单条、批量、添加、定时及验证的原有路径继续遵守 reservation 协议。增加一个按该 Profile 固定路径派生、位于项目本地的 OS 跨进程独占锁；锁文件仅作锁载体，锁定由 OS 管理，进程退出自动释放，不凭文件存在判断占用、不删除 Chrome 锁文件。所有上述入口在创建持久批次或启动浏览器前均须获得该锁，浏览器彻底关闭后才释放；锁失败即按现有忙碌合同拒绝/延后，不创建错误批次。持锁顺序统一为原采集锁、跨进程锁，反向释放；批次 reservation 的交接及锁作用域须保证任何空档不得被其他进程抢占。若无法以最小改动保证此交接，停止实现并重新审查，不能仅靠进程内锁。
 
-## 失败、恢复和兼容
+锁不覆盖外部 Chrome：成功获取锁也不代表 Profile 可用。仅启动固定 persistent context；启动失败或无法确认 context 所有权时返回未知/占用，释放已取得的资源，不附着其他 Chrome、重试破坏 Profile、删除锁文件或终止未知进程。外部 Chrome 不参与本锁，因此启动行为须在受支持 Chrome 版本以临时 Profile 测试；若无法证明失败关闭，则不能放行。崩溃后 OS 锁释放，但可能遗留 Chrome；再次启动仍须经过 Chrome 自身占用检查，失败保持未知并提示用户自行关闭有关窗口后重试。无自动删除或强制清理。
 
-采集中或人工验证持有浏览器时，管理请求返回可理解的冲突，不抢占、不关闭现有窗口。启动失败、Chrome 缺失或 Profile 被其他进程持有时不改写 Profile，报告失败或未知。不能保证以非正常退出方式仍保存所有尚未落盘的 Chrome 状态；正常退出后再次使用同一 Profile 验证账号与插件状态。不得尝试自动恢复旧批次或改变已有恢复策略。
+## 生命周期及并发
 
-本方案不新增数据库表、迁移、依赖或调度器。兼容和恢复的实现细节必须经隔离测试证明；若 Chrome 的实际进程生命周期无法安全满足要求，先重新设计并审查，不以删除 Profile 锁或复制数据绕过。
+管理状态内部为 `idle → opening → managing → closing → idle`，失败进入 `error`；所有权或关闭无法确认进入 `unknown`，不报告空闲。短状态锁原子认领 opening，重复请求返回现有 opening/managing 状态，不重复创建线程。工作线程独自获取和释放 `RLock`、跨进程锁，创建和操作 Playwright/context；HTTP 与 shutdown 线程只发送退出信号，绝不跨线程关闭或释放。锁竞争或已有 reservation 返回占用；反向竞争由所有采集入口统一拒绝。成功打开必须显示窗口；不能误操作 verification 窗口。
 
-## 验收与验证
+工作线程注册 context close/disconnect 信号，循环用 Playwright 的短时等待驱动事件泵并检查退出信号；页面数为零不是 context 已关闭的证明。用户关闭整个浏览器后收到关闭信号并完成清理，才能释放锁和报告 idle。启动部分成功、异常或 shutdown 均由工作线程 finally 关闭其拥有的 context 和 Playwright，确认关闭后反向释放锁。无法确认时保留 unknown，不能报告空闲；关闭异常不吞掉为成功。正常与 scheduler 禁用的 lifespan 均请求退出并有界等待；超时报告失败且维持占用，不跨线程强关。进程退出后按上节处理潜在遗留 Chrome。Backend reload 与崩溃真实行为需隔离集成验证，不能以本草案中有限 POC 替代。
 
-- 隔离临时 Profile 和假浏览器验证启动参数、同一 Profile 重启后的状态、重复请求、关闭、启动失败、断开、shutdown、异常退出与重启；验证管理和各采集入口双向竞争、批次 reservation、verification 与自动计划边界。包含多进程占用和故障注入；不可接触真实 Profile、1688、正式数据库或 scheduler。
-- 后端测试 API 的合法/非法 Host、Origin、内容类型、冲突及脱敏；运行受影响测试和后端全量回归。前端测试三个模块导航、未保存草稿、状态、重复操作和错误反馈；运行相关 Vitest、typecheck、build、对应隔离 Playwright。
-- 用户人工在正式工作浏览器检查扩展是否存在且启用，再打开真实商品页确认助手区域；关闭浏览器后按既有流程受控采集，核对八项指标与 `source_unavailable` 等诊断。安装扩展本身不能证明指标恢复。
+## 本地接口合同
 
-## 实施前待解决
+新增状态 GET 和固定用途的打开 POST；请求不接受 URL、路径、命令或启动选项。操作入口只监听 loopback。POST 同时要求：Host 精确为配置的 `127.0.0.1:8200` 或由受控 Vite 代理转发的原始 `127.0.0.1:<frontend-port>`；Origin 精确匹配本次启动由 `dev.ps1` 传给 Backend 的 `http://127.0.0.1:<frontend-port>`；`Content-Type: application/json`、固定专用 header 且 JSON 空对象。缺失、null、多个或非匹配 Origin 一律拒绝，包括无 Origin CLI；不支持无 Origin 写客户端。未配置前端 Origin 时操作禁用。必须验证代理的实际 Host 转发，若不符合则调整并测试明确的代理配置，不能相信客户端自报 forwarded headers。禁止跨域 CORS 授权；专用 header 使跨站浏览器请求需预检，而服务端 Origin/Host 校验也独立 fail closed。状态响应不含敏感路径或运行异常。只对新接口增加这些限制，不改变其他 API。
 
-- 在隔离环境确定 Playwright/Chrome 关闭、Backend 崩溃、重启、多 Backend 及 Profile 被外部 Chrome 占用时的可检测行为和安全互斥；确定不改变 scheduler 对占用的既有行为。
-- 固定 API 的本地访问防护及线程状态转换，核对现有前端代理与部署方式。
-- 独立审查固定版本草案并解决阻断项后才实施；若无法复现助手实际缺失，只能交付维护入口，不能声称诊断或修复了插件缺失。
+## 必要验证与恢复
+
+- 隔离临时 Profile 的实际 Chrome 测试：同 Profile 多进程竞争、外部 Chrome 占用、可见窗口、全部窗口关闭、正常关闭后的同 Profile 状态保持、Chrome/Backend 意外退出、reload 和重启；不得访问真实 Profile、1688、正式 DB。验证 OS 锁持有者终止后释放；无法确认 Chrome 占用时失败关闭。
+- mock 与临时 DB 覆盖所有采集入口双向竞争、reservation 交接、自动计划和 verification、并发重复点击、部分启动失败、事件泵、两条 lifespan shutdown 和超时；核对冲突不创建错误持久批次、退出后可采集。保留原异常、历史及调度语义。
+- API 覆盖动态合法 Origin/Host、代理链、缺失或恶意 Origin、DNS rebinding Host、form/fetch、预检、JSON/header 缺失和无 Origin CLI；前端覆盖模块导航、原草稿、错误和重复操作，运行相关测试、typecheck、build 与隔离 Playwright。共享规则改动运行后端全量回归。
+- 恢复仅允许用户关闭其已知浏览器、等待后重试；不得删除 Profile/Chrome 锁、迁移数据、强杀未知进程或声称插件健康。人工真实环境验收单独进行。
+
+## 实施前复审重点
+
+跨进程锁贯穿 reservation 与批次交接的具体实现仍需验证；API 启动配置的变更及部署兼容性需确认。研究中的 POC 不覆盖所有阻断场景，尤其外部普通 Chrome、reload、状态持久化和扩展注入，不能视为放行证据。复审确定可接受的补充验证与实施边界后再实施。
