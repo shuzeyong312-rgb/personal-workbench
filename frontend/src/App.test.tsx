@@ -134,6 +134,7 @@ async function openSettingsScenario(options: { ownGet: number; monitoringGet: nu
     if (key === "GET /api/dashboard/today") return json(route, { date: "2026-10-06", stats: { monitored_competitors: 0, changed_competitors: 0, change_events: 0, price_changed_competitors: 0, stock_changed_competitors: 0, sku_changed_competitors: 0, failed_collections: 0 }, items: [], collection_summary: { last_collection_at: null, success_runs: 0, failed_runs: 0, average_duration_seconds: null }, trend_7d: [] });
     if (key === "GET /api/dashboard/group-attention") return json(route, { date: "2026-10-06", kpis: { monitored_product_groups: 0, changed_product_groups_today: 0, changed_competitors_today: 0 }, groups: [] });
     if (key === "GET /api/competitors/collect-batch/status") return json(route, makeBatchState("idle"));
+    if (key === "GET /api/work-browser") return json(route, { status: "idle", message: "" });
     if (key === "GET /api/settings/own-shop-name") return json(route, options.ownGet === 200 ? { configured: true, own_shop_name: "测试店铺" } : { message: "基础设置加载失败" }, options.ownGet);
     if (key === "PUT /api/settings/own-shop-name") return json(route, options.ownPut === 200 || options.ownPut === undefined ? { configured: true, own_shop_name: "更新店铺" } : { message: "基础设置保存失败" }, options.ownPut ?? 200);
     if (key === "GET /api/settings/competitor-monitoring") return json(route, options.monitoringGet === 200 ? monitoringSettings : { message: "竞品监控加载失败" }, options.monitoringGet);
@@ -151,7 +152,7 @@ test("basic-settings load failure does not block competitor-monitoring settings"
   const scenario = await openSettingsScenario({ ownGet: 500, monitoringGet: 200 });
   try {
     await playwrightExpect(scenario.page.getByText("设置加载失败", { exact: true })).toBeVisible();
-    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^采集策略/ }).click();
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("link", { name: /^采集策略/ }).click();
     await playwrightExpect(scenario.page.getByLabel("单商品采集间隔")).toHaveValue("5");
   } finally { await scenario.close(); }
 }, 10000);
@@ -160,9 +161,9 @@ test("basic-settings save failure does not block competitor-monitoring settings"
   const scenario = await openSettingsScenario({ ownGet: 200, monitoringGet: 200, ownPut: 500 });
   try {
     await playwrightExpect(scenario.page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
-    await scenario.page.getByRole("button", { name: "保存设置", exact: true }).click();
-    await playwrightExpect(scenario.page.getByRole("alert")).toContainText("基础设置保存失败");
-    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^采集策略/ }).click();
+    await scenario.page.locator("#settings-basic").getByRole("button", { name: "保存设置", exact: true }).click();
+    await playwrightExpect(scenario.page.locator("#settings-basic").getByRole("alert")).toContainText("基础设置保存失败");
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("link", { name: /^采集策略/ }).click();
     await playwrightExpect(scenario.page.getByLabel("单商品采集间隔")).toHaveValue("5");
   } finally { await scenario.close(); }
 });
@@ -171,9 +172,9 @@ test("competitor-monitoring load failure does not replace the loaded basic setti
   const scenario = await openSettingsScenario({ ownGet: 200, monitoringGet: 500 });
   try {
     await playwrightExpect(scenario.page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
-    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^采集策略/ }).click();
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("link", { name: /^采集策略/ }).click();
     await playwrightExpect(scenario.page.getByText("竞品监控设置加载失败", { exact: true })).toBeVisible();
-    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^店铺识别/ }).click();
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("link", { name: /^店铺识别/ }).click();
     await playwrightExpect(scenario.page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
   } finally { await scenario.close(); }
 });
@@ -181,11 +182,11 @@ test("competitor-monitoring load failure does not replace the loaded basic setti
 test("competitor-monitoring save failure does not replace the loaded basic settings", async () => {
   const scenario = await openSettingsScenario({ ownGet: 200, monitoringGet: 200, monitoringPut: 500 });
   try {
-    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^采集策略/ }).click();
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("link", { name: /^采集策略/ }).click();
     await playwrightExpect(scenario.page.getByLabel("单商品采集间隔")).toHaveValue("5");
-    await scenario.page.getByRole("button", { name: "保存设置", exact: true }).click();
-    await playwrightExpect(scenario.page.getByRole("alert")).toContainText("竞品监控保存失败");
-    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^店铺识别/ }).click();
+    await scenario.page.locator("#settings-monitoring").getByRole("button", { name: "保存设置", exact: true }).click();
+    await playwrightExpect(scenario.page.locator("#settings-monitoring").getByRole("alert")).toContainText("竞品监控保存失败");
+    await scenario.page.getByRole("navigation", { name: "设置模块" }).getByRole("link", { name: /^店铺识别/ }).click();
     await playwrightExpect(scenario.page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
   } finally { await scenario.close(); }
 });

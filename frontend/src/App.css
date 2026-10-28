@@ -999,3 +999,32 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-status{justify-self:start}
 @media(max-width:1220px){.main-content[data-page="groups"] .group-directory-list-coverage-head,.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-coverage{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:6px}}
 @media(max-width:950px){.main-content[data-page="groups"] .group-directory-list-coverage-head{display:none}.main-content[data-page="groups"] .group-directory-grid.view-list .group-directory-coverage{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr)}}
+.settings-shell .settings-layout { display:grid; grid-template-columns:200px minmax(0,1fr); align-items:start; border:0; background:transparent; gap:24px; }
+.settings-shell .settings-side-nav { position:sticky; top:16px; display:grid; gap:4px; padding:20px 12px; border:1px solid #dde1e6; border-radius:12px; background:#fff; }
+.settings-shell .settings-side-nav strong,.settings-shell .settings-side-nav span { padding:8px 10px; }
+.settings-shell .settings-side-nav span { color:#626b78; font-size:12px; }
+.settings-shell .settings-side-nav a { padding:9px 10px; border-radius:6px; color:#424d5b; text-decoration:none; font-size:13px; }
+.settings-shell .settings-side-nav a:hover,.settings-shell .settings-side-nav a:focus-visible { color:#2563eb; background:#f5f8ff; }
+.settings-shell .settings-content { display:grid; gap:16px; min-width:0; }
+.settings-shell .settings-overview,.settings-shell .settings-future,.settings-shell .settings-card { border:1px solid #dde1e6; border-radius:12px; background:#fff; }
+.settings-shell .settings-overview,.settings-shell .settings-future { padding:24px 32px; }
+.settings-shell .settings-overview h2,.settings-shell .settings-future h2,.settings-shell .settings-group-heading h2 { margin:0; font-size:20px; }
+.settings-shell .settings-overview p,.settings-shell .settings-future p,.settings-shell .settings-group-heading p { color:#626b78; font-size:13px; line-height:1.7; }
+.settings-shell .settings-overview-grid,.settings-shell .settings-future-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:20px; }
+.settings-shell .settings-overview-grid div,.settings-shell .settings-future-grid button { display:grid; gap:8px; padding:16px; border:1px solid #dde1e6; border-radius:8px; background:#f6f7f8; text-align:left; }
+.settings-shell .settings-overview-grid span,.settings-shell .settings-future-grid span { color:#626b78; font-size:12px; }
+.settings-shell .settings-group-heading { padding:12px 0 0; }
+.settings-shell .settings-future-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.settings-shell .settings-future-grid button[aria-pressed="true"] { border-color:#2563eb; background:#f5f8ff; }
+.settings-shell .settings-content > section,.settings-shell #settings-browser { scroll-margin-top:24px; }
+.settings-shell .settings-save-bar { position:static; }
+@media (max-width:900px) { .settings-shell .settings-layout { grid-template-columns:1fr; } .settings-shell .settings-side-nav { position:static; display:flex; flex-wrap:wrap; } .settings-shell .settings-side-nav span { flex-basis:100%; } }
+@media (max-width:600px) { .settings-shell .settings-overview,.settings-shell .settings-future { padding:20px 16px; } .settings-shell .settings-overview-grid,.settings-shell .settings-future-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+.settings-shell .settings-side-nav a[aria-current="location"] { color:#2563eb; background:#eef3ff; font-weight:600; }
+.settings-shell .settings-monitoring-columns { display:flex; flex-direction:column; gap:0; }
+.settings-shell .settings-automation { padding-left:0; border-left:0; }
+.settings-shell .settings-runtime { border-top:1px solid #dde1e6; }
+.settings-shell .settings-radio-group { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.settings-shell .settings-future-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.settings-shell .settings-future-grid small { color:#626b78; line-height:1.6; }
+@media (max-width:600px) { .settings-shell .settings-radio-group,.settings-shell .settings-future-grid { grid-template-columns:1fr; } }
