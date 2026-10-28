@@ -7,6 +7,7 @@ import "./CompetitorList.css";
 import "./Workspace.css";
 import "./Dashboard.css";
 import { ProductLibrary } from "./ProductLibrary";
+import { WorkspaceTools, WorkspaceToolsProvider } from "./WorkspaceTools";
 import { CustomerReachPage } from "./CustomerReach";
 
 type AddStatus = "initial" | "submitting" | "success" | "partial" | "failed" | "invalid" | "duplicate" | "server-error";
@@ -1053,7 +1054,7 @@ export function StatusBadge({ status }: { status: Competitor["status"] }) {
   return <span className={"status-badge status-" + status}>{labels[status]}</span>;
 }
 
-type ShellProps = { page: Page; onNavigate: (page: Page) => void; breadcrumb: string; children: ReactNode };
+type ShellProps = { page: Page; onNavigate: (page: Page) => void | boolean; breadcrumb: string; children: ReactNode };
 type NavIconName = "home" | "monitoring" | "library" | "assistant" | "compare" | "inquiry" | "listing" | "settings";
 
 function NavIcon({ name }: { name: NavIconName }) {
@@ -1118,7 +1119,7 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
 function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
   const monitoringPage = monitoringPages.has(page);
   return <div className={`app-shell workspace-shell${page === "settings" ? " settings-shell" : ""}${page === "group-detail" ? " group-detail-shell" : ""}`}><a className="workspace-skip" href="#workspace-main">跳至主内容</a><Sidebar page={page} onNavigate={onNavigate} /><main id="workspace-main" tabIndex={-1} className={`main-content${page === "dashboard" ? " main-content-dashboard" : ""}`} data-page={page}>
-    <div className="workspace-header"><nav className="breadcrumb" aria-label="当前位置"><button type="button" onClick={() => onNavigate("home")}>个人工作台</button><span aria-hidden="true">/</span>{monitoringPage && <><button type="button" aria-label="返回模块总览" onClick={() => onNavigate("dashboard")}>竞品监控</button><span aria-hidden="true">/</span></>}<strong aria-current="page">{breadcrumb}</strong></nav></div>
+    <div className="workspace-header"><nav className="breadcrumb" aria-label="当前位置"><button type="button" onClick={() => onNavigate("home")}>个人工作台</button><span aria-hidden="true">/</span>{monitoringPage && <><button type="button" aria-label="返回模块总览" onClick={() => onNavigate("dashboard")}>竞品监控</button><span aria-hidden="true">/</span></>}<strong aria-current="page">{breadcrumb}</strong></nav><WorkspaceTools onNavigate={onNavigate} /></div>
     {children}
   </main></div>;
 }
@@ -2742,8 +2743,10 @@ export function SettingsPage({ configured, value, status, error, saveError, subm
   const [invalid, setInvalid] = useState(false);
   const [invalidMessage, setInvalidMessage] = useState("请检查输入：数值须在范围内，时间点不得重复，计划时间须在同一天内。");
   const navigate = (page: Page) => {
-    if (submitting || monitoringSubmitting) return;
-    if (!dirty || window.confirm("有尚未保存的设置。离开后草稿仍会保留在本次工作台会话中，刷新或关闭页面会丢失。仍要离开吗？")) onNavigate(page);
+    if (page === "settings") return true;
+    if (submitting || monitoringSubmitting) return false;
+    if (dirty && !window.confirm("有尚未保存的设置。离开后草稿仍会保留在本次工作台会话中，刷新或关闭页面会丢失。仍要离开吗？")) return false;
+    onNavigate(page); return true;
   };
   const setNumber = (key: keyof CompetitorMonitoringSettings, value: string) => { if (monitoring) onMonitoringChange({ ...monitoring, [key]: value === "" ? NaN : Number(value) }); };
   const saveState = (changed: boolean, busy: boolean, failed: string | null, unconfigured = false) => <span className="settings-save-state" role="status">{busy ? "正在保存，请稍候…" : failed ? "保存失败，修改已保留，请重试" : changed ? "有未保存的修改" : unconfigured ? "尚未配置" : "当前设置已保存"}</span>;
@@ -3544,7 +3547,7 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <MonitoringNavigationContext.Provider value={{ expanded: monitoringExpanded, setExpanded: setMonitoringExpanded }}><>
+  return <WorkspaceToolsProvider batch={batchState}><MonitoringNavigationContext.Provider value={{ expanded: monitoringExpanded, setExpanded: setMonitoringExpanded }}><>
     {page === "home" && <HomePage onNavigate={navigate} />}
     {page === "product-library" && <AppShell page="product-library" breadcrumb="产品库" onNavigate={navigate}><ProductLibrary /></AppShell>}
     {page === "customer-reach" && <AppShell page="customer-reach" breadcrumb="客户触达" onNavigate={navigate}><CustomerReachPage /></AppShell>}
@@ -3569,7 +3572,7 @@ function App() {
     {batchLifecycleDialog && <BatchLifecycleDialog action={batchLifecycleDialog.action} selectedCount={batchLifecycleDialog.selectedCount} eligibleCount={batchLifecycleDialog.competitorIds.length} ownCount={batchLifecycleDialog.ownCount} submitting={batchLifecycleSubmitting} error={batchLifecycleError} onClose={closeBatchLifecycleDialog} onConfirm={() => void submitBatchLifecycle()} />}
     {groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}
     {lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}
-  </></MonitoringNavigationContext.Provider>;
+  </></MonitoringNavigationContext.Provider></WorkspaceToolsProvider>;
 }
 
 export default App;
