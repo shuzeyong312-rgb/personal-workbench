@@ -122,3 +122,45 @@ test("add-links terminal state keeps polling until the runner exits on a non-das
   await bell.click();
   await expect(page.getByText("添加监控商品已完成")).toHaveCount(1);
 });
+
+test("visual review captures search and notification states at desktop and mobile sizes", async ({ page }) => {
+  await installApiMock(page, { competitors: [] });
+  await page.route("**/api/product-library/products?*", route => route.fulfill({ json: { items: [product], total: 1 } }));
+  for (const [name, width, height] of [["desktop", 1280, 800], ["mobile", 390, 844]] as const) {
+    await page.setViewportSize({ width, height });
+    await page.goto("/");
+    await page.screenshot({ path: `test-results/review-${name}-header.png` });
+    await page.getByRole("button", { name: "搜索页面、功能或商品" }).click();
+    await expect(page.getByRole("dialog", { name: "全局搜索" }).getByRole("button", { name: "竞品分组 页面" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "全局搜索" }).getByText("规划中")).toHaveCount(0);
+    await page.screenshot({ path: `test-results/review-${name}-search-default.png` });
+    await page.getByRole("textbox", { name: "搜索页面、功能或商品" }).fill("FAN");
+    await expect(page.getByRole("button", { name: /便携风扇/ })).toBeVisible();
+    await page.screenshot({ path: `test-results/review-${name}-search-result.png` });
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: /任务通知/ }).click();
+    await expect(page.getByText("暂无任务通知")).toBeVisible();
+    await page.screenshot({ path: `test-results/review-${name}-notifications-empty.png` });
+    await page.evaluate(() => localStorage.setItem("workspace-task-notifications-v1", JSON.stringify({ seen: ["a", "b", "c"], items: [
+      { id: "a", title: "竞品采集已完成", body: "已完成 12 / 12 · 成功 12 · 失败 0 · 剩余 0", tone: "success", time: "2026-10-28T09:30:00Z", read: false },
+      { id: "b", title: "添加监控商品部分完成", body: "新增 8 · 业务拒绝 1 · 技术失败 1 · 未执行 0", tone: "warning", time: "2026-10-28T08:20:00Z", read: false },
+      { id: "c", title: "竞品采集需处理", body: "已完成 2 / 8 · 成功 0 · 失败 2 · 剩余 6", tone: "error", time: "2026-10-27T08:20:00Z", read: true }
+    ] })));
+    await page.reload(); await page.getByRole("button", { name: /任务通知/ }).click();
+    await page.screenshot({ path: `test-results/review-${name}-notifications-list.png` });
+    await page.getByRole("button", { name: /未读2/ }).click();
+    await page.screenshot({ path: `test-results/review-${name}-notifications-unread.png` });
+    await page.evaluate(() => localStorage.removeItem("workspace-task-notifications-v1"));
+  }
+});
+
+test("a notification row opens the real collection records", async ({ page }) => {
+  const batchStatus = { status: "completed", task_id: "task-jump", work_kind: "collect_products", lifecycle_status: "terminal", batch_outcome_code: "success", total: 1, completed: 1, succeeded: 1, failed: 0, remaining: 0, runner_active: false, browser_open: false, items: [] };
+  await installApiMock(page, { competitors: [], batchStatus });
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: /任务通知/ })).toHaveAttribute("aria-label", "任务通知，1 条未读");
+  await page.getByRole("button", { name: /任务通知/ }).click();
+  await page.getByRole("button", { name: /竞品采集已完成/ }).click();
+  await expect(page.locator('main[data-page="collection-tasks"]')).toBeVisible();
+  await expect(page.getByRole("button", { name: /任务通知/ })).toHaveAttribute("aria-label", "任务通知，0 条未读");
+});
