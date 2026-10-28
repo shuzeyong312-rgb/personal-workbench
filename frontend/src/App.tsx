@@ -2698,10 +2698,10 @@ function WorkBrowserSettings() {
     const timer = window.setInterval(() => void refresh(), 2000);
     return () => { active = false; window.clearInterval(timer); };
   }, []);
-  const open = async () => {
+  const open = async (extensions = false) => {
     setPending(true);
     try {
-      const response = await fetch("/api/work-browser", { method: "POST", headers: { "Content-Type": "application/json", "X-Workbench-Request": "work-browser" }, body: "{}" });
+      const response = await fetch(extensions ? "/api/work-browser/extensions" : "/api/work-browser", { method: "POST", headers: { "Content-Type": "application/json", "X-Workbench-Request": "work-browser" }, body: "{}" });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "打开失败，请检查后台服务。");
       setState(result);
@@ -2709,7 +2709,15 @@ function WorkBrowserSettings() {
     finally { setPending(false); }
   };
   const labels: Record<string, string> = { idle: "空闲", opening: "正在打开", managing: "管理中", closing: "正在关闭", collecting: "采集中", unknown: "未知" };
-  return <section className="table-card settings-card"><div className="table-heading"><div><h2>工作浏览器</h2><span>维护 1688 采集使用的浏览器与登录状态。</span></div></div><div className="settings-basic-content"><div><p role="status">状态：{labels[state.status] || "未知"}</p>{state.message && <p role="alert">{state.message}</p>}<button type="button" className="primary-button" onClick={() => void open()} disabled={pending || !["idle", "managing", "opening"].includes(state.status)}>{pending || state.status === "opening" ? "正在打开…" : state.status === "managing" ? "工作浏览器已打开" : "打开工作浏览器"}</button><p>扩展状态未自动检测，请在工作浏览器中手动验证。</p><p>打开 chrome://extensions/ 检查采购助手，再打开商品页确认助手区域。关闭整个浏览器后，按现有流程测试采集并核对经营指标。</p></div></div></section>;
+  const unavailable = pending || !["idle", "managing", "opening"].includes(state.status);
+  return <section className="table-card settings-card"><div className="table-heading"><div><h2>工作浏览器</h2><span>管理 1688 采集使用的浏览器、账号和扩展。</span></div></div>
+    <div className="work-browser-settings">
+      <div className="work-browser-row"><div className="monitoring-setting-copy"><strong>浏览器状态</strong><small>管理期间暂停使用此浏览器进行采集。</small></div><span className="work-browser-value" role="status">{labels[state.status] || "未知"}</span></div>
+      <div className="work-browser-row"><div className="monitoring-setting-copy"><strong>1688 官方采购助手</strong><small>在插件管理中检查扩展，然后在商品页确认助手区域。</small></div><span className="work-browser-value">未自动检测</span></div>
+      <div className="work-browser-row"><div className="monitoring-setting-copy"><strong>工作浏览器配置目录</strong><small>沿用当前项目的采集配置，账号与扩展保存在本机。</small></div><span className="work-browser-value">项目根目录 / .browser-profile</span></div>
+      {state.message && <div className="feedback feedback-server-error" role="alert">{state.message}</div>}
+      <div className="settings-save-bar"><span className="settings-save-state">关闭整个浏览器后可继续采集。</span><button type="button" className="secondary-button" onClick={() => void open(true)} disabled={unavailable}>插件管理</button><button type="button" className="primary-button" onClick={() => void open()} disabled={unavailable}>{pending || state.status === "opening" ? "正在打开…" : "打开工作浏览器"}</button></div>
+    </div></section>;
 }
 
 export function SettingsPage({ configured, value, status, error, saveError, submitting, onChange, onRetry, onSave, onNavigate, monitoring, monitoringStatus, monitoringError, monitoringSaveError, monitoringSubmitting, onMonitoringChange, onMonitoringOpen, onMonitoringRetry, onMonitoringSave, basicDirty, monitoringDirty }: SettingsPageProps) {

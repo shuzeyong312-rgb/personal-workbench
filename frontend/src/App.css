@@ -445,6 +445,9 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .settings-shell .settings-card .primary-button { background: #2563eb; }
 .settings-shell .settings-card .primary-button:hover:not(:disabled) { background: #1d4ed8; }
 .settings-shell .settings-basic-content { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 48px; padding: 16px 0 24px; }
+.settings-shell .work-browser-settings { padding: 0 32px; }
+.settings-shell .work-browser-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: 24px; align-items: center; padding: 16px 0; border-top: 1px solid #edf0f2; }
+.settings-shell .work-browser-value { color: #626b78; font-size: 13px; text-align: right; overflow-wrap: anywhere; }
 .settings-shell .settings-explanation { border-left: 1px solid #dde1e6; padding-left: 32px; }
 .settings-shell .settings-explanation h3 { font-size: 14px; }
 .settings-shell .settings-explanation p { margin: 12px 0 0; font-size: 13px; color: #626b78; line-height: 1.8; }
@@ -462,6 +465,9 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
   .settings-shell .settings-nav strong { flex-wrap: wrap; gap: 4px; }
   .settings-shell .table-heading, .settings-shell .settings-monitoring-heading { padding: 24px 16px 16px; }
   .settings-shell .settings-form, .settings-shell .monitoring-settings-form { padding: 0 16px; }
+  .settings-shell .work-browser-settings { padding: 0 16px; }
+  .settings-shell .work-browser-row { grid-template-columns: 1fr; gap: 8px; }
+  .settings-shell .work-browser-value { text-align: left; }
   .settings-shell .settings-effect-note { display: block; }
   .settings-shell .settings-effect-note strong { display: block; margin-bottom: 4px; }
   .settings-shell .monitoring-auto-row { grid-template-columns: 1fr; }

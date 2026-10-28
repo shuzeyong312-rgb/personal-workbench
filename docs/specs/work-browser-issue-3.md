@@ -8,6 +8,8 @@
 
 浏览器状态仅说明占用及最近操作错误；扩展显示「未自动检测，需人工验证」。区域缺失不能证明扩展缺失。用户在工作 Chrome 的 `chrome://extensions/` 检查扩展，在真实商品页确认助手区域，关闭整个浏览器，再按原流程受控采集核对八项指标及诊断；安装扩展不能证明恢复。
 
+设置页按浏览器状态、采购助手和项目根目录下的 `.browser-profile` 三行展示信息，底部提供打开工作浏览器与插件管理操作。插件管理只能在同一工作 context 中打开固定的 `chrome://extensions/`。新启动或重复点击时在管理线程恢复并激活工作窗口；窗口超出当前显示器工作区时调整至可见区域。窗口操作失败需提示，不能关闭现有 context 或改变采集互斥。
+
 ## 互斥与支持边界
 
 V1 支持 Windows、本项目一个活跃 Backend worker；多 worker 不作为正常运行方式，但须安全拒绝争用。根据独立 Review #2，优先以规范化 Profile 绝对路径为键，在 Backend lifespan 启动时、数据库恢复和 scheduler 前取得 OS 跨进程独占锁，保持至所有采集及浏览器资源确认关闭后退出。第二 Backend 获锁失败时启动失败，不能提供不受保护的采集 API。锁文件仅作锁载体，不凭文件存在判断占用、不删除 Chrome 锁文件；进程异常退出由 OS 释放锁。本进程内继续使用 `COLLECTION_LOCK` 和 `BATCH_RUNTIME` 的既有 reservation 协议，避免在 reservation 到 worker 的交接中转移 OS 锁。该方向仍需实际 lifespan 和 reload 隔离验证；若失败或不能确认安全退出，停止并复审。
@@ -22,7 +24,7 @@ V1 支持 Windows、本项目一个活跃 Backend worker；多 worker 不作为�
 
 ## 本地接口合同
 
-新增状态 GET 和固定用途的打开 POST；请求不接受 URL、路径、命令或启动选项。操作入口只监听 loopback。POST 同时要求：Host 精确为配置的 `127.0.0.1:8200` 或由受控 Vite 代理转发的原始 `127.0.0.1:<frontend-port>`；Origin 精确匹配本次启动由 `dev.ps1` 传给 Backend 的 `http://127.0.0.1:<frontend-port>`；`Content-Type: application/json`、固定专用 header 且 JSON 空对象。缺失、null、多个或非匹配 Origin 一律拒绝，包括无 Origin CLI；不支持无 Origin 写客户端。未配置前端 Origin 时操作禁用。必须验证代理的实际 Host 转发，若不符合则调整并测试明确的代理配置，不能相信客户端自报 forwarded headers。禁止跨域 CORS 授权；专用 header 使跨站浏览器请求需预检，而服务端 Origin/Host 校验也独立 fail closed。状态响应不含敏感路径或运行异常。只对新接口增加这些限制，不改变其他 API。
+新增状态 GET 和固定用途的打开、插件管理 POST；请求不接受 URL、路径、命令或启动选项。操作入口只监听 loopback。POST 同时要求：Host 精确为配置的 `127.0.0.1:8200` 或由受控 Vite 代理转发的原始 `127.0.0.1:<frontend-port>`；Origin 精确匹配本次启动由 `dev.ps1` 传给 Backend 的 `http://127.0.0.1:<frontend-port>`；`Content-Type: application/json`、固定专用 header 且 JSON 空对象。缺失、null、多个或非匹配 Origin 一律拒绝，包括无 Origin CLI；不支持无 Origin 写客户端。未配置前端 Origin 时操作禁用。必须验证代理的实际 Host 转发，若不符合则调整并测试明确的代理配置，不能相信客户端自报 forwarded headers。禁止跨域 CORS 授权；专用 header 使跨站浏览器请求需预检，而服务端 Origin/Host 校验也独立 fail closed。状态响应不含敏感路径或运行异常。只对新接口增加这些限制，不改变其他 API。
 
 ## 必要验证与恢复
 
