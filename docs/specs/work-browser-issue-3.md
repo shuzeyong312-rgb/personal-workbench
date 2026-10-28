@@ -1,6 +1,6 @@
-# 工作浏览器管理 V1（修订草案，待独立复审）
+# 工作浏览器管理 V1
 
-需求：[Issue #3](https://github.com/shuzeyong312-rgb/personal-workbench/issues/3)；[首次独立 Review](https://github.com/shuzeyong312-rgb/personal-workbench/issues/3#issuecomment-6459524899)；源码基线 `09296d9c4790e3715b739ad0679caa801f5f616c`。风险 L。证据和未覆盖项见 [隔离研究](../research/work-browser-issue-3-poc.md)。本草案未通过复审，不授权功能实施。
+需求：[Issue #3](https://github.com/shuzeyong312-rgb/personal-workbench/issues/3)；[执行裁决](https://github.com/shuzeyong312-rgb/personal-workbench/issues/3#issuecomment-6459849291)；源码基线 `09296d9c4790e3715b739ad0679caa801f5f616c`。风险 L。证据和未覆盖项见 [隔离研究](../research/work-browser-issue-3-poc.md)；实现待独立 Code Review 和用户验收。
 
 ## 目标与范围
 
@@ -16,7 +16,7 @@ V1 支持 Windows、本项目一个活跃 Backend worker；多 worker 不作为�
 
 ## 生命周期及并发
 
-管理状态内部为 `idle → opening → managing → closing → idle`，失败进入 `error`；所有权或关闭无法确认进入 `unknown`，不报告空闲。短状态锁原子认领 opening，重复请求返回现有 opening/managing 状态，不重复创建线程。工作线程独自获取和释放 `RLock`、跨进程锁，创建和操作 Playwright/context；HTTP 与 shutdown 线程只发送退出信号，绝不跨线程关闭或释放。锁竞争或已有 reservation 返回占用；反向竞争由所有采集入口统一拒绝。成功打开必须显示窗口；不能误操作 verification 窗口。
+管理状态内部为 `idle → opening → managing → closing → idle`；所有权或关闭无法确认进入 `unknown`，不报告空闲。短状态锁原子认领 opening，重复请求返回现有 opening/managing 状态，不重复创建线程。Backend lifespan 管理跨进程锁；工作线程独自获取和释放 `RLock`、创建和操作 Playwright/context；HTTP 与 shutdown 线程只发送退出信号，绝不跨线程关闭或释放。锁竞争或已有 reservation 返回占用；反向竞争由所有采集入口统一拒绝。成功打开必须显示窗口；不能误操作 verification 窗口。
 
 工作线程注册 context close/disconnect 信号，循环用 Playwright 的短时等待驱动事件泵并检查退出信号；页面数为零不是 context 已关闭的证明。用户关闭整个浏览器后收到关闭信号并完成清理，才能释放锁和报告 idle。启动部分成功、异常或 shutdown 均由工作线程 finally 关闭其拥有的 context 和 Playwright，确认关闭后反向释放锁。无法确认时保留 unknown，不能报告空闲；关闭异常不吞掉为成功。正常与 scheduler 禁用的 lifespan 均请求退出并有界等待；超时报告失败且维持占用，不跨线程强关。进程退出后按上节处理潜在遗留 Chrome。Backend reload 与崩溃真实行为需隔离集成验证，不能以本草案中有限 POC 替代。
 
@@ -31,6 +31,6 @@ V1 支持 Windows、本项目一个活跃 Backend worker；多 worker 不作为�
 - API 覆盖动态合法 Origin/Host、代理链、缺失或恶意 Origin、DNS rebinding Host、form/fetch、预检、JSON/header 缺失和无 Origin CLI；前端覆盖模块导航、原草稿、错误和重复操作，运行相关测试、typecheck、build 与隔离 Playwright。共享规则改动运行后端全量回归。
 - 恢复仅允许用户关闭其已知浏览器、等待后重试；不得删除 Profile/Chrome 锁、迁移数据、强杀未知进程或声称插件健康。人工真实环境验收单独进行。
 
-## 实施前复审重点
+## 尚需验证的边界
 
-跨进程锁贯穿 reservation 与批次交接的具体实现仍需验证；API 启动配置的变更及部署兼容性需确认。研究中的 POC 不覆盖所有阻断场景，尤其外部普通 Chrome、reload、状态持久化和扩展注入，不能视为放行证据。复审确定可接受的补充验证与实施边界后再实施。
+生命周期锁、reload、异常退出和代理安全需结合实现进行隔离验证；账号、扩展注入和指标恢复仍需人工验收。有限 POC 不能证明全部 Chrome 版本和异常场景。
