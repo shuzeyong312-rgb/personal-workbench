@@ -10,7 +10,7 @@
 
 ## 互斥与支持边界
 
-V1 支持 Windows、本项目一个活跃 Backend worker；多 worker 不作为正常运行方式，但须安全拒绝争用。原进程内 `COLLECTION_LOCK` 和 `BATCH_RUNTIME` 保留：所有单条、批量、添加、定时及验证的原有路径继续遵守 reservation 协议。增加一个按该 Profile 固定路径派生、位于项目本地的 OS 跨进程独占锁；锁文件仅作锁载体，锁定由 OS 管理，进程退出自动释放，不凭文件存在判断占用、不删除 Chrome 锁文件。所有上述入口在创建持久批次或启动浏览器前均须获得该锁，浏览器彻底关闭后才释放；锁失败即按现有忙碌合同拒绝/延后，不创建错误批次。持锁顺序统一为原采集锁、跨进程锁，反向释放；批次 reservation 的交接及锁作用域须保证任何空档不得被其他进程抢占。若无法以最小改动保证此交接，停止实现并重新审查，不能仅靠进程内锁。
+V1 支持 Windows、本项目一个活跃 Backend worker；多 worker 不作为正常运行方式，但须安全拒绝争用。根据独立 Review #2，优先以规范化 Profile 绝对路径为键，在 Backend lifespan 启动时、数据库恢复和 scheduler 前取得 OS 跨进程独占锁，保持至所有采集及浏览器资源确认关闭后退出。第二 Backend 获锁失败时启动失败，不能提供不受保护的采集 API。锁文件仅作锁载体，不凭文件存在判断占用、不删除 Chrome 锁文件；进程异常退出由 OS 释放锁。本进程内继续使用 `COLLECTION_LOCK` 和 `BATCH_RUNTIME` 的既有 reservation 协议，避免在 reservation 到 worker 的交接中转移 OS 锁。该方向仍需实际 lifespan 和 reload 隔离验证；若失败或不能确认安全退出，停止并复审。
 
 锁不覆盖外部 Chrome：成功获取锁也不代表 Profile 可用。仅启动固定 persistent context；启动失败或无法确认 context 所有权时返回未知/占用，释放已取得的资源，不附着其他 Chrome、重试破坏 Profile、删除锁文件或终止未知进程。外部 Chrome 不参与本锁，因此启动行为须在受支持 Chrome 版本以临时 Profile 测试；若无法证明失败关闭，则不能放行。崩溃后 OS 锁释放，但可能遗留 Chrome；再次启动仍须经过 Chrome 自身占用检查，失败保持未知并提示用户自行关闭有关窗口后重试。无自动删除或强制清理。
 
