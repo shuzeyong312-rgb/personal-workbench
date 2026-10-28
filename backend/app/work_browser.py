@@ -1,16 +1,20 @@
 """Local maintenance of the collector's persistent browser."""
 import asyncio
+import logging
 import os
+import traceback
 from pathlib import Path
 from threading import Event, Lock, Thread
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
+from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 
 from app.collection.collector_1688 import _launch_context, _project_root, sync_playwright
 from app.collection.service import COLLECTION_LOCK, BATCH_RUNTIME, acquire_collection_slot
 
 router = APIRouter(prefix="/api/work-browser")
+logger = logging.getLogger(__name__)
 
 
 def _activate_windows_page(page):
@@ -189,6 +193,7 @@ class WorkBrowser:
                 def on_close(_):
                     nonlocal closed
                     closed = True
+                    logger.info("Work browser context closed")
                 context.on("close", on_close)
                 try:
                     with self.lock:
@@ -196,7 +201,14 @@ class WorkBrowser:
                     while not closed and not self.stop.is_set():
                         pages = context.pages
                         if not pages:
-                            break
+                            try:
+                                context.wait_for_event("page", timeout=250)
+                            except PlaywrightTimeoutError:
+                                pass
+                            except PlaywrightError:
+                                if not closed:
+                                    raise
+                            continue
                         with self.lock:
                             show, extensions = self.show_requested, self.extensions_requested
                             self.show_requested = self.extensions_requested = False
@@ -211,23 +223,30 @@ class WorkBrowser:
                                 show_work_browser_window(context, page)
                                 with self.lock:
                                     self.message = ""
-                            except Exception:
+                            except Exception as exc:
+                                logger.warning("Work browser window action failed: %s", type(exc).__name__)
                                 with self.lock:
                                     self.message = "无法显示工作浏览器窗口，请手动切换到该窗口后重试。"
+                        wait_page = pages[0]
                         try:
-                            pages[0].wait_for_timeout(250)
-                        except Exception:
-                            if not closed:
+                            wait_page.wait_for_timeout(250)
+                        except PlaywrightError:
+                            if not closed and not wait_page.is_closed():
                                 raise
                 finally:
                     with self.lock:
                         self.state = "closing"
                     if not closed:
+                        logger.info("Closing work browser context: %s", "shutdown" if self.stop.is_set() else "manager error")
                         context.close()
                         closed = True
             with self.lock:
                 self.state = "idle" if closed else "unknown"
-        except Exception:
+        except Exception as exc:
+            frames = [(Path(frame.filename).name, frame.lineno, frame.name)
+                      for frame in traceback.extract_tb(exc.__traceback__)
+                      if Path(frame.filename).name == "work_browser.py"]
+            logger.error("Work browser manager failed: %s; frames=%s", type(exc).__name__, frames)
             with self.lock:
                 self.state = "idle" if context is None or closed else "unknown"
                 self.message = ("工作浏览器无法打开；请检查 Chrome 或关闭占用该配置的窗口后重试。"

@@ -8,6 +8,82 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app import work_browser as wb
+from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+
+
+def test_closing_one_page_does_not_close_managed_browser(monkeypatch):
+    waiting = Event()
+    class Page:
+        url = "about:blank"
+        def __init__(self):
+            self.closed = False
+        def is_closed(self):
+            return self.closed
+        def wait_for_timeout(self, _):
+            if self is first and not self.closed:
+                self.closed = True
+                context.pages.remove(self)
+                raise PlaywrightError("Target page has been closed")
+            waiting.set()
+            sleep(.01)
+    class Context:
+        def __init__(self):
+            self.pages = [first, second]
+            self.close_calls = 0
+        def on(self, _, callback):
+            self.callback = callback
+        def close(self):
+            self.close_calls += 1
+            self.callback(None)
+    first, second = Page(), Page()
+    context = Context()
+    @contextmanager
+    def playwright():
+        yield object()
+    monkeypatch.setattr(wb, "sync_playwright", playwright)
+    monkeypatch.setattr(wb, "_launch_context", lambda _: context)
+    monkeypatch.setattr(wb, "show_work_browser_window", lambda *_: None)
+    manager = wb.WorkBrowser()
+    try:
+        manager.open()
+        assert waiting.wait(1), "closing a single page stopped the management loop"
+        assert manager.snapshot()["status"] == "managing"
+        assert context.close_calls == 0
+        assert not wb.acquire_collection_slot()
+    finally:
+        asyncio.run(manager.shutdown())
+
+
+def test_temporarily_empty_pages_wait_for_context_close(monkeypatch):
+    entered = Event()
+    class Context:
+        pages = []
+        close_calls = 0
+        def on(self, _, callback):
+            self.callback = callback
+        def wait_for_event(self, _, timeout):
+            entered.set()
+            sleep(.01)
+            raise PlaywrightTimeoutError("timeout")
+        def close(self):
+            self.close_calls += 1
+            self.callback(None)
+    context = Context()
+    @contextmanager
+    def playwright():
+        yield object()
+    monkeypatch.setattr(wb, "sync_playwright", playwright)
+    monkeypatch.setattr(wb, "_launch_context", lambda _: context)
+    manager = wb.WorkBrowser()
+    try:
+        manager.open()
+        assert entered.wait(1)
+        assert manager.snapshot()["status"] == "managing"
+        assert context.close_calls == 0
+        assert not wb.acquire_collection_slot()
+    finally:
+        asyncio.run(manager.shutdown())
+    assert context.close_calls == 1
 
 
 @pytest.mark.parametrize("bounds, reset", [
