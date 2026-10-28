@@ -103,3 +103,22 @@ test("running tasks do not notify until the polled terminal state", async ({ pag
   await expect(bell).toHaveAttribute("aria-label", "任务通知，1 条未读", { timeout: 6000 });
   await bell.click(); await expect(page.getByText("竞品采集已完成")).toBeVisible();
 });
+
+test("add-links terminal state keeps polling until the runner exits on a non-dashboard page", async ({ page }) => {
+  await installApiMock(page, { competitors: [] });
+  let runnerActive = true;
+  const terminal = { status: "completed", task_id: "task-transition", work_kind: "add_links", lifecycle_status: "terminal", batch_outcome_code: "success", browser_open: false, input_progress: { total: 1, processed: 1, added: 1, business_rejected: 0, technical_failed: 0, not_executed: 0, remaining: 0, anomaly_inputs: 0 }, items: [] };
+  await page.route("**/api/competitors/collect-batch/status", route => route.fulfill({ json: { ...terminal, runner_active: runnerActive } }));
+  await page.goto("/");
+  const bell = page.getByRole("button", { name: /任务通知/ });
+  await expect(bell).toHaveAttribute("aria-label", "任务通知，0 条未读");
+  await page.waitForTimeout(500);
+  runnerActive = false;
+  await expect(bell).toHaveAttribute("aria-label", "任务通知，1 条未读", { timeout: 6000 });
+  await bell.click();
+  await expect(page.getByText("添加监控商品已完成")).toHaveCount(1);
+  await page.reload();
+  await expect(bell).toHaveAttribute("aria-label", "任务通知，1 条未读");
+  await bell.click();
+  await expect(page.getByText("添加监控商品已完成")).toHaveCount(1);
+});

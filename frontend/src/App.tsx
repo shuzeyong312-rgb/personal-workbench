@@ -3123,11 +3123,11 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
   useEffect(() => {
-    const active = ["running", "pausing", "paused", "stopping", "resting", "cooling_down"].includes(batchState.status) || batchState.status === "verification_required" && batchState.browser_open;
+    const active = ["running", "pausing", "paused", "stopping", "resting", "cooling_down"].includes(batchState.status) || batchState.status === "verification_required" && batchState.browser_open || batchState.lifecycle_status === "terminal" && batchState.runner_active;
     if (page !== "dashboard" && !active) return;
     const timer = window.setInterval(() => { void loadBatchStatus(); }, active ? 1500 : 3000);
     return () => window.clearInterval(timer);
-  }, [page, batchState.status, batchState.browser_open]);
+  }, [page, batchState.status, batchState.browser_open, batchState.lifecycle_status, batchState.runner_active]);
   function navigate(nextPage: Page, initialGroupFilter: InitialGroupFilter = null) {
     if (nextPage !== "detail") { latestDetailRequestId.current += 1; setDetailRangeLoading(false); }
     if (nextPage !== "group-detail") { latestGroupDetailRequestId.current += 1; setGroupDetailRangeLoading(false); }
