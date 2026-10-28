@@ -8,6 +8,7 @@
 - 默认在用户指定的现有仓库目录和 Git 分支工作；未经用户明确授权不得创建、改用 Git Worktree，且不得影响其他未提交改动。
 - 保留 [编码规则](docs/coding-rules.md)、适用业务 Spec、[UI 规范](docs/ui-system.md) 及 frontend/AGENTS.md 的有效约束。历史 Spec 中的单轮 Git 授权不覆盖当前默认授权；业务合同不因流程变更失效。
 - 项目 Skills：需求与合同用 `workbench-spec`，实现验证同步用 `workbench-delivery`，独立审查用 `workbench-review`。按需使用 TDD、Bug 诊断与前端 Skills，不强制加载全部 Skills 或调度子代理。
+- **前端原型定方向，不是逐像素约束**：尊重用户已确认的关键布局、交互与业务决策；Codex 可按 `frontend/AGENTS.md` 选择 `frontend-design`、`impeccable` 等专业 Skills，主动优化视觉、交互反馈与响应式。非关键细节无需反复请示，偏离明确确认的核心决定须先征求同意；说明重要优化的原因，不将原型演示数据当真实功能。
 - 跨会话任务默认由 ChatGPT 将确认的目标、验收条件与原型链接存入 GitHub Issue，Codex 从 Issue/源码按需补正式 Spec，ChatGPT 完成必要独立 Spec Review 后由 Codex 继续开发；Issue 非强制，Spec 不重复照抄 Issue。两种 Review 意见优先直接记在关联 GitHub Issue/审查文档，Codex 从 GitHub 读取，不要求用户反复转发长提示词；新开 Codex 会话不是门槛。
 - 开始检查 HEAD、分支、工作区、upstream 与远端差异。保留未知并行改动；只暂存本任务文件或明确的 hunks，禁止 `git add .` 混入无关变更。
 - 默认授权 Commit + Push：任务范围实现、相关测试、自审完成且阻断问题解决后，使用 Conventional Commit 自动提交并推送当前任务允许的远端分支，无需再次询问；核验远端 SHA。不得 force push、覆盖未知并行修改或破坏生产数据。明确的本轮限制优先。
