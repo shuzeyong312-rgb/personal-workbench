@@ -111,10 +111,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 stop_event.set()
                 await scheduler_task
         finally:
-            await shutdown_batch_runner()
-            await WORK_BROWSER.shutdown()
-            lease.close()
-            _app.state.browser_lease = None
+            try:
+                try:
+                    await shutdown_batch_runner()
+                finally:
+                    await WORK_BROWSER.shutdown()
+            finally:
+                lease.close()
+                _app.state.browser_lease = None
 
 
 app = FastAPI(lifespan=lifespan)

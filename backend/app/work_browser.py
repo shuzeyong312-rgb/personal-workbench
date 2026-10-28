@@ -98,8 +98,9 @@ class WorkBrowser:
                 self.state = "idle" if closed else "unknown"
         except Exception:
             with self.lock:
-                self.state = "idle" if closed else "unknown"
-                self.message = "工作浏览器无法打开或已异常退出；请关闭相关窗口并重启后台后重试。"
+                self.state = "idle" if context is None or closed else "unknown"
+                self.message = ("工作浏览器无法打开；请检查 Chrome 或关闭占用该配置的窗口后重试。"
+                                if context is None else "工作浏览器已异常退出；请关闭相关窗口并重启后台后重试。")
         finally:
             if acquired:
                 if self.state == "unknown":
