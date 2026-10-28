@@ -10,3 +10,4 @@
   - `.agents/skills/react-best-practices` — only when changing React rendering, data flow, fetching, or performance; omit for CSS-only and backend-only work.
 - Choose the matching Dashboard, List, or Detail Reference before editing. Reuse existing components and CSS; add no dependency or animation library for ordinary interaction feedback.
 - For visual work, use the smallest matching Skill set, inspect the rendered result in a real browser when available, and follow the S/M/L verification and review requirements in `docs/engineering/workflow.md`.
+- Frontend automation uses Vitest, Typecheck, and Build; use manual browser checks when UI interaction or visual acceptance needs them. Do not add or run frontend browser E2E tests.

@@ -54,7 +54,7 @@ Spec 写问题、目标/非目标、当前源码基线、输入输出/业务规�
 | 纯文档/Skill | 引用、触发/依赖、授权冲突、场景演练、Skill validator、git diff --check |
 | 后端规则/API | pytest 相关文件；共享规则/L 运行 backend/tests 全量 |
 | React/TS | 相关 Vitest + typecheck；构建配置、依赖、交付或共享组件运行 build |
-| UI 操作路径 | 对应 Playwright + 可用时真实浏览器检查；局部纯样式无需全量 E2E |
+| UI 操作路径 | 相关 Vitest + Typecheck/Build；按需人工浏览器检查 |
 | CI/测试基础设施 | 实际运行所配置命令；推送后核查 Actions，远端未跑完明确 pending |
 | 迁移/身份/金额/调度 | 隔离 SQLite 升级、约束、失败/恢复与并发边界，结合相关前后端回归 |
 
@@ -67,11 +67,10 @@ Pop-Location
 npm --prefix frontend test
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
-npm --prefix frontend run qa:e2e
 git diff --check
 ```
 
-pytest 须从 backend 工作目录运行 `python -m pytest tests`（使用项目虚拟环境）；部分迁移测试按当前目录读取 alembic.ini，不能直接在根目录运行 pytest backend/tests。测试复用内存/临时 SQLite 和依赖替换；scheduler 禁用变量是 `PERSONAL_WORKBENCH_DISABLE_SCHEDULER=1`，它不替代 DB 隔离。不得运行 dev.ps1、正式 migration、真实登录采集或客户发送来满足普通验证。Playwright 配置只启动 5201 Vite，API 由受控 mock 或 tests.library_browser_server 的临时数据库服务提供，不启动 8200 正式后端。部分 E2E 使用 Windows .venv/Scripts/python.exe，因此前端 CI 使用 Windows Runner 并安装 Python 测试依赖；Chromium 必须在包含浏览器测试的 Vitest 前安装。新增测试也必须保持隔离。
+pytest 须从 backend 工作目录运行 `python -m pytest tests`（使用项目虚拟环境）；部分迁移测试按当前目录读取 alembic.ini，不能直接在根目录运行 pytest backend/tests。测试复用内存/临时 SQLite 和依赖替换；scheduler 禁用变量是 `PERSONAL_WORKBENCH_DISABLE_SCHEDULER=1`，它不替代 DB 隔离。不得运行 dev.ps1、正式 migration、真实登录采集或客户发送来满足普通验证。前端 CI 执行 Vitest、Typecheck 与 Build；前端 UI 操作按需人工浏览器检查，不维护浏览器自动化 E2E。
 
 ## Git 同步与阻断
 

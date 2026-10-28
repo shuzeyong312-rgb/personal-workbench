@@ -21,7 +21,7 @@
 本轮场景检查：
 
 - S：改一段文案 → 核对组件与相关检查，无正式 Spec/POC/双代理；自审通过自动同步，独立 Review 标待审。
-- M：API 明确增加展示字段 → 核对共享类型/调用方/fixture，相关 pytest/Vitest/TS，按路径 E2E；不自动加数据库表。
+- M：API 明确增加展示字段 → 核对共享类型/调用方/fixture，相关 pytest/Vitest/TS；按需人工检查 UI 操作路径，不自动加数据库表。
 - L：身份或调度规则变化 → 正式合同与关键决策 Review，必要隔离 POC/数据恢复验证；默认 Push 授权不扩大为生产写入授权。
 - 脏工作区/远端前进/测试阻断 → 保留无关修改、精确 stage，禁止 force push；阻断不得假报完成。
 - 纯 Review/纯 Spec → 审查只读代码但可记录 GitHub Issue 评论；纯 Spec 不自动进入业务实现。

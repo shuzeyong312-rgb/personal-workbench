@@ -2,6 +2,8 @@
 
 2026-10-26 盘点包含跟踪、未跟踪和忽略文件；初始工作区干净，main 与 origin/main 一致。以下大小为整理前近似值，不跟随 Junction。
 
+2026-10-28：Issue [#6](https://github.com/shuzeyong312-rgb/personal-workbench/issues/6) 移除了前端 Playwright E2E 源码、配置与 CI；下表中的 E2E 路径和运行结果是 10-26 的历史记录。本机忽略目录仍保留为旧验证证据，未清理。
+
 | 内容 | 分类与来源 | 处理 |
 | --- | --- | --- |
 | backend、frontend/src、frontend/e2e、tests、docs | 正式工程源码、测试、合同与参考资料 | 保留结构 |
