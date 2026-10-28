@@ -4,6 +4,8 @@
 
 - 按 S / M / L 风险裁剪流程。非简单任务先给简短计划及验证方式；小而可逆的歧义说明假设后继续，影响架构、数据、兼容性、用户行为或不可逆操作的歧义先确认。
 - 只改当前目标必需内容，复用现有模块与依赖，不顺手重构、格式化或新增推测性能力。Bug 先复现、查全调用方，在共享根因处修复。
+- 已授权实现以可验收功能交付为目标；完成必要源码核对后直接推进最小代码改动，POC/Spec/独立审查按实质风险裁剪，不因重复预研、实验中断或可恢复问题多轮停工。只有具有具体依据的生产数据、Profile、凭证或不可逆操作风险等实质阻断，才暂停受影响步骤；不得跳过必要测试或虚报完成。
+- 默认在用户指定的现有仓库目录和 Git 分支工作；未经用户明确授权不得创建、改用 Git Worktree，且不得影响其他未提交改动。
 - 保留 [编码规则](docs/coding-rules.md)、适用业务 Spec、[UI 规范](docs/ui-system.md) 及 frontend/AGENTS.md 的有效约束。历史 Spec 中的单轮 Git 授权不覆盖当前默认授权；业务合同不因流程变更失效。
 - 项目 Skills：需求与合同用 `workbench-spec`，实现验证同步用 `workbench-delivery`，独立审查用 `workbench-review`。按需使用 TDD、Bug 诊断与前端 Skills，不强制加载全部 Skills 或调度子代理。
 - 跨会话任务默认由 ChatGPT 将确认的目标、验收条件与原型链接存入 GitHub Issue，Codex 从 Issue/源码按需补正式 Spec，ChatGPT 完成必要独立 Spec Review 后由 Codex 继续开发；Issue 非强制，Spec 不重复照抄 Issue。两种 Review 意见优先直接记在关联 GitHub Issue/审查文档，Codex 从 GitHub 读取，不要求用户反复转发长提示词；新开 Codex 会话不是门槛。
