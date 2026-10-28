@@ -13,6 +13,7 @@ from app.collection.collector_1688 import (
     PageUnavailableError,
     VerificationRequiredError,
     _is_verification_page,
+    _launch_context,
     collect_1688_product,
     collect_1688_product_in_context,
     _ASSISTANT_HEADER,
@@ -398,6 +399,17 @@ def test_second_verification_check_is_single_and_bounded() -> None:
     assert page.wait_for_timeout_calls[0] == 300
     assert sum(page.wait_for_timeout_calls[1:]) <= 5000
     assert len(page.wait_for_timeout_calls[1:]) <= 20
+
+
+def test_manual_browser_disables_prerender_without_changing_collection_launch():
+    page = FakePage("")
+    playwright, _ = fake_runtime(page)
+    _launch_context(playwright)
+    collection_args = dict(playwright.launch_args)
+    _launch_context(playwright, manual=True)
+    assert playwright.launch_args == {
+        **collection_args, "args": ["--disable-features=Prerender2,Prerender2InNewTab"],
+    }
 
 
 def test_collects_html_and_passes_expected_offer_id() -> None:

@@ -2,6 +2,7 @@ import asyncio
 from contextlib import contextmanager
 from threading import Event
 from time import monotonic, sleep
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -9,6 +10,75 @@ import pytest
 
 from app import work_browser as wb
 from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+
+
+class FakeContext:
+    @property
+    def browser(self):
+        context = self
+        class Session:
+            def send(self, method):
+                if method == "SystemInfo.getProcessInfo":
+                    raise RuntimeError("fake browser has no OS process")
+                try:
+                    context.wait_for_event("close", timeout=250)
+                except PlaywrightTimeoutError:
+                    pass
+                return {}
+            def detach(self):
+                pass
+        return SimpleNamespace(new_browser_cdp_session=Session)
+
+
+def test_driver_failure_releases_slot_after_owned_chrome_exits_and_allows_reopen(monkeypatch):
+    exited = Event()
+    attempts = []
+    class Process:
+        def wait(self, timeout):
+            return exited.wait(timeout / 1000)
+        def close(self):
+            pass
+    class Page:
+        def wait_for_timeout(self, _):
+            raise Exception("Connection closed while reading from the driver")
+    class Context(FakeContext):
+        pages = [Page()]
+        def wait_for_event(self, _, timeout):
+            raise Exception("Connection closed while reading from the driver")
+        def on(self, *_):
+            pass
+        def close(self):
+            raise Exception("driver terminated")
+    @contextmanager
+    def playwright():
+        yield object()
+    def launch(_, **kwargs):
+        attempts.append(True)
+        return Context()
+    monkeypatch.setattr(wb, "sync_playwright", playwright)
+    monkeypatch.setattr(wb, "_launch_context", launch)
+    monkeypatch.setattr(wb, "watch_browser_process", lambda _: Process())
+    monkeypatch.setattr(wb, "show_work_browser_window", lambda *_: None)
+    manager = wb.WorkBrowser()
+    try:
+        manager.open()
+        deadline = monotonic() + 2
+        while manager.snapshot()["status"] != "unknown" and monotonic() < deadline:
+            sleep(.01)
+        assert manager.snapshot()["status"] == "unknown"
+        assert not wb.acquire_collection_slot()
+        exited.set()
+        manager.thread.join(2)
+        assert not manager.thread.is_alive()
+        assert manager.snapshot()["status"] == "idle"
+        assert wb.acquire_collection_slot()
+        wb.COLLECTION_LOCK.release()
+        manager.open()
+        manager.thread.join(2)
+        assert len(attempts) == 2
+        assert manager.snapshot()["status"] == "idle"
+    finally:
+        asyncio.run(manager.shutdown())
 
 
 def test_closing_one_page_does_not_close_managed_browser(monkeypatch):
@@ -26,10 +96,17 @@ def test_closing_one_page_does_not_close_managed_browser(monkeypatch):
                 raise PlaywrightError("Target page has been closed")
             waiting.set()
             sleep(.01)
-    class Context:
+    class Context(FakeContext):
         def __init__(self):
             self.pages = [first, second]
             self.close_calls = 0
+        def wait_for_event(self, _, timeout):
+            if first in self.pages:
+                first.closed = True
+                self.pages.remove(first)
+            waiting.set()
+            sleep(.01)
+            raise PlaywrightTimeoutError("timeout")
         def on(self, _, callback):
             self.callback = callback
         def close(self):
@@ -41,7 +118,7 @@ def test_closing_one_page_does_not_close_managed_browser(monkeypatch):
     def playwright():
         yield object()
     monkeypatch.setattr(wb, "sync_playwright", playwright)
-    monkeypatch.setattr(wb, "_launch_context", lambda _: context)
+    monkeypatch.setattr(wb, "_launch_context", lambda _, **kwargs: context)
     monkeypatch.setattr(wb, "show_work_browser_window", lambda *_: None)
     manager = wb.WorkBrowser()
     try:
@@ -56,7 +133,7 @@ def test_closing_one_page_does_not_close_managed_browser(monkeypatch):
 
 def test_temporarily_empty_pages_wait_for_context_close(monkeypatch):
     entered = Event()
-    class Context:
+    class Context(FakeContext):
         pages = []
         close_calls = 0
         def on(self, _, callback):
@@ -73,7 +150,7 @@ def test_temporarily_empty_pages_wait_for_context_close(monkeypatch):
     def playwright():
         yield object()
     monkeypatch.setattr(wb, "sync_playwright", playwright)
-    monkeypatch.setattr(wb, "_launch_context", lambda _: context)
+    monkeypatch.setattr(wb, "_launch_context", lambda _, **kwargs: context)
     manager = wb.WorkBrowser()
     try:
         manager.open()
@@ -105,7 +182,7 @@ def test_window_restores_and_moves_only_outside_visible_area(monkeypatch, bounds
             return {"windowId": 7, "bounds": bounds}
         def detach(self):
             pass
-    class Context:
+    class Context(FakeContext):
         def new_cdp_session(self, _):
             return CDP()
     wb.show_work_browser_window(Context(), Page())
@@ -126,9 +203,12 @@ def test_reopen_and_extensions_use_existing_browser_thread(monkeypatch):
         def goto(self, url):
             self.url = url
             events.append(("navigate", url))
-    class Context:
+    class Context(FakeContext):
         def __init__(self):
             self.pages = [Page()]
+        def wait_for_event(self, _, timeout):
+            sleep(.01)
+            raise PlaywrightTimeoutError("timeout")
         def on(self, _, callback):
             self.callback = callback
         def new_page(self):
@@ -144,7 +224,7 @@ def test_reopen_and_extensions_use_existing_browser_thread(monkeypatch):
     def focus(_, page):
         events.append(("focus", page.url))
     monkeypatch.setattr(wb, "sync_playwright", playwright)
-    monkeypatch.setattr(wb, "_launch_context", lambda _: context)
+    monkeypatch.setattr(wb, "_launch_context", lambda _, **kwargs: context)
     monkeypatch.setattr(wb, "show_work_browser_window", focus)
     manager = wb.WorkBrowser()
     try:
@@ -196,8 +276,12 @@ def test_management_holds_collection_lock_until_close(monkeypatch):
             if end.is_set():
                 context.callback(None)
 
-    class Context:
+    class Context(FakeContext):
         pages = [Page()]
+        def wait_for_event(self, _, timeout):
+            self.pages[0].wait_for_timeout(timeout)
+            if not end.is_set():
+                raise PlaywrightTimeoutError("timeout")
         def on(self, _, callback):
             self.callback = callback
         def close(self):
@@ -207,7 +291,7 @@ def test_management_holds_collection_lock_until_close(monkeypatch):
     @contextmanager
     def playwright():
         yield object()
-    def launch(_):
+    def launch(_, **kwargs):
         started.set()
         return context
     monkeypatch.setattr(wb, "sync_playwright", playwright)
@@ -252,7 +336,7 @@ def test_launch_failure_releases_slot_and_allows_retry(monkeypatch):
     def playwright():
         yield object()
     attempts = []
-    def fail(_):
+    def fail(_, **kwargs):
         attempts.append(True)
         raise RuntimeError("private error")
     monkeypatch.setattr(wb, "sync_playwright", playwright)
@@ -276,14 +360,14 @@ def test_unconfirmed_context_close_keeps_slot_until_shutdown(monkeypatch):
     @contextmanager
     def playwright():
         yield object()
-    class Context:
+    class Context(FakeContext):
         pages = []
         def on(self, *_):
             pass
         def close(self):
             raise RuntimeError("close failed")
     monkeypatch.setattr(wb, "sync_playwright", playwright)
-    monkeypatch.setattr(wb, "_launch_context", lambda _: Context())
+    monkeypatch.setattr(wb, "_launch_context", lambda _, **kwargs: Context())
     manager = wb.WorkBrowser()
     manager.open()
     for _ in range(100):

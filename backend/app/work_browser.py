@@ -8,13 +8,46 @@ from threading import Event, Lock, Thread
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
-from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 
 from app.collection.collector_1688 import _launch_context, _project_root, sync_playwright
 from app.collection.service import COLLECTION_LOCK, BATCH_RUNTIME, acquire_collection_slot
 
 router = APIRouter(prefix="/api/work-browser")
 logger = logging.getLogger(__name__)
+
+
+class BrowserProcess:
+    """Hold an OS handle so process exit can be confirmed after the driver dies."""
+    def __init__(self, pid):
+        import ctypes
+        from ctypes import wintypes
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self.kernel32.OpenProcess.restype = wintypes.HANDLE
+        self.kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self.kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        self.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.handle = self.kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE only
+        if not self.handle:
+            raise OSError("Cannot monitor the owned Chrome process")
+
+    def wait(self, timeout):
+        return self.kernel32.WaitForSingleObject(self.handle, timeout) == 0
+
+    def close(self):
+        self.kernel32.CloseHandle(self.handle)
+
+
+def watch_browser_process(context):
+    if os.name != "nt":
+        return None
+    session = context.browser.new_browser_cdp_session()
+    try:
+        processes = session.send("SystemInfo.getProcessInfo")["processInfo"]
+        pid = next(item["id"] for item in processes if item["type"] == "browser")
+    finally:
+        session.detach()
+    return BrowserProcess(pid)
 
 
 def _activate_windows_page(page):
@@ -182,6 +215,7 @@ class WorkBrowser:
         acquired = False
         context = None
         closed = False
+        browser_process = None
         try:
             acquired = acquire_collection_slot()
             if not acquired:
@@ -189,30 +223,27 @@ class WorkBrowser:
                     self.state, self.message = "idle", "采集正在进行，请结束后重试。"
                 return
             with sync_playwright() as playwright:
-                context = _launch_context(playwright)
+                # Manual navigation can activate prerendered frames that crash the driver.
+                context = _launch_context(playwright, manual=True)
+                try:
+                    browser_process = watch_browser_process(context)
+                except Exception as exc:
+                    logger.warning("Cannot monitor work browser process: %s", type(exc).__name__)
                 def on_close(_):
                     nonlocal closed
                     closed = True
                     logger.info("Work browser context closed")
                 context.on("close", on_close)
                 try:
+                    events = context.browser.new_browser_cdp_session()
                     with self.lock:
                         self.state = "managing"
                     while not closed and not self.stop.is_set():
                         pages = context.pages
-                        if not pages:
-                            try:
-                                context.wait_for_event("page", timeout=250)
-                            except PlaywrightTimeoutError:
-                                pass
-                            except PlaywrightError:
-                                if not closed:
-                                    raise
-                            continue
                         with self.lock:
                             show, extensions = self.show_requested, self.extensions_requested
                             self.show_requested = self.extensions_requested = False
-                        if show or extensions:
+                        if pages and (show or extensions):
                             try:
                                 page = pages[0]
                                 if extensions:
@@ -227,12 +258,15 @@ class WorkBrowser:
                                 logger.warning("Work browser window action failed: %s", type(exc).__name__)
                                 with self.lock:
                                     self.message = "无法显示工作浏览器窗口，请手动切换到该窗口后重试。"
-                        wait_page = pages[0]
+                        # A browser-level command pumps events and observes a dead driver,
+                        # without depending on any page or a close waiter that can hang.
                         try:
-                            wait_page.wait_for_timeout(250)
-                        except PlaywrightError:
-                            if not closed and not wait_page.is_closed():
-                                raise
+                            events.send("Target.getTargets")
+                        except Exception:
+                            if closed:
+                                break
+                            raise
+                        self.stop.wait(.25)
                 finally:
                     with self.lock:
                         self.state = "closing"
@@ -253,9 +287,22 @@ class WorkBrowser:
                                 if context is None else "工作浏览器已异常退出；请关闭相关窗口并重启后台后重试。")
         finally:
             if acquired:
+                recovered = False
                 if self.state == "unknown":
-                    self.stop.wait()
+                    while not self.stop.is_set():
+                        if browser_process is not None and browser_process.wait(250):
+                            logger.warning("Work browser Chrome exit confirmed; releasing collection slot")
+                            recovered = True
+                            break
+                        if browser_process is None:
+                            self.stop.wait(.25)
                 COLLECTION_LOCK.release()
+                if recovered:
+                    with self.lock:
+                        self.state = "idle"
+                        self.message = "工作浏览器进程已退出，可以重新打开。"
+            if browser_process is not None:
+                browser_process.close()
 
     async def shutdown(self):
         self.stop.set()
