@@ -32,7 +32,7 @@ test("work browser navigation keeps settings draft and opens once", async ({ pag
   expect(extensions).toBe(1);
   await page.getByRole("button", { name: "打开工作浏览器" }).click();
   expect(opens).toBe(2);
-  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^基础设置/ }).click();
+  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^店铺识别/ }).click();
   await expect(page.getByLabel("我方店铺名称")).toHaveValue("未保存草稿");
   await mock.expectNoUnexpectedApi();
 });

@@ -384,6 +384,7 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .settings-shell .main-content { scroll-padding-block: 24px 132px; }
 .settings-shell .settings-layout input { scroll-margin-block: 24px 132px; }
 .settings-shell .settings-layout { flex-shrink: 0; min-width: 0; border: 1px solid #dde1e6; border-radius: 12px; background: #fff; }
+.settings-shell .settings-category-title { margin: 0; padding: 20px 24px 0; font-size: 16px; font-weight: 650; }
 .settings-shell .settings-nav { display: flex; align-items: stretch; gap: 8px; padding: 8px 24px 0; border-bottom: 1px solid #dde1e6; }
 .settings-shell .settings-nav button { position: relative; display: grid; gap: 4px; padding: 16px; border: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; color: #626b78; background: transparent; text-align: left; }
 .settings-shell .settings-nav strong { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }

@@ -19,7 +19,7 @@ test("competitor monitoring settings save all values as one request", async ({ p
   expect(reads).toBe(0);
   await page.getByRole("button", { name: "系统设置", exact: true }).click();
   expect(reads).toBe(0);
-  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
+  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^采集策略/ }).click();
   await expect.poll(() => reads).toBe(1);
   await page.getByLabel("单商品采集间隔").fill("6");
   await page.getByLabel("连续采集数量").fill("8");
@@ -75,7 +75,7 @@ test("fixed daily and interval controls validate and save the complete settings"
   });
   await page.goto("/");
   await page.getByRole("button", { name: "系统设置", exact: true }).click();
-  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
+  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^采集策略/ }).click();
   await page.getByRole("radio", { name: "每日固定时间", exact: true }).check();
   await expect(page.getByLabel("自动采集时间点 1")).toHaveValue("09:30");
   await page.getByRole("button", { name: "新增时间点" }).click();

@@ -6,12 +6,17 @@ test("settings visual coverage", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await page.getByRole("button", { name: "系统设置", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "竞品监控分析" })).toBeVisible();
+  const modules = page.getByRole("navigation", { name: "设置模块" });
+  await expect(modules.getByRole("button")).toHaveCount(3);
+  await expect(modules.getByRole("button", { name: /^店铺识别/ })).toHaveAttribute("aria-current", "page");
+  await expect(modules.getByRole("button", { name: /^工作浏览器/ })).toBeVisible();
   await expect(page.getByLabel("我方店铺名称")).toHaveValue("测试店铺");
   await page.screenshot({ path: testInfo.outputPath("basic-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: testInfo.outputPath("basic-narrow.png"), fullPage: true });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
+  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^采集策略/ }).click();
   await expect(page.getByLabel("单商品采集间隔")).toHaveValue("5");
   await page.screenshot({ path: testInfo.outputPath("monitoring-desktop.png") });
   await page.getByRole("radio", { name: "每日固定时间", exact: true }).check();
@@ -34,7 +39,7 @@ test("drafts survive category and page changes; invalid values never submit", as
   await page.getByRole("button", { name: "系统设置", exact: true }).click();
   await page.getByLabel("我方店铺名称").fill("待保存店铺");
   const categories = page.getByRole("navigation", { name: "设置模块" });
-  await categories.getByRole("button", { name: /^竞品监控/ }).click();
+  await categories.getByRole("button", { name: /^采集策略/ }).click();
   const interval = page.getByLabel("单商品采集间隔");
   await interval.fill("");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
@@ -42,9 +47,9 @@ test("drafts survive category and page changes; invalid values never submit", as
   await expect(page.getByRole("alert")).toContainText("数值须在范围内");
   await page.screenshot({ path: testInfo.outputPath("validation.png") });
   expect(puts).toBe(0);
-  await categories.getByRole("button", { name: /^基础设置/ }).click();
+  await categories.getByRole("button", { name: /^店铺识别/ }).click();
   await expect(page.getByLabel("我方店铺名称")).toHaveValue("待保存店铺");
-  await categories.getByRole("button", { name: /^竞品监控/ }).click();
+  await categories.getByRole("button", { name: /^采集策略/ }).click();
   await expect(interval).toHaveValue("");
   for (const value of ["0", "61", "1.5"]) {
     await interval.fill(value);
@@ -65,7 +70,7 @@ test("drafts survive category and page changes; invalid values never submit", as
   await reload;
   await page.getByRole("button", { name: "系统设置", exact: true }).click();
   await expect(page.getByLabel("我方店铺名称")).toHaveValue("待保存店铺");
-  await categories.getByRole("button", { name: /^竞品监控/ }).click();
+  await categories.getByRole("button", { name: /^采集策略/ }).click();
   await expect(interval).toHaveValue("7");
   await expect(page.getByRole("status")).toContainText("未保存");
   await expect(interval).toHaveValue("7");
@@ -84,16 +89,16 @@ test("category changes share the pending load instead of overwriting edits with 
   await page.goto("/");
   await page.getByRole("button", { name: "系统设置", exact: true }).click();
   const categories = page.getByRole("navigation", { name: "设置模块" });
-  await categories.getByRole("button", { name: /^竞品监控/ }).click();
+  await categories.getByRole("button", { name: /^采集策略/ }).click();
   await expect.poll(() => reads).toBe(1);
-  await categories.getByRole("button", { name: /^基础设置/ }).click();
-  await categories.getByRole("button", { name: /^竞品监控/ }).click();
+  await categories.getByRole("button", { name: /^店铺识别/ }).click();
+  await categories.getByRole("button", { name: /^采集策略/ }).click();
   await expect(page.getByText("正在加载竞品监控设置…")).toBeVisible();
   expect(reads).toBe(1);
   release!();
   await page.getByLabel("单商品采集间隔").fill("9");
-  await categories.getByRole("button", { name: /^基础设置/ }).click();
-  await categories.getByRole("button", { name: /^竞品监控/ }).click();
+  await categories.getByRole("button", { name: /^店铺识别/ }).click();
+  await categories.getByRole("button", { name: /^采集策略/ }).click();
   await expect(page.getByLabel("单商品采集间隔")).toHaveValue("9");
   expect(reads).toBe(1);
   await mock.expectNoUnexpectedApi();
@@ -103,7 +108,7 @@ test("keyboard focus stays above the sticky save bar on desktop and narrow scree
   const mock = await installApiMock(page, { competitors: [] });
   await page.goto("/");
   await page.getByRole("button", { name: "系统设置", exact: true }).click();
-  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^竞品监控/ }).click();
+  await page.getByRole("navigation", { name: "设置模块" }).getByRole("button", { name: /^采集策略/ }).click();
   await page.getByRole("radio", { name: "每日固定时间", exact: true }).check();
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
@@ -193,7 +198,7 @@ test("save failure retains draft; retry shows saving then saved and keeps other 
   await page.getByRole("button", { name: "系统设置", exact: true }).click();
   await page.getByLabel("我方店铺名称").fill("保留另一分类的草稿");
   const categories = page.getByRole("navigation", { name: "设置模块" });
-  await categories.getByRole("button", { name: /^竞品监控/ }).click();
+  await categories.getByRole("button", { name: /^采集策略/ }).click();
   await page.getByLabel("单商品采集间隔").fill("6");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("暂时无法保存");
@@ -209,9 +214,9 @@ test("save failure retains draft; retry shows saving then saved and keeps other 
   release!();
   await expect(page.getByText("竞品监控设置已保存。", { exact: true })).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "当前设置已保存" })).toBeVisible();
-  await expect(categories.getByRole("button", { name: /^基础设置/ })).toContainText("未保存");
+  await expect(categories.getByRole("button", { name: /^店铺识别/ })).toContainText("未保存");
   await page.screenshot({ path: testInfo.outputPath("save-success.png") });
-  await categories.getByRole("button", { name: /^基础设置/ }).click();
+  await categories.getByRole("button", { name: /^店铺识别/ }).click();
   await expect(page.getByLabel("我方店铺名称")).toHaveValue("保留另一分类的草稿");
   await mock.expectNoUnexpectedApi();
 });
