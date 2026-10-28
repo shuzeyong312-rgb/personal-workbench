@@ -270,7 +270,7 @@ def _launch_context(playwright: object, *, manual: bool = False) -> object:
         channel="chrome",
         headless=False,
         ignore_default_args=["--no-sandbox", "--disable-extensions"],
-        **({"args": ["--disable-features=Prerender2,Prerender2InNewTab"]} if manual else {}),
+        **({"args": ["--disable-features=Prerender2,Prerender2InNewTab"], "no_viewport": True} if manual else {}),
     )
 
 

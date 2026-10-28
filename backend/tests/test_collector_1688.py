@@ -401,14 +401,14 @@ def test_second_verification_check_is_single_and_bounded() -> None:
     assert len(page.wait_for_timeout_calls[1:]) <= 20
 
 
-def test_manual_browser_disables_prerender_without_changing_collection_launch():
+def test_manual_browser_uses_native_viewport_without_changing_collection_launch():
     page = FakePage("")
     playwright, _ = fake_runtime(page)
     _launch_context(playwright)
     collection_args = dict(playwright.launch_args)
     _launch_context(playwright, manual=True)
     assert playwright.launch_args == {
-        **collection_args, "args": ["--disable-features=Prerender2,Prerender2InNewTab"],
+        **collection_args, "args": ["--disable-features=Prerender2,Prerender2InNewTab"], "no_viewport": True,
     }
 
 
