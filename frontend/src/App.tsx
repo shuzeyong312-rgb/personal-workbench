@@ -2681,8 +2681,39 @@ type SettingsPageProps = {
 
 type CompetitorMonitoringSettings = { item_interval_seconds: number; continuous_collection_count: number; batch_rest_seconds: number; verification_cooldown_seconds: number; auto_resume_max: number; operating_metrics_retry_max: number; auto_collection_enabled: boolean; auto_collection_strategy: "rolling_24h" | "fixed_daily" | "fixed_interval"; auto_collection_time: string; auto_collection_times: string[]; auto_collection_interval_hours: number; auto_collection_daily_limit: number; auto_collection_missed_policy: "catch_up" | "skip" };
 
+function WorkBrowserSettings() {
+  const [state, setState] = useState<{ status: string; message: string }>({ status: "unknown", message: "" });
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const response = await fetch("/api/work-browser");
+        if (!response.ok) throw new Error();
+        const result = await response.json();
+        if (active) setState(result);
+      } catch { if (active) setState({ status: "unknown", message: "无法读取浏览器状态。" }); }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+  const open = async () => {
+    setPending(true);
+    try {
+      const response = await fetch("/api/work-browser", { method: "POST", headers: { "Content-Type": "application/json", "X-Workbench-Request": "work-browser" }, body: "{}" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "打开失败，请检查后台服务。");
+      setState(result);
+    } catch (error) { setState({ status: "unknown", message: error instanceof Error ? error.message : "打开失败。" }); }
+    finally { setPending(false); }
+  };
+  const labels: Record<string, string> = { idle: "空闲", opening: "正在打开", managing: "管理中", closing: "正在关闭", collecting: "采集中", unknown: "未知" };
+  return <section className="table-card settings-card"><div className="table-heading"><div><h2>工作浏览器</h2><span>维护 1688 采集使用的浏览器与登录状态。</span></div></div><div className="settings-basic-content"><div><p role="status">状态：{labels[state.status] || "未知"}</p>{state.message && <p role="alert">{state.message}</p>}<button type="button" className="primary-button" onClick={() => void open()} disabled={pending || !["idle", "managing", "opening"].includes(state.status)}>{pending || state.status === "opening" ? "正在打开…" : state.status === "managing" ? "工作浏览器已打开" : "打开工作浏览器"}</button><p>扩展状态未自动检测，请在工作浏览器中手动验证。</p><p>打开 chrome://extensions/ 检查采购助手，再打开商品页确认助手区域。关闭整个浏览器后，按现有流程测试采集并核对经营指标。</p></div></div></section>;
+}
+
 export function SettingsPage({ configured, value, status, error, saveError, submitting, onChange, onRetry, onSave, onNavigate, monitoring, monitoringStatus, monitoringError, monitoringSaveError, monitoringSubmitting, onMonitoringChange, onMonitoringOpen, onMonitoringRetry, onMonitoringSave, basicDirty, monitoringDirty }: SettingsPageProps) {
-  const [module, setModule] = useState<"basic" | "monitoring">("basic");
+  const [module, setModule] = useState<"basic" | "monitoring" | "browser">("basic");
   const dirty = basicDirty || monitoringDirty;
   const [invalid, setInvalid] = useState(false);
   const [invalidMessage, setInvalidMessage] = useState("请检查输入：数值须在范围内，时间点不得重复，计划时间须在同一天内。");
@@ -2733,8 +2764,10 @@ export function SettingsPage({ configured, value, status, error, saveError, subm
     <div className="settings-layout"><nav aria-label="设置模块" className="settings-nav">
       <button type="button" aria-current={module === "basic" ? "page" : undefined} className={module === "basic" ? "settings-module-active" : "settings-module"} onClick={() => { setModule("basic"); setInvalid(false); }}><strong>基础设置{basicDirty && <em>未保存</em>}</strong><span>店铺身份与商品识别</span></button>
       <button type="button" aria-current={module === "monitoring" ? "page" : undefined} className={module === "monitoring" ? "settings-module-active" : "settings-module"} onClick={() => { setModule("monitoring"); setInvalid(false); onMonitoringOpen(); }}><strong>竞品监控{monitoringDirty && <em>未保存</em>}</strong><span>采集节奏、风控与自动计划</span></button>
+      <button type="button" aria-current={module === "browser" ? "page" : undefined} className={module === "browser" ? "settings-module-active" : "settings-module"} onClick={() => { setModule("browser"); setInvalid(false); }}><strong>工作浏览器</strong><span>维护采集账号与扩展</span></button>
       <p>分类独立保存<br />切换分类保留修改</p>
     </nav>
+    {module === "browser" && <WorkBrowserSettings />}
     {module === "basic" && <section className="table-card settings-card"><div className="table-heading"><div><h2>基础设置</h2><span>配置店铺身份，让监控中的我方商品与竞品准确归属。</span></div></div>
       {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载系统设置…</strong></div>}
       {status === "error" && <div className="state-panel state-error"><strong>设置加载失败</strong><span>{error || "暂时无法读取系统设置。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></div>}
