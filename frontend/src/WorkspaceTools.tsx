@@ -43,12 +43,17 @@ const entries: { label: string; page: Page; kind: "页面" | "功能"; tags: str
   { label: "采集记录", page: "collection-tasks", kind: "页面", tags: "任务 批次 日志" },
   { label: "产品库", page: "product-library", kind: "页面", tags: "商品资料 型号" },
   { label: "客户触达", page: "customer-reach", kind: "页面", tags: "客户 推广" },
+  { label: "常用工具箱", page: "toolbox", kind: "页面", tags: "图片压缩 图片尺寸 网站工具" },
   { label: "系统设置", page: "settings", kind: "页面", tags: "配置" },
   { label: "店铺识别", page: "settings", kind: "功能", tags: "店铺名称", section: "settings-basic" },
   { label: "采集策略", page: "settings", kind: "功能", tags: "自动计划 定时", section: "settings-monitoring" },
   { label: "工作浏览器", page: "settings", kind: "功能", tags: "1688 Chrome 登录 插件", section: "settings-browser" },
   ...([ ["AI智能助手", "ai-assistant"], ["全网比价", "price-compare"], ["自动询价", "auto-inquiry"], ["自动上架", "auto-listing"] ] as const).map(([label, page]) => ({ label, page, kind: "页面" as const, tags: "规划中", planned: true }))
 ];
+
+export function searchEntries(query: string) {
+  return entries.filter(item => query.trim() ? `${item.label} ${item.tags}`.toLowerCase().includes(query.trim().toLowerCase()) : ["dashboard", "product-library", "groups", "collection-tasks", "settings"].includes(item.page) && !item.section);
+}
 
 function ToolIcon({ name }: { name: string }) {
   const paths: Record<string, ReactNode> = {
@@ -104,7 +109,7 @@ export function WorkspaceTools({ onNavigate }: { onNavigate: (page: Page) => voi
   }, [q, search]);
   if (!context) return null;
   const { stored, update } = context; const unread = stored.items.filter(item => !item.read).length;
-  const filtered = entries.filter(item => q.trim() ? `${item.label} ${item.tags}`.toLowerCase().includes(q.trim().toLowerCase()) : ["dashboard", "product-library", "groups", "collection-tasks", "settings"].includes(item.page) && !item.section);
+  const filtered = searchEntries(q);
   function go(page: Page, section?: string, product?: string) { if (onNavigate(page) === false) return; if (product !== undefined) context!.setProductQuery(product); setSearch(false); setPanel(false); if (section) window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ block: "start" }), 100); }
   const visibleNotifications = stored.items.filter(item => !unreadOnly || !item.read);
   return <div className="workspace-tools">
