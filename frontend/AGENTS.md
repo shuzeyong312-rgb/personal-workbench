@@ -1,6 +1,7 @@
 # Frontend task routing
 
 - For frontend work, read [`docs/ui-system.md`](../docs/ui-system.md) and the relevant page Spec first. `docs/ui-system.md` is the final visual and interaction authority; surface conflicts from a Skill explicitly before proceeding. Preserve business behavior, API contracts, routes, and user flows unless the task changes them.
+- **Approved prototypes are direction references, not pixel-perfect implementation mandates.** Preserve the user's explicitly approved key layout positions, interaction rules, scope, and business behavior. Use relevant design Skills to proactively refine spacing, typography, grouping, visual hierarchy, loading/empty/error states, accessibility, and responsive layouts where this improves the real product. Follow the user's confirmed constraints over generic Skill suggestions or older design defaults; raise a conflict before overriding a key approved decision. Ordinary design refinements within those boundaries do not require a new approval. Do not treat demo content or simulated prototype behavior as production data/logic. Briefly explain significant departures from prototype styling and why they improve usability.
 - Route only the relevant Skill for a task; do not load every design Skill:
   - `.agents/skills/frontend-design` — general frontend design and implementation; use as the default design lead for ordinary UI work.
   - `.agents/skills/ui-ux-pro-max` — new page direction, layout, typography, and component options. Treat search results as references and reconcile them with the existing product and UI system.
@@ -9,3 +10,4 @@
   - `.agents/skills/react-best-practices` — only when changing React rendering, data flow, fetching, or performance; omit for CSS-only and backend-only work.
 - Choose the matching Dashboard, List, or Detail Reference before editing. Reuse existing components and CSS; add no dependency or animation library for ordinary interaction feedback.
 - For visual work, use the smallest matching Skill set, inspect the rendered result in a real browser when available, and follow the S/M/L verification and review requirements in `docs/engineering/workflow.md`.
+- Frontend automation uses Vitest, Typecheck, and Build; use manual browser checks when UI interaction or visual acceptance needs them. Do not add or run frontend browser E2E tests.

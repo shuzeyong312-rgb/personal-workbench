@@ -1,5 +1,7 @@
 # Frontend Automated QA V1 Spec
 
+> **已废弃（2026-10-28）**：Issue [#6](https://github.com/shuzeyong312-rgb/personal-workbench/issues/6) 决定移除前端 Playwright Test E2E 体系。本文件仅保留历史决策记录，不再作为现行工程规范或验收要求。
+
 ## 1. 目标与范围
 
 为当前 React 前端建立最小、稳定的本地浏览器自动化 QA 闭环，减少完成前端 Feature 后重复手工点击验证的负担。V1 的试点功能是“竞品列表分页 V1”。

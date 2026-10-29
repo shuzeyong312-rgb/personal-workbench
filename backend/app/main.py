@@ -30,6 +30,8 @@ from app.settings import router as settings_router
 from app.product_library import router as product_library_router
 from app.customer_reach import recover_customer_reach_tasks, router as customer_reach_router
 from app.toolbox import router as toolbox_router
+from app.work_browser import WORK_BROWSER, acquire_backend_lease, router as work_browser_router
+from app.collection.collector_1688 import _project_root
 
 
 DAILY_COLLECTION_INTERVAL_SECONDS = 60
@@ -91,24 +93,33 @@ async def _daily_collection_loop(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    session_factory = getattr(_app.state, "collection_session_factory", None) or _session_factory
-    recover_interrupted_batches(session_factory)
-    recover_customer_reach_tasks(session_factory)
-    if os.getenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER") == "1":
-        yield
-        return
-    stop_event = asyncio.Event()
-    thread_stop_event = Event()
-    scheduler_task = asyncio.create_task(_daily_collection_loop(stop_event, thread_stop_event))
+    lease = acquire_backend_lease(_project_root() / ".browser-profile")
+    _app.state.browser_lease = lease
+    scheduler_task = None
     try:
+        session_factory = getattr(_app.state, "collection_session_factory", None) or _session_factory
+        recover_interrupted_batches(session_factory)
+        recover_customer_reach_tasks(session_factory)
+        stop_event = asyncio.Event()
+        thread_stop_event = Event()
+        if os.getenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER") != "1":
+            scheduler_task = asyncio.create_task(_daily_collection_loop(stop_event, thread_stop_event))
         yield
     finally:
-        thread_stop_event.set()
-        stop_event.set()
         try:
-            await scheduler_task
+            if scheduler_task is not None:
+                thread_stop_event.set()
+                stop_event.set()
+                await scheduler_task
         finally:
-            await shutdown_batch_runner()
+            try:
+                try:
+                    await shutdown_batch_runner()
+                finally:
+                    await WORK_BROWSER.shutdown()
+            finally:
+                lease.close()
+                _app.state.browser_lease = None
 
 
 app = FastAPI(lifespan=lifespan)
@@ -124,6 +135,7 @@ app.include_router(settings_router)
 app.include_router(product_library_router)
 app.include_router(customer_reach_router)
 app.include_router(toolbox_router)
+app.include_router(work_browser_router)
 
 
 @app.exception_handler(RequestValidationError)

@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",
-    "qa:e2e": "playwright test",
-    "test": "vitest run --exclude e2e/**",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -15,7 +14,6 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

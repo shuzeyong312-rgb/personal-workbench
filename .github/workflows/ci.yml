@@ -41,14 +41,7 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      # Existing browser tests start an isolated Python service via this Windows path.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: python -m venv ../.venv
-      - run: ../.venv/Scripts/python.exe -m pip install -r ../backend/requirements.txt
       - run: npm ci
-      - run: npx playwright install chromium
       - name: Frontend dependencies ready
         id: frontend_ready
         run: Write-Output "Frontend dependencies installed"
@@ -62,15 +55,3 @@ jobs:
       - name: Build
         if: ${{ !cancelled() && steps.frontend_ready.outcome == 'success' }}
         run: npm run build
-      - name: Playwright E2E
-        id: e2e
-        if: ${{ !cancelled() && steps.frontend_ready.outcome == 'success' }}
-        run: npm run qa:e2e
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && steps.e2e.outcome == 'failure' }}
-        with:
-          name: playwright-failure
-          path: |
-            frontend/playwright-report/
-            frontend/test-results/
-          retention-days: 7

@@ -1,5 +1,6 @@
 .venv/
 .browser-profile/
+.browser-profile.backend.lock
 __pycache__/
 poc_collect_debug.json
 poc_history_debug.json

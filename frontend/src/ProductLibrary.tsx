@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import "./ProductLibrary.css";
 import { ProductQuotation } from "./ProductQuotation";
 import { PaginationBar } from "./PaginationBar";
+import { useProductSearchQuery } from "./WorkspaceTools";
 
 export type ProductFields = {
   manufacturer_name: string; model: string | null; name: string; parameters: string | null;
@@ -271,7 +272,9 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
 }
 
 export function ProductLibrary() {
-  const [q, setQ] = useState(""); const [manufacturer, setManufacturer] = useState(""); const [sort, setSort] = useState("updated_desc"); const [page, setPage] = useState(1);
+  const globalQuery = useProductSearchQuery();
+  const [q, setQ] = useState(globalQuery.text);
+  const [manufacturer, setManufacturer] = useState(""); const [sort, setSort] = useState("updated_desc"); const [page, setPage] = useState(1);
   const [data, setData] = useState<{ items: LibraryProduct[]; total: number } | null>(null);
   const [manufacturers, setManufacturers] = useState<string[]>([]);
   const [status, setStatus] = useState("loading"); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState<string | null>(null);
@@ -289,6 +292,12 @@ export function ProductLibrary() {
     : appliedPrice.mode === "above" ? `大于${appliedPrice.min}`
     : appliedPrice.mode === "between" ? `${appliedPrice.min}～${appliedPrice.max}（含端点）` : "不限价格";
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  useEffect(() => {
+    if (!globalQuery.text) return;
+    setQ(globalQuery.text); setPage(1); setManufacturer(""); setPriceStatus("all");
+    setPriceMode(""); setPriceMin(""); setPriceMax(""); setAppliedPrice({ mode: "", min: "", max: "" });
+    setSelected({}); setBatchResults([]);
+  }, [globalQuery.version]);
   const filters: Record<string, string> = { q: q.trim(), sort, price_status: priceStatus };
   if (manufacturer) filters.manufacturer = manufacturer;
   if (appliedPrice.mode) { filters.price_mode = appliedPrice.mode; if (appliedPrice.mode !== "below") filters.price_min = appliedPrice.min; if (appliedPrice.mode !== "above") filters.price_max = appliedPrice.max; }

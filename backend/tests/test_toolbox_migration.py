@@ -30,9 +30,10 @@ def test_real_alembic_upgrade_is_repeatable_and_keeps_favorites(tmp_path):
     with engine.begin() as connection:
         connection.execute(text("INSERT INTO competitor_groups (name, created_at) VALUES ('existing', '2026-01-01')"))
     run_command(url, "20261027_19")
+    run_command(url, "head")
     with engine.begin() as connection:
         connection.execute(text("UPDATE toolbox_items SET favorite = 0 WHERE name = 'iLovePDF'"))
-    run_command(url, "20261027_19")
+    run_command(url, "head")
     with engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM toolbox_items")).scalar_one() == 3
         assert connection.execute(text("SELECT favorite FROM toolbox_items WHERE name = 'iLovePDF'")).scalar_one() == 0

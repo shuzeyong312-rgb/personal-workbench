@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>个人工作台 · 通用系统设置中心 V2 交互原型</title>
+  <style>
+    :root{--bg:#f3f5f8;--paper:#fff;--ink:#17263c;--ink-2:#364760;--sub:#64748b;--muted:#91a0b2;--line:#e5eaf1;--line-strong:#d7e0ec;--blue:#285ee8;--blue-dark:#214dc0;--blue-weak:#eef3ff;--green:#218568;--green-weak:#ecf8f2;--amber:#a56b16;--amber-weak:#fff7e9;--red:#c1484b;--red-weak:#fff1f1;--radius:14px;--shadow:0 5px 24px rgba(17,36,66,.035)}
+    *{box-sizing:border-box}
+    [hidden]{display:none!important}
+    html{scroll-behavior:smooth;scroll-padding-top:28px}
+    body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;-webkit-font-smoothing:antialiased}
+    button,input,select{font:inherit}
+    button{cursor:pointer}
+    button:disabled{cursor:not-allowed;opacity:.55}
+    .icon{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+    .icon-sm{width:15px;height:15px}.icon-lg{width:22px;height:22px}
+    .app{min-height:100vh;display:grid;grid-template-columns:222px minmax(0,1fr)}
+    .app-sidebar{background:#fff;border-right:1px solid var(--line);height:100vh;position:sticky;top:0;display:flex;flex-direction:column;z-index:10}
+    .brand{display:flex;align-items:center;gap:10px;padding:28px 19px 29px}
+    .brand-mark{height:36px;width:36px;border-radius:9px;background:linear-gradient(145deg,#3972fa,#1f4dd4);color:#fff;font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;letter-spacing:-.5px}
+    .brand strong{display:block;font-size:15px;line-height:1.4;letter-spacing:.2px}.brand small{display:block;font-size:11px;color:var(--sub);margin-top:2px}
+    .side-menu{padding:0 13px;overflow:auto;flex:1}
+    .side-label{font-size:11px;font-weight:650;color:#94a0b1;margin:18px 12px 8px;letter-spacing:.4px}
+    .side-link{height:41px;display:flex;align-items:center;gap:12px;text-decoration:none;color:#516079;padding:0 12px;border-radius:8px;margin:2px 0;font-size:13px;font-weight:550;transition:background .15s,color .15s}
+    .side-link:hover{background:#f5f7fb;color:var(--ink)}.side-link.active{background:var(--blue-weak);color:var(--blue);font-weight:750}
+    .side-link .icon{width:16px;height:16px}
+    .side-spacer{flex:1}.side-link .right-chevron{margin-left:auto;width:13px;height:13px;color:#8190a4}
+    .side-sub{border-left:1px solid #dfe5ee;margin:1px 0 12px 19px;padding-left:13px;display:grid;gap:2px}
+    .side-sub a{padding:6px 5px 6px 9px;color:#6e7f96;text-decoration:none;font-size:12px;border-radius:6px}.side-sub a:hover{background:#f3f6fb}
+    .side-bottom{padding:15px 18px 20px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center}
+    .side-bottom .avatar{width:32px;height:32px;border-radius:9px;background:#e7edfb;color:#2450ad;display:grid;place-items:center;font-size:12px;font-weight:800}
+    .side-bottom b{font-size:12px;display:block}.side-bottom span{font-size:11px;color:var(--sub)}
+    .page{min-width:0;padding:31px clamp(24px,3.6vw,64px) 80px}
+    .page-max{max-width:1410px;margin:0 auto}
+    .breadcrumb{display:flex;gap:9px;align-items:center;font-size:12px;color:#8a98ac;margin-bottom:19px}
+    .breadcrumb strong{color:#394c65;font-weight:600}.breadcrumb .icon{width:13px;height:13px}
+    .head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:26px}
+    .head h1{font-size:29px;letter-spacing:-.7px;margin:0 0 6px;color:#173253;line-height:1.2;font-weight:800}
+    .head p{font-size:13px;color:var(--sub);margin:0}
+    .prototype-flag{display:flex;align-items:center;gap:7px;white-space:nowrap;color:#6c7c94;font-size:12px;margin-top:6px}
+    .prototype-flag .dot{height:7px;width:7px;border-radius:50%;background:#7b9dff}
+    .group-intro{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:25px 29px;display:flex;align-items:center;justify-content:space-between;gap:26px;box-shadow:var(--shadow);margin-bottom:18px}
+    .group-overline{color:var(--blue);font-size:11px;font-weight:800;letter-spacing:1.2px;margin-bottom:8px}
+    .group-intro h2{margin:0 0 5px;font-size:21px;font-weight:760;letter-spacing:-.4px}
+    .group-intro p{margin:0;color:var(--sub);font-size:13px}
+    .group-stats{display:flex;align-items:center;gap:23px;padding-left:23px;border-left:1px solid var(--line);flex-shrink:0}
+    .stat{min-width:84px}.stat-label{color:var(--sub);font-size:11px;white-space:nowrap}.stat-value{font-size:13px;font-weight:750;margin-top:5px;white-space:nowrap}
+    .stat-value.good{color:var(--green)}.stat-value.blue{color:var(--blue)}
+    .workspace{display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px;align-items:start}
+    .section-nav{position:sticky;top:22px;background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:17px 12px 15px;box-shadow:var(--shadow)}
+    .section-nav-title{color:#8b98aa;text-transform:uppercase;font-size:10px;font-weight:800;letter-spacing:1.5px;padding:3px 13px 15px}
+    .section-nav a{display:flex;align-items:flex-start;gap:11px;text-decoration:none;border-radius:9px;padding:12px 11px;color:#5c6b83;margin:2px 0;transition:.18s}
+    .section-nav a:hover{background:#f6f8fc}.section-nav a.active{background:#eef3ff;color:#2456d5}
+    .nav-index{font-size:11px;font-weight:800;margin-top:2px;color:#a3aec0}.section-nav a.active .nav-index{color:var(--blue)}
+    .nav-copy{min-width:0}.nav-copy strong{display:block;font-size:13px;line-height:1.3;color:inherit}.nav-copy small{display:block;font-size:11px;color:#97a3b3;margin-top:5px}.section-nav a.active .nav-copy small{color:#6785bf}
+    .nav-note{border-top:1px solid var(--line);padding:15px 13px 0;margin-top:14px;color:#8997a9;font-size:11px;line-height:1.75}
+    .content-sections{display:grid;gap:18px;min-width:0}
+    .section{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;scroll-margin-top:20px;min-width:0}
+    .section-heading{display:flex;align-items:center;gap:16px;padding:23px 27px 21px;border-bottom:1px solid var(--line)}
+    .section-symbol{width:43px;height:43px;border-radius:11px;background:#eef3ff;color:var(--blue);display:grid;place-items:center}
+    .section-heading h3{font-size:17px;margin:0 0 3px;font-weight:750}.section-heading p{font-size:12px;color:var(--sub);margin:0}
+    .section-counter{color:#afb8c7;margin-left:auto;font-size:11px;font-weight:700;letter-spacing:1px}
+    .section-body{padding:24px 27px}.field-label{display:block;font-size:12px;font-weight:750;margin:0 0 8px}.field-hint{font-size:11px;color:#8897a9;margin-top:7px}
+    .input,.select{height:40px;width:100%;background:#fff;border:1px solid #ccd6e4;border-radius:7px;padding:0 12px;color:#24354d;outline:none;transition:border-color .15s,box-shadow .15s}
+    .input:focus,.select:focus{border-color:#678eec;box-shadow:0 0 0 3px #e8efff}.input.invalid{border-color:#df7171}
+    .field-error{color:var(--red);font-size:11px;margin-top:5px;display:none}.field-error.show{display:block}
+    .shop-layout{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(210px,.85fr);gap:28px}
+    .context-panel{background:#f7f9fc;border:1px solid #edf0f5;border-radius:10px;padding:17px 18px}.context-title{display:flex;gap:8px;align-items:center;font-weight:750;font-size:12px;color:#385170;margin-bottom:11px}
+    .context-panel p{font-size:11px;color:#718199;line-height:1.9;margin:7px 0}
+    .row-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 27px;border-top:1px solid var(--line);background:#fff}
+    .save-note{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--sub)}.save-note.unsaved{color:var(--amber)}.save-note.success{color:var(--green)}
+    .buttons{display:flex;gap:9px;align-items:center}.btn{height:36px;border-radius:7px;padding:0 15px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid transparent;white-space:nowrap;transition:background .14s,border-color .14s,transform .14s}
+    .btn:active{transform:translateY(1px)}.btn .icon{width:14px;height:14px}.btn-primary{background:var(--blue);color:white}.btn-primary:hover:not(:disabled){background:var(--blue-dark)}
+    .btn-outline{border-color:#d7e1f1;background:#fff;color:#416389}.btn-outline:hover:not(:disabled){background:#f4f7fc;border-color:#b9c9e3}.btn-quiet{border-color:transparent;color:#7d8ca0;background:transparent}.btn-quiet:hover{color:#35455a;background:#f5f6fa}
+    .strip{display:grid;grid-template-columns:1fr auto;align-items:center;gap:18px;background:#f6f9ff;border:1px solid #e6edff;border-radius:10px;padding:16px 18px;margin-bottom:20px}
+    .strip strong{font-size:13px}.strip p{font-size:11px;color:#7284a0;margin:4px 0 0}
+    .switch{height:26px;width:45px;flex-shrink:0;border:0;border-radius:18px;background:#c1cbda;position:relative;transition:background .18s;padding:0}
+    .switch:after{content:"";height:20px;width:20px;border-radius:50%;background:white;position:absolute;left:3px;top:3px;box-shadow:0 1px 4px #253e6635;transition:transform .18s}.switch.on{background:var(--blue)}.switch.on:after{transform:translateX(19px)}
+    .block-heading{font-size:12px;font-weight:800;display:flex;align-items:center;gap:8px;margin:2px 0 12px}.block-heading .icon{width:15px;height:15px;color:#6687bf}
+    .strategy-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+    .strategy-option{border:1px solid #e0e6f0;background:#fff;border-radius:9px;padding:12px;text-align:left;color:#465c79;min-height:73px}
+    .strategy-option strong{font-size:12px;display:flex;align-items:center;gap:7px}.strategy-option small{color:#8998ad;font-size:10px;display:block;margin-top:5px;line-height:1.5}.strategy-option.selected{border-color:#87a6f4;background:#f4f7ff;box-shadow:0 0 0 1px #87a6f4 inset;color:#2451c4}.strategy-option.selected small{color:#6681b2}
+    .radio-dot{width:13px;height:13px;border:1.5px solid #b7c3d3;border-radius:50%;display:inline-block;position:relative}.selected .radio-dot{border-color:var(--blue)}.selected .radio-dot:after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--blue)}
+    .schedule-box{border:1px solid var(--line);border-radius:10px;background:#fcfdff;padding:16px 17px;margin:13px 0 22px}.schedule-box h4{font-size:12px;margin:0 0 4px}.schedule-box p{margin:0 0 13px;font-size:11px;color:#8796a8}.time-chips{display:flex;align-items:center;flex-wrap:wrap;gap:7px}
+    .time-chip{display:inline-flex;align-items:center;gap:7px;border-radius:6px;background:#eef3ff;border:1px solid #dce6fb;color:#2854b1;padding:7px 9px;font-size:12px;font-weight:700}.time-chip button{border:0;background:none;color:#839bbf;line-height:0;padding:0;display:grid;place-items:center}.time-chip button:hover{color:#c04747}
+    .add-time{border:1px dashed #b3c6eb;background:transparent;border-radius:6px;padding:7px 10px;color:#4267b0;font-size:11px;font-weight:700}.add-time:hover{background:#f1f6ff}
+    .time-editor{display:none;gap:8px;align-items:center;margin-top:12px}.time-editor.open{display:flex}.time-editor .input{width:150px}
+    .setting-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:10px 0 14px}
+    .small-field{border:1px solid var(--line);border-radius:9px;padding:13px 14px}.small-field label{display:block;color:#52627b;font-size:11px;font-weight:700;margin-bottom:10px}.number-control{display:flex;align-items:center;gap:8px}.number-control input{border:0;border-bottom:1px solid #dce5f1;outline:none;min-width:0;width:100%;font-weight:780;font-size:18px;color:#19324f;background:transparent;padding:2px 0}.number-control input:focus{border-bottom-color:var(--blue)}.number-control span{font-size:11px;color:#91a0b3;white-space:nowrap}.small-field small{display:block;color:#98a5b6;font-size:10px;margin-top:8px}
+    .disclosure{border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-top:18px}
+    .disclosure summary{list-style:none;display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:13px 15px;color:#4d627c;font-size:12px;font-weight:750;user-select:none}.disclosure summary::-webkit-details-marker{display:none}.disclosure summary .icon{transition:transform .18s}.disclosure[open] summary .icon{transform:rotate(180deg)}
+    .disclosure-content{border-top:1px solid var(--line);padding:17px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+    .disclosure-content label{font-size:11px;font-weight:700;color:#607088;display:block;margin-bottom:7px}
+    .disabled-zone{opacity:.44;pointer-events:none}
+    .browser-overview{display:grid;grid-template-columns:minmax(0,1fr) 236px;gap:20px}
+    .status-list{min-width:0}.status-item{display:flex;justify-content:space-between;gap:15px;align-items:center;padding:15px 0;border-bottom:1px solid var(--line)}.status-item:first-child{padding-top:3px}.status-item:last-child{border:0;padding-bottom:1px}
+    .status-item strong{display:block;font-size:12px;color:#34455f}.status-item p{margin:5px 0 0;font-size:11px;color:#8b9aad}.status-result{font-size:11px;font-weight:700;white-space:nowrap;color:#667c99}
+    .status-pill{padding:5px 10px;border-radius:6px;background:#eff3f8;color:#5a718e;font-size:11px;font-weight:750}.status-pill.managing{background:var(--green-weak);color:var(--green)}.status-pill.collecting{background:var(--amber-weak);color:var(--amber)}
+    .file-path{font-family:Consolas,"SFMono-Regular",monospace;color:#57708c;font-size:11px}
+    .browser-tip{background:#f8fafd;border:1px solid #edf0f5;border-radius:10px;padding:18px}.browser-tip .icon{color:#5f85c8}.browser-tip strong{display:block;font-size:12px;margin:9px 0}.browser-tip p{color:#7d8ca0;font-size:11px;line-height:1.8;margin:0}.browser-tip .mini-link{display:inline-flex;margin-top:12px;border:0;background:none;font-size:11px;color:#2c61c8;cursor:pointer;font-weight:700;padding:0}
+    .status-alert{margin-top:17px;display:flex;gap:8px;align-items:start;background:#f7f9fc;border-radius:8px;color:#6f8097;font-size:11px;padding:11px 12px;line-height:1.7}.status-alert .icon{margin-top:1px;width:15px;height:15px}
+    .page-footer{color:#9ba7b7;font-size:11px;margin:18px 2px 0;display:flex;gap:8px;align-items:center}
+    .toast{position:fixed;bottom:26px;right:30px;background:#223a59;color:white;border-radius:10px;box-shadow:0 18px 46px #19385c38;padding:13px 16px;display:flex;align-items:center;gap:9px;max-width:420px;font-size:12px;z-index:101;opacity:0;transform:translateY(10px);pointer-events:none;transition:opacity .2s,transform .2s}.toast.show{opacity:1;transform:translateY(0)}
+    .modal-mask{position:fixed;inset:0;background:rgba(15,28,49,.52);z-index:50;display:none;align-items:center;justify-content:center;padding:25px;backdrop-filter:blur(3px)}.modal-mask.open{display:flex}
+    .demo-browser{width:min(940px,100%);height:min(640px,92vh);border:1px solid #b9c6d8;background:#fff;box-shadow:0 25px 100px rgba(7,18,33,.35);border-radius:13px;overflow:hidden;display:flex;flex-direction:column}
+    .demo-titlebar{height:41px;background:#e8eef8;display:flex;align-items:end;padding:0 12px;gap:7px}.demo-window-icon{height:17px;width:17px;border-radius:50%;background:#e7a545;margin:0 10px 12px 6px;display:grid;place-items:center;color:#fff;font-size:10px;font-weight:900}
+    .demo-tab{height:33px;min-width:152px;max-width:240px;display:flex;align-items:center;gap:8px;background:#fff;border-radius:9px 9px 0 0;padding:0 11px;color:#465b77;font-size:11px;cursor:pointer;border:0}.demo-tab:not(.active){background:transparent}.demo-tab.active{font-weight:700}.demo-close{margin-left:auto;align-self:center;border:0;background:transparent;color:#60758f;display:grid;place-items:center;width:32px;height:29px;border-radius:5px}.demo-close:hover{background:#d8e2f0}
+    .demo-addressbar{height:52px;display:flex;gap:12px;align-items:center;background:#fff;border-bottom:1px solid var(--line);padding:0 21px}.demo-address{height:32px;display:flex;align-items:center;padding:0 13px;border-radius:16px;background:#f1f4f9;color:#617186;flex:1;font-size:12px;font-family:Consolas,monospace}
+    .demo-notice{background:#fff8e9;color:#966c2c;padding:8px 19px;font-size:11px;border-bottom:1px solid #f5e9ca}
+    .demo-content{padding:36px;overflow-y:auto;flex:1;background:#fafbfd}.demo-content h3{font-size:22px;font-weight:750;margin:0 0 7px}.demo-content p{color:#718299;font-size:12px;margin:0 0 22px}.demo-extension{border:1px solid #e1e8f1;border-radius:12px;background:white;padding:20px;display:flex;align-items:center;gap:16px;max-width:600px}.demo-ext-icon{width:46px;height:46px;background:#f3f6ff;color:#2f62d9;border-radius:10px;display:grid;place-items:center}.demo-ext-copy{flex:1}.demo-ext-copy strong{font-size:14px}.demo-ext-copy small{display:block;color:#8696aa;font-size:11px;margin-top:6px}.demo-empty{border:1px dashed #cbd7e7;background:#fff;max-width:620px;border-radius:12px;padding:25px}.demo-empty .icon{color:#2b63df}.demo-empty h4{margin:11px 0 7px;font-size:14px}.demo-empty p{margin:0;line-height:1.9}
+    .demo-footer{border-top:1px solid var(--line);padding:13px 20px;display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#8a97a7;background:#fff}
+    @media(max-width:1280px){.page{padding:25px 24px 65px}.workspace{grid-template-columns:190px minmax(0,1fr);gap:14px}.app{grid-template-columns:205px minmax(0,1fr)}.group-stats{gap:13px}.section-body{padding:21px}.section-heading{padding:20px 21px}.row-foot{padding:15px 21px}}
+    @media(max-width:1040px){.workspace{grid-template-columns:1fr}.section-nav{position:relative;top:auto;display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:10px}.section-nav-title,.nav-note{display:none}.section-nav a{flex:1;min-width:126px}.group-stats{display:none}.shop-layout,.browser-overview{grid-template-columns:1fr}.context-panel,.browser-tip{max-width:none}}
+    @media(max-width:720px){.app{grid-template-columns:1fr}.app-sidebar{height:auto;position:relative;display:block;border-bottom:1px solid var(--line)}.brand{padding:13px 17px}.side-menu,.side-bottom{display:none}.page{padding:20px 14px 50px}.head{margin-bottom:19px}.head h1{font-size:24px}.prototype-flag{display:none}.group-intro{padding:19px}.group-intro h2{font-size:18px}.section-heading{gap:11px}.section-body{padding:18px}.row-foot{padding:15px;flex-wrap:wrap}.setting-grid,.disclosure-content{grid-template-columns:1fr}.strategy-tabs{grid-template-columns:1fr}.strategy-option{min-height:60px}.strip{padding:12px}.status-item{align-items:flex-start}.file-path{font-size:10px}.btn{padding:0 12px}.browser-overview{gap:12px}.demo-content{padding:22px}.demo-tab{min-width:115px}}
+    @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}}
+
+    /* Settings centre supports multiple business modules. Monitoring is the first active group, not the page identity. */
+    .global-intro{background:linear-gradient(115deg,#fff 0%,#fff 67%,#f7faff 100%);padding:25px 29px}
+    .global-intro-copy{max-width:650px}.global-intro h2{font-size:20px}.global-intro .group-stats{gap:20px}
+    .nav-group-label{color:#97a3b3;font-size:10px;font-weight:800;letter-spacing:.35px;padding:12px 12px 8px}
+    .nav-parent{display:flex;align-items:center;gap:9px;padding:8px 11px 8px 10px;font-size:12px;color:#324967}
+    .nav-parent .icon{color:#4168a8}.nav-parent strong{font-weight:780}.nav-count{margin-left:auto;background:#eef3ff;color:#3d68b0;font-size:10px;padding:1px 7px;border-radius:5px}
+    .section-nav a.nav-sub-link{margin-left:14px;padding:10px 8px;gap:9px}
+    .section-nav .nav-sub-link .nav-copy strong{font-size:12px}.section-nav .nav-sub-link .nav-copy small{font-size:10px;margin-top:3px}
+    .nav-group-label.next-group{border-top:1px solid var(--line);margin-top:14px;padding-top:20px}
+    .nav-planned-item{display:flex;align-items:center;width:100%;gap:9px;padding:10px 12px;border:0;background:transparent;text-align:left;color:#708199;border-radius:8px;font-size:12px;transition:background .15s,color .15s}
+    .nav-planned-item:hover,.nav-planned-item.selected{background:#f5f7fb;color:#3a587d}
+    .nav-planned-item .icon{color:#8498b4;width:14px;height:14px}.nav-planned-item span{margin-left:auto;color:#a1aebf;font-size:10px}
+    .module-heading{border:1px solid #e4eaf2;background:#f8faff;border-radius:12px;padding:19px 23px;display:flex;align-items:center;justify-content:space-between;gap:20px;scroll-margin-top:20px}
+    .module-eyebrow{color:#7085a4;font-size:11px;font-weight:750;margin-bottom:5px}.module-live{background:#e7f4ed;color:#258463;padding:3px 7px;border-radius:5px;margin-left:6px;font-size:10px}
+    .module-heading h2{font-size:17px;margin:0 0 3px}.module-heading p{font-size:11px;color:#8292a8;margin:0}
+    .module-badges{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+    .module-badges span{display:flex;gap:7px;align-items:center;padding:7px 9px;color:#7a8aa1;font-size:10px;background:white;border:1px solid #e5eaf2;border-radius:7px;white-space:nowrap}
+    .module-badges b{color:#3c5778;font-size:10px}
+    .future-section .section-body{padding-top:20px}.future-symbol{background:#f1f4fa;color:#7486a0}.future-chip{margin-left:auto;white-space:nowrap;color:#8595aa;background:#f3f5f8;border-radius:6px;font-size:10px;padding:5px 8px;font-weight:700}
+    .future-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .future-card{display:grid;grid-template-columns:32px minmax(0,1fr) auto;grid-template-rows:auto auto;align-items:center;column-gap:11px;row-gap:3px;text-align:left;padding:15px;border:1px solid #e5eaf2;border-radius:10px;background:#fff;color:#425572;transition:border-color .15s,background .15s}
+    .future-card:hover{background:#f9fbff;border-color:#d0dcf1}.future-card.active{background:#f5f8ff;border-color:#9eb8ed;box-shadow:0 0 0 1px #dae6ff inset}
+    .future-card-icon{grid-row:1/3;display:grid;place-items:center;width:32px;height:32px;border-radius:8px;background:#f2f5fb;color:#6b85b0}.future-card strong{font-size:12px}.future-card small{font-size:10px;color:#91a0b2;min-width:0}.future-card em{font-style:normal;grid-column:3;grid-row:1/3;font-size:10px;color:#96a3b6;white-space:nowrap}
+    .future-detail{display:flex;align-items:flex-start;gap:12px;padding:16px;margin-top:14px;background:#f8fafc;border:1px solid #edf0f4;border-radius:10px;color:#5a6f89}
+    .future-detail-icon{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;background:#edf2f9;color:#7a90af;flex:none}
+    .future-detail-title{display:flex;align-items:center;gap:10px}.future-detail-title strong{font-size:12px;color:#3e536f}.future-detail-title span{font-size:10px;color:#98a8bd}.future-detail p{margin:5px 0 0;color:#8998ab;font-size:11px;line-height:1.8}
+    @media(max-width:1240px){.module-heading{align-items:flex-start;flex-direction:column}.module-badges{justify-content:flex-start}}
+    @media(max-width:1040px){.section-nav .nav-group-label,.section-nav .nav-parent,.section-nav .nav-planned-item{display:none}.section-nav a.nav-sub-link{margin-left:0}.section-nav::after{content:'其他模块设置 ↓';display:block;align-self:center;padding:10px;font-size:11px;color:#7689a3}.global-intro-copy{max-width:none}}
+    @media(max-width:720px){.global-intro{padding:18px}.module-heading{padding:17px}.module-badges{gap:5px}.future-grid{grid-template-columns:1fr}.future-section .section-heading{align-items:flex-start}.future-chip{display:none}}
+  </style>
+</head>
+<body>
+  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 5a3 3 0 0 1 0 6m1 3a5 5 0 0 1 3 5v1"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10m6 10V5m6 15v-8m4 8V8"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5z"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 7h15m0 0-4-4m4 4-4 4M20 17H5m0 0 4-4m-4 4 4 4"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/><circle cx="12" cy="12" r="4.2"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-store" viewBox="0 0 24 24"><path d="M3 10h18l-2-6H5zM5 10v10h14V10M9 20v-6h6v6"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+    <symbol id="i-browser" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4 5v7c0 5 3.5 8 8 10 4.5-2 8-5 8-10V5z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M13 3h6a2 2 0 0 1 2 2v5h-2a2.5 2.5 0 1 0 0 5h2v4a2 2 0 0 1-2 2h-5v-2a2.5 2.5 0 1 0-5 0v2H5a2 2 0 0 1-2-2v-5h2a2.5 2.5 0 0 0 0-5H3V5a2 2 0 0 1 2-2h4v2a2.5 2.5 0 0 0 5 0V3z"/></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><path d="M12 4h-6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6M13 4h7v7M20 4l-9 9"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-5L4 8m0-4v4h4M4 13a8 8 0 0 0 14 5l2-2m0 4v-4h-4"/></symbol>
+  </svg>
+  <div class="app">
+    <aside class="app-sidebar" aria-label="个人工作台主导航">
+      <div class="brand"><div class="brand-mark">PW</div><div><strong>个人工作台</strong><small>工作提效工具集</small></div></div>
+      <nav class="side-menu">
+        <a href="#" class="side-link side-demo"><svg class="icon"><use href="#i-home"/></svg>首页</a>
+        <div class="side-label">工作工具</div>
+        <a href="#" class="side-link side-demo"><svg class="icon"><use href="#i-box"/></svg>产品库</a>
+        <a href="#" class="side-link side-demo"><svg class="icon"><use href="#i-users"/></svg>客户触达</a>
+        <a href="#" class="side-link side-demo"><svg class="icon"><use href="#i-chart"/></svg>竞品监控<svg class="icon right-chevron" style="transform:rotate(90deg)"><use href="#i-chevron"/></svg></a>
+        <div class="side-sub"><a href="#" class="side-demo">竞品监控大屏</a><a href="#" class="side-demo">我方商品</a><a href="#" class="side-demo">竞品列表</a><a href="#" class="side-demo">竞品分组</a><a href="#" class="side-demo">采集记录</a></div>
+        <div class="side-label">规划工具 <span style="font-weight:400;float:right;letter-spacing:0">规划中</span></div>
+        <a href="#" class="side-link side-demo"><svg class="icon"><use href="#i-spark"/></svg>AI 智能助手</a>
+        <a href="#" class="side-link side-demo"><svg class="icon"><use href="#i-swap"/></svg>全网比价</a>
+        <a href="#" class="side-link side-demo"><svg class="icon"><use href="#i-box"/></svg>自动询价</a>
+        <a href="#" class="side-link side-demo"><svg class="icon"><use href="#i-open"/></svg>自动上架</a>
+        <div style="height:19px"></div>
+        <a href="#top" class="side-link active"><svg class="icon"><use href="#i-settings"/></svg>系统设置</a>
+      </nav>
+      <div class="side-bottom"><div class="avatar">PW</div><div><b>个人工作台</b><span>设置配置中心 · UI 原型</span></div></div>
+    </aside>
+
+    <main class="page" id="top">
+      <div class="page-max">
+        <div class="breadcrumb"><span>个人工作台</span><svg class="icon"><use href="#i-chevron"/></svg><strong>系统设置</strong></div>
+        <div class="head"><div><h1>系统设置</h1><p>统一管理个人工作台各业务模块的配置、规则与运行环境。</p></div><div class="prototype-flag"><span class="dot"></span>可交互原型 · 操作不会写入真实系统</div></div>
+
+        <section class="group-intro global-intro" aria-label="工作台系统设置概览">
+          <div class="global-intro-copy"><div class="group-overline">WORKSPACE / SETTINGS</div><h2>工作台配置中心</h2><p>所有模块的设置集中在这里。当前已接入竞品监控分析，后续可逐步加入产品库、客户触达与更多工具。</p></div>
+          <div class="group-stats"><div class="stat"><div class="stat-label">已接入模块</div><div class="stat-value blue">1 个</div></div><div class="stat"><div class="stat-label">可配置项目</div><div class="stat-value">3 组</div></div><div class="stat"><div class="stat-label">后续设置模块</div><div class="stat-value">预留扩展</div></div></div>
+        </section>
+
+        <div class="workspace">
+          <nav class="section-nav" aria-label="系统设置内容导航">
+            <div class="section-nav-title">设置目录</div>
+            <div class="nav-group-label">已接入模块</div>
+            <div class="nav-parent"><svg class="icon icon-sm"><use href="#i-chart"/></svg><strong>竞品监控分析</strong><span class="nav-count">3</span></div>
+            <a href="#shop" class="active nav-sub-link" data-scroll="shop"><span class="nav-index">01</span><span class="nav-copy"><strong>店铺识别</strong><small>商品身份与归属</small></span></a>
+            <a href="#collection" class="nav-sub-link" data-scroll="collection"><span class="nav-index">02</span><span class="nav-copy"><strong>采集策略</strong><small>采集节奏与自动计划</small></span></a>
+            <a href="#browser" class="nav-sub-link" data-scroll="browser"><span class="nav-index">03</span><span class="nav-copy"><strong>工作浏览器</strong><small>登录环境与扩展程序</small></span></a>
+            <div class="nav-group-label next-group">其他模块 · 规划中</div>
+            <button class="nav-planned-item" type="button" data-planned-target="library"><svg class="icon icon-sm"><use href="#i-box"/></svg>产品库 <span>待接入</span></button>
+            <button class="nav-planned-item" type="button" data-planned-target="outreach"><svg class="icon icon-sm"><use href="#i-users"/></svg>客户触达 <span>待接入</span></button>
+            <button class="nav-planned-item" type="button" data-planned-target="ai"><svg class="icon icon-sm"><use href="#i-spark"/></svg>AI 工具 <span>待接入</span></button>
+            <button class="nav-planned-item" type="button" data-planned-target="general"><svg class="icon icon-sm"><use href="#i-settings"/></svg>通用偏好 <span>待接入</span></button>
+            <div class="nav-note">统一设置入口；各业务模块配置独立管理，未开放模块仅展示预留位置。</div>
+          </nav>
+          <div class="content-sections">
+            <div class="module-heading" id="monitoring"><div class="module-heading-copy"><div class="module-eyebrow">当前可配置的业务模块 <span class="module-live">已接入</span></div><h2>竞品监控分析</h2><p>一处管理店铺身份、采集策略和浏览器环境。</p></div><div class="module-badges"><span>店铺 <b id="overviewShop">已配置</b></span><span>自动采集 <b id="overviewAuto">已开启</b></span><span>工作浏览器 <b id="overviewBrowser">空闲</b></span></div></div>
+            <section class="section" id="shop">
+              <div class="section-heading"><div class="section-symbol"><svg class="icon icon-lg"><use href="#i-store"/></svg></div><div><h3>店铺识别</h3><p>确定我方店铺身份，作为商品归属与竞品对比的识别依据。</p></div><span class="section-counter">01 / IDENTITY</span></div>
+              <div class="section-body"><div class="shop-layout">
+                <div><label class="field-label" for="shopName">我方店铺名称</label><input class="input" id="shopName" maxlength="255" value="广州莓有科技有限公司" placeholder="填写 1688 上的完整店铺名称" /><div class="field-error" id="shopError">请填写我方店铺名称。</div><div class="field-hint">必须与 1688 店铺名称一致；首尾及连续空格保存时会规范化。</div></div>
+                <div class="context-panel"><div class="context-title"><svg class="icon icon-sm"><use href="#i-info"/></svg> 修改后会发生什么</div><p>保存后重新识别我方商品与竞品，并可能调整竞品组中的我方基准商品。</p><p>仅按完整店铺名匹配，不支持简称或关键词。</p></div>
+              </div></div>
+              <div class="row-foot"><div class="save-note success" id="shopSaveNote"><svg class="icon icon-sm"><use href="#i-check"/></svg><span>店铺配置已保存</span></div><div class="buttons"><button class="btn btn-quiet" id="shopReset" type="button" hidden>撤销修改</button><button class="btn btn-primary" id="shopSave" type="button">保存店铺配置</button></div></div>
+            </section>
+
+            <section class="section" id="collection">
+              <div class="section-heading"><div class="section-symbol"><svg class="icon icon-lg"><use href="#i-clock"/></svg></div><div><h3>采集策略</h3><p>统一设置数据采集的频率、自动执行时间与异常恢复规则。</p></div><span class="section-counter">02 / SCHEDULE</span></div>
+              <div class="section-body">
+                <div class="strip"><div><strong>启用自动采集</strong><p>后台运行时按指定计划采集监控商品；手动采集不受此开关影响。</p></div><button type="button" class="switch on" id="autoSwitch" aria-label="启用自动采集" role="switch" aria-checked="true"></button></div>
+                <div id="autoControls">
+                  <div class="block-heading"><svg class="icon"><use href="#i-clock"/></svg>自动计划</div>
+                  <div class="strategy-tabs" role="radiogroup" aria-label="自动采集模式">
+                    <button class="strategy-option selected" type="button" data-strategy="daily" role="radio" aria-checked="true"><strong><span class="radio-dot"></span>固定时间</strong><small>每天在指定时刻执行采集</small></button>
+                    <button class="strategy-option" type="button" data-strategy="interval" role="radio" aria-checked="false"><strong><span class="radio-dot"></span>固定间隔</strong><small>按设定小时数周期执行</small></button>
+                    <button class="strategy-option" type="button" data-strategy="rolling" role="radio" aria-checked="false"><strong><span class="radio-dot"></span>滚动 24 小时</strong><small>根据上一次执行时间安排</small></button>
+                  </div>
+                  <div class="schedule-box" id="scheduleBox"><h4 id="scheduleTitle">每日执行时间</h4><p id="scheduleDescription">按照电脑本地时间运行，最多添加 8 个时间点。</p>
+                    <div id="dailyControls"><div class="time-chips" id="timeChips"></div><div class="time-editor" id="timeEditor"><input type="time" id="newTime" class="input" value="18:00" aria-label="新增每日采集时间"/><button type="button" class="btn btn-primary" id="confirmTime">添加</button><button type="button" class="btn btn-quiet" id="cancelTime">取消</button></div></div>
+                    <div id="intervalControls" style="display:none"><div class="number-control" style="max-width:240px"><input type="number" id="intervalHours" min="1" max="24" value="4" aria-label="自动采集间隔小时"/><span>小时 / 次</span></div><div class="field-hint">默认从计划开始时间计算，间隔 1～24 小时。</div></div>
+                    <div id="rollingControls" style="display:none;color:#71839e;font-size:12px">系统根据上次采集完成时间自动规划下一轮，无需手动配置时间。</div>
+                  </div>
+                </div>
+                <div class="block-heading"><svg class="icon"><use href="#i-list"/></svg>采集节奏</div>
+                <div class="setting-grid"><div class="small-field"><label for="itemInterval">单品采集间隔</label><div class="number-control"><input type="number" id="itemInterval" value="5" min="1" max="60"/><span>秒</span></div><small>每条商品完成后的等待时间</small></div><div class="small-field"><label for="continuousCount">连续采集数量</label><div class="number-control"><input type="number" id="continuousCount" value="10" min="1" max="50"/><span>件</span></div><small>连续采集多少件后进入休息</small></div><div class="small-field"><label for="batchRest">批次休息时间</label><div class="number-control"><input type="number" id="batchRest" value="2" min="0" max="30"/><span>分钟</span></div><small>减少连续请求的集中程度</small></div></div>
+                <details class="disclosure"><summary>高级设置 · 验证与异常恢复 <svg class="icon icon-sm"><use href="#i-chevron-down"/></svg></summary><div class="disclosure-content"><div><label for="cooldown">人工验证冷却时间</label><select id="cooldown" class="select"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="20">20 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select></div><div><label for="resumeMax">最多自动恢复次数</label><select id="resumeMax" class="select"><option>0</option><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option></select></div><div><label for="retryMax">经营指标补采次数</label><select id="retryMax" class="select"><option selected>0</option><option>1</option><option>2</option></select></div></div></details>
+              </div>
+              <div class="row-foot"><div class="save-note success" id="strategySaveNote"><svg class="icon icon-sm"><use href="#i-check"/></svg><span>采集策略已保存</span></div><div class="buttons"><button type="button" class="btn btn-quiet" id="strategyReset" hidden>撤销修改</button><button type="button" class="btn btn-primary" id="strategySave">保存采集策略</button></div></div>
+            </section>
+
+            <section class="section" id="browser">
+              <div class="section-heading"><div class="section-symbol"><svg class="icon icon-lg"><use href="#i-browser"/></svg></div><div><h3>工作浏览器</h3><p>维护 1688 采集使用的 Chrome 登录状态与扩展程序。</p></div><span class="section-counter">03 / BROWSER</span></div>
+              <div class="section-body">
+                <div class="browser-overview"><div class="status-list"><div class="status-item"><div><strong>浏览器状态</strong><p>管理期间暂停使用此浏览器进行采集。</p></div><span id="browserStatus" class="status-pill">空闲</span></div><div class="status-item"><div><strong>1688 官方采购助手</strong><p>在扩展程序页面确认已启用，再打开商品页确认助手区域。</p></div><span class="status-result">未自动检测</span></div><div class="status-item"><div><strong>工作浏览器配置目录</strong><p>账号与扩展信息保存在独立的采集 Profile。</p></div><span class="file-path">项目根目录 / .browser-profile</span></div></div>
+                  <aside class="browser-tip"><svg class="icon icon-lg"><use href="#i-shield"/></svg><strong>与采集环境保持一致</strong><p>工作浏览器与自动采集使用同一配置目录，便于维护登录与扩展，避免不同 Chrome Profile 混用。</p><button class="mini-link" id="browserHelp" type="button">查看使用说明 →</button></aside></div>
+                <div class="status-alert"><svg class="icon"><use href="#i-info"/></svg><span>请先结束采集再维护浏览器；浏览器关闭后才能恢复采集。本原型中的浏览器操作为模拟演示。</span></div>
+              </div>
+              <div class="row-foot"><div class="save-note"><svg class="icon icon-sm"><use href="#i-info"/></svg><span id="browserHint">此模块是运行操作，无需点击“保存设置”。</span></div><div class="buttons"><button type="button" id="extensionsButton" class="btn btn-outline"><svg class="icon"><use href="#i-puzzle"/></svg>插件管理</button><button type="button" id="openBrowserButton" class="btn btn-primary"><svg class="icon"><use href="#i-open"/></svg>打开工作浏览器</button></div></div>
+            </section>
+
+            <section class="section future-section" id="future">
+              <div class="section-heading"><div class="section-symbol future-symbol"><svg class="icon icon-lg"><use href="#i-box"/></svg></div><div><h3>其他模块设置</h3><p>工作台后续的业务设置都在这里拓展，保持独立分组和一致的交互规范。</p></div><span class="future-chip">结构预留</span></div>
+              <div class="section-body">
+                <div class="future-grid" aria-label="未来可扩展的设置模块">
+                  <button type="button" class="future-card active" data-planned-target="library" aria-pressed="true"><span class="future-card-icon"><svg class="icon"><use href="#i-box"/></svg></span><strong>产品库</strong><small>产品资料与导入相关设置</small><em>规划中</em></button>
+                  <button type="button" class="future-card" data-planned-target="outreach" aria-pressed="false"><span class="future-card-icon"><svg class="icon"><use href="#i-users"/></svg></span><strong>客户触达</strong><small>客户运营相关设置</small><em>规划中</em></button>
+                  <button type="button" class="future-card" data-planned-target="ai" aria-pressed="false"><span class="future-card-icon"><svg class="icon"><use href="#i-spark"/></svg></span><strong>AI 工具</strong><small>模型和工具使用偏好</small><em>规划中</em></button>
+                  <button type="button" class="future-card" data-planned-target="general" aria-pressed="false"><span class="future-card-icon"><svg class="icon"><use href="#i-settings"/></svg></span><strong>通用偏好</strong><small>界面与工作台通用设置</small><em>规划中</em></button>
+                </div>
+                <div class="future-detail" role="status" aria-live="polite"><div class="future-detail-icon"><svg class="icon"><use href="#i-info"/></svg></div><div><div class="future-detail-title"><strong id="futureDetailTitle">产品库设置</strong><span>尚未开放</span></div><p id="futureDetailDescription">产品库已有业务功能，但专属设置项尚未确定；此处预留统一设置入口，待需求确认后接入。</p></div></div>
+              </div>
+            </section>
+            <div class="page-footer"><svg class="icon icon-sm"><use href="#i-info"/></svg>系统设置原型：已接入竞品监控配置可交互；其他模块仅展示规划结构，所有操作均不会连接真实业务接口。</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"><svg class="icon"><use href="#i-check"/></svg><span id="toastText"></span></div>
+  <div class="modal-mask" id="browserModal" role="presentation">
+    <div class="demo-browser" role="dialog" aria-modal="true" aria-labelledby="demoBrowserTitle">
+      <div class="demo-titlebar"><div class="demo-window-icon">◈</div><button type="button" class="demo-tab" id="demoTab1688"><svg class="icon icon-sm"><use href="#i-browser"/></svg>1688 工作环境</button><button type="button" class="demo-tab" id="demoTabExtensions"><svg class="icon icon-sm"><use href="#i-puzzle"/></svg>扩展程序</button><button class="demo-close" type="button" id="demoClose" aria-label="关闭模拟浏览器"><svg class="icon"><use href="#i-x"/></svg></button></div>
+      <div class="demo-addressbar"><svg class="icon icon-sm" style="color:#8796aa"><use href="#i-refresh"/></svg><div class="demo-address" id="demoAddress">https://www.1688.com/</div><svg class="icon icon-sm" style="color:#8c9aaa"><use href="#i-puzzle"/></svg></div>
+      <div class="demo-notice">这是用于确认交互的示意浏览器，不会启动 Chrome、访问 1688 或更改真实插件。</div>
+      <div class="demo-content" id="demoBrowserContent"></div>
+      <div class="demo-footer"><span>演示环境 / 本地 UI 原型</span><button type="button" class="btn btn-outline" id="demoCloseBottom">关闭模拟工作浏览器</button></div>
+    </div>
+  </div>
+  <script>
+  (() => {
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const icons = {check:'<svg class="icon icon-sm"><use href="#i-check"/></svg>', info:'<svg class="icon icon-sm"><use href="#i-info"/></svg>'};
+    let toastTimer;
+    const toast = text => { $('toastText').textContent = text; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 3100); };
+    const normalize = text => text.replace(/\s+/g,' ').trim();
+    let savedShop = $('shopName').value;
+    const updateShopDirty = () => {const dirty = normalize($('shopName').value) !== savedShop; $('shopReset').hidden = !dirty; $('shopSaveNote').className='save-note '+(dirty?'unsaved':'success'); $('shopSaveNote').innerHTML=(dirty?icons.info:icons.check)+'<span>'+(dirty?'店铺名称有未保存修改':'店铺配置已保存')+'</span>';};
+    $('shopName').addEventListener('input',()=>{ $('shopError').classList.remove('show');$('shopName').classList.remove('invalid'); updateShopDirty(); });
+    $('shopReset').onclick=()=>{ $('shopName').value=savedShop;updateShopDirty(); toast('已撤销店铺名称修改');};
+    $('shopSave').onclick=()=>{const value=normalize($('shopName').value);if(!value){$('shopError').classList.add('show');$('shopName').classList.add('invalid');$('shopName').focus();return;} savedShop=value;$('shopName').value=value;updateShopDirty();$('overviewShop').textContent='已配置';toast('店铺配置已保存（仅在此原型中生效）');};
+
+    const defaultStrategy = {enabled:true,strategy:'daily',times:['09:00','15:00'],intervalHours:'4',itemInterval:'5',continuousCount:'10',batchRest:'2',cooldown:'10',resumeMax:'2',retryMax:'0'};
+    let strategy={...defaultStrategy,times:[...defaultStrategy.times]};
+    let savedStrategy=JSON.stringify(strategy);
+    const strategyKeys=['intervalHours','itemInterval','continuousCount','batchRest','cooldown','resumeMax','retryMax'];
+    const sortedTimes=()=>[...strategy.times].sort((a,b)=>a.localeCompare(b));
+    function renderStrategy(){
+      $('autoSwitch').classList.toggle('on',strategy.enabled);$('autoSwitch').setAttribute('aria-checked',String(strategy.enabled));$('autoControls').classList.toggle('disabled-zone',!strategy.enabled);
+      document.querySelectorAll('[data-strategy]').forEach(button=>{const active=button.dataset.strategy===strategy.strategy;button.classList.toggle('selected',active);button.setAttribute('aria-checked',String(active));});
+      $('dailyControls').style.display=strategy.strategy==='daily'?'block':'none';$('intervalControls').style.display=strategy.strategy==='interval'?'block':'none';$('rollingControls').style.display=strategy.strategy==='rolling'?'block':'none';
+      $('scheduleTitle').textContent=strategy.strategy==='daily'?'每日执行时间':strategy.strategy==='interval'?'固定采集间隔':'滚动采集计划';
+      $('scheduleDescription').textContent=strategy.strategy==='daily'?'按照电脑本地时间运行，最多添加 8 个时间点。':strategy.strategy==='interval'?'设定每天的采集间隔，示例数据不连接调度器。':'自动根据上一次完成时间安排采集。';
+      $('timeChips').innerHTML=sortedTimes().map(time=>'<span class="time-chip">'+time+'<button type="button" class="remove-time" aria-label="移除 '+time+'" data-time="'+time+'"><svg class="icon icon-sm"><use href="#i-x"/></svg></button></span>').join('')+(strategy.times.length<8?'<button class="add-time" id="addTime" type="button">+ 添加时间</button>':'');
+      document.querySelectorAll('.remove-time').forEach(button=>button.onclick=()=>{strategy.times=strategy.times.filter(x=>x!==button.dataset.time);renderStrategy();updateStrategyDirty();});
+      const add=$('addTime');if(add)add.onclick=()=>{$('timeEditor').classList.add('open');$('newTime').focus();};
+      strategyKeys.forEach(key=>$(key).value=strategy[key]);
+      $('overviewAuto').textContent=strategy.enabled?'已开启':'已关闭';$('overviewAuto').className='stat-value '+(strategy.enabled?'blue':'');
+    }
+    function updateStrategyDirty(){const dirty=JSON.stringify(strategy)!==savedStrategy;$('strategyReset').hidden=!dirty;$('strategySaveNote').className='save-note '+(dirty?'unsaved':'success');$('strategySaveNote').innerHTML=(dirty?icons.info:icons.check)+'<span>'+(dirty?'采集策略有未保存修改':'采集策略已保存')+'</span>';}
+    $('autoSwitch').onclick=()=>{strategy.enabled=!strategy.enabled;renderStrategy();updateStrategyDirty();};
+    document.querySelectorAll('[data-strategy]').forEach(b=>b.onclick=()=>{strategy.strategy=b.dataset.strategy;renderStrategy();updateStrategyDirty();});
+    strategyKeys.forEach(key=>$(key).addEventListener('input',()=>{strategy[key]=$(key).value;updateStrategyDirty();}));
+    $('confirmTime').onclick=()=>{const v=$('newTime').value;if(!v){toast('请选择有效的时间');return;}if(strategy.times.includes(v)){toast('该时间已存在');return;}if(strategy.times.length>=8){toast('最多支持 8 个时间点');return;}strategy.times.push(v);$('timeEditor').classList.remove('open');renderStrategy();updateStrategyDirty();};
+    $('cancelTime').onclick=()=>$('timeEditor').classList.remove('open');
+    $('strategyReset').onclick=()=>{strategy=JSON.parse(savedStrategy);renderStrategy();updateStrategyDirty();toast('已撤销采集策略修改');};
+    $('strategySave').onclick=()=>{for(const [id,min,max] of [['itemInterval',1,60],['continuousCount',1,50],['batchRest',0,30],['intervalHours',1,24]]){const val=Number(strategy[id]);if(!Number.isInteger(val)||val<min||val>max){toast('请检查 '+$(id).closest('.small-field')?.querySelector('label')?.textContent||'数值范围');$(id).focus();return;}}
+      if(strategy.enabled&&strategy.strategy==='daily'&&strategy.times.length===0){toast('固定时间模式需要至少一个时间点');return;}strategy.times=sortedTimes();savedStrategy=JSON.stringify(strategy);renderStrategy();updateStrategyDirty();toast('采集策略已保存（仅在此原型中生效）');};
+    renderStrategy();updateStrategyDirty();
+
+    let browserOpen=false,extensionEnabled=true,demoTab='1688';
+    const updateBrowser=()=>{$('browserStatus').textContent=browserOpen?'管理中':'空闲';$('browserStatus').classList.toggle('managing',browserOpen);$('openBrowserButton').innerHTML=browserOpen?'<svg class="icon"><use href="#i-open"/></svg>查看工作浏览器':'<svg class="icon"><use href="#i-open"/></svg>打开工作浏览器';$('overviewBrowser').textContent=browserOpen?'管理中':'空闲';$('overviewBrowser').className='stat-value '+(browserOpen?'good':'');$('browserHint').textContent=browserOpen?'浏览器管理中；关闭模拟窗口后恢复空闲。':'此模块是运行操作，无需点击“保存设置”。';};
+    const openDemo=(tab='1688')=>{if(!browserOpen){browserOpen=true;updateBrowser();toast('模拟工作浏览器已打开');}demoTab=tab;renderBrowserDemo();$('browserModal').classList.add('open');document.body.style.overflow='hidden';$('demoClose').focus();};
+    const closeDemo=()=>{$('browserModal').classList.remove('open');document.body.style.overflow='';browserOpen=false;updateBrowser();toast('模拟工作浏览器已关闭');};
+    const renderBrowserDemo=()=>{
+      $('demoTab1688').classList.toggle('active',demoTab==='1688');$('demoTabExtensions').classList.toggle('active',demoTab==='extensions');$('demoAddress').textContent=demoTab==='1688'?'https://www.1688.com/':'chrome://extensions/';
+      $('demoBrowserContent').innerHTML=demoTab==='1688'?'<h3 id="demoBrowserTitle">工作浏览器</h3><p>模拟打开与采集器相同 Profile 的 Chrome 环境。</p><div class="demo-empty"><svg class="icon icon-lg"><use href="#i-browser"/></svg><h4>浏览器窗口已打开</h4><p>正式版本将在这里打开真实 Chrome，供你登录 1688、切换账号并浏览页面。<br/>这个 HTML 原型不会访问真实网站；点击上方“扩展程序”可以测试插件管理流程。</p></div>':'<h3 id="demoBrowserTitle">扩展程序</h3><p>仅演示扩展程序的界面和状态切换，不会操作已安装的 Chrome 插件。</p><div class="demo-extension"><div class="demo-ext-icon"><svg class="icon icon-lg"><use href="#i-puzzle"/></svg></div><div class="demo-ext-copy"><strong>1688 官方采购助手</strong><small>'+(extensionEnabled?'已启用（模拟）':'已关闭（模拟）')+' · 原型中虚拟显示</small></div><button type="button" role="switch" aria-checked="'+extensionEnabled+'" aria-label="模拟启用采购助手" class="switch '+(extensionEnabled?'on':'')+'" id="demoExtensionToggle"></button></div>';
+      const toggle=$('demoExtensionToggle');if(toggle)toggle.onclick=()=>{extensionEnabled=!extensionEnabled;renderBrowserDemo();toast('插件状态已切换（仅模拟）');};
+    };
+    $('openBrowserButton').onclick=()=>openDemo('1688');$('extensionsButton').onclick=()=>openDemo('extensions');$('demoTab1688').onclick=()=>{demoTab='1688';renderBrowserDemo();};$('demoTabExtensions').onclick=()=>{demoTab='extensions';renderBrowserDemo();};$('demoClose').onclick=closeDemo;$('demoCloseBottom').onclick=closeDemo;
+    $('browserModal').addEventListener('click',e=>{if(e.target===$('browserModal'))closeDemo();});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('browserModal').classList.contains('open'))closeDemo();});
+    $('browserHelp').onclick=()=>toast('正式系统：先暂停采集，再打开工作浏览器管理账号和插件，关闭后继续采集。');
+    updateBrowser();
+
+    // Planned module cards are interactive previews, not implemented settings or APIs.
+    const plannedModules = {
+      library: ['产品库设置', '产品库已有业务功能，但专属设置项尚未确定；此处预留统一设置入口，待需求确认后接入。'],
+      outreach: ['客户触达设置', '未来可以在这里管理客户触达相关的偏好与规则。当前没有新增配置接口，暂不开放。'],
+      ai: ['AI 工具设置', '未来可以统一管理 AI 工具或模型的使用偏好。具体配置项以实际功能落地后为准。'],
+      general: ['通用偏好设置', '界面、体验与其他跨模块配置可在这里接入。当前只是页面结构预留。']
+    };
+    const setPlannedModule = (key, navigate = false) => {
+      const info = plannedModules[key];
+      if (!info) return;
+      $('futureDetailTitle').textContent = info[0];
+      $('futureDetailDescription').textContent = info[1];
+      document.querySelectorAll('.future-card').forEach(b=>{const active=b.dataset.plannedTarget===key;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});
+      document.querySelectorAll('.nav-planned-item').forEach(b=>b.classList.toggle('selected',b.dataset.plannedTarget===key));
+      if (navigate) $('future').scrollIntoView({behavior:'smooth',block:'start'});
+    };
+    document.querySelectorAll('[data-planned-target]').forEach(b=>b.addEventListener('click',()=>setPlannedModule(b.dataset.plannedTarget, b.classList.contains('nav-planned-item'))));
+    setPlannedModule('library');
+
+    // Continuous settings content: navigation scrolls, and planned modules remain previews.
+    const links=[...document.querySelectorAll('.section-nav a[data-scroll]')];
+    const sections=links.map(l=>$(l.dataset.scroll));
+    const setActive=id=>links.forEach(l=>{const active=l.dataset.scroll===id;l.classList.toggle('active',active);if(active)l.setAttribute('aria-current','location');else l.removeAttribute('aria-current');});
+    links.forEach(l=>l.addEventListener('click',()=>setActive(l.dataset.scroll)));
+    if('IntersectionObserver' in window){const observer=new IntersectionObserver(entries=>{const visible=entries.filter(x=>x.isIntersecting).sort((a,b)=>a.boundingClientRect.top-b.boundingClientRect.top);if(visible.length)setActive(visible[0].target.id);},{rootMargin:'-12% 0px -60% 0px',threshold:0});sections.forEach(x=>observer.observe(x));}
+    document.querySelectorAll('.side-demo').forEach(el=>el.addEventListener('click',e=>{e.preventDefault();toast('此原型聚焦系统设置页，其余导航暂不连接。');}));
+    window.addEventListener('beforeunload',e=>{if(normalize($('shopName').value)!==savedShop||JSON.stringify(strategy)!==savedStrategy){e.preventDefault();e.returnValue='';}});
+  })();
+  </script>
+</body>
+</html>

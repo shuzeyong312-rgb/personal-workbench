@@ -14,7 +14,7 @@
 
 ## 技术栈与目录
 
-React 19、TypeScript、Vite 6、CSS / SVG；FastAPI / Uvicorn 模块化单体；SQLite / SQLAlchemy / Alembic；Python Playwright + 本机 Google Chrome 采集；openpyxl 处理 Excel。验证使用 pytest、Vitest 和 Playwright E2E。调度在 FastAPI lifespan 内运行，复用 Batch Runner。
+React 19、TypeScript、Vite 6、CSS / SVG；FastAPI / Uvicorn 模块化单体；SQLite / SQLAlchemy / Alembic；Python Playwright + 本机 Google Chrome 采集；openpyxl 处理 Excel。自动验证使用 pytest、Vitest、Typecheck 和 Build；必要时人工检查浏览器交互与视觉。调度在 FastAPI lifespan 内运行，复用 Batch Runner。
 
 ```text
 personal-workbench/
@@ -26,7 +26,6 @@ personal-workbench/
 │  └─ tests/               # 隔离数据库与 fixture 测试
 ├─ frontend/
 │  ├─ src/                 # React 页面、样式与 Vitest
-│  └─ e2e/                 # Playwright、受控 API mock
 ├─ experiments/
 │  └─ poc/                 # 原根目录七个独立 Python POC
 ├─ tests/                  # PowerShell 开发脚本检查
@@ -63,10 +62,9 @@ npm --prefix frontend ci
 
 ## 日常开发、测试与 CI
 
-从仓库根执行；按影响范围选用。首次浏览器测试先安装 Chromium，部分 Vitest / E2E 会启动隔离 Python 服务，需保留根目录 Windows 虚拟环境路径。
+从仓库根执行；按影响范围选用。测试使用隔离 fixture、临时 SQLite 和 mock；前端 Vitest 不启动浏览器。
 
 ```powershell
-npm --prefix frontend exec -- playwright install chromium
 $env:PERSONAL_WORKBENCH_DISABLE_SCHEDULER = '1'
 Push-Location backend
 ..\.venv\Scripts\python.exe -m pytest tests
@@ -74,12 +72,11 @@ Pop-Location
 npm --prefix frontend test
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
-npm --prefix frontend run qa:e2e
 powershell.exe -ExecutionPolicy Bypass -File tests/dev-port.ps1
 git diff --check
 ```
 
-禁用 scheduler 不等于隔离数据库；测试必须使用 fixture、临时 SQLite 和 mock。Playwright 自行启动 5201 Vite，API 使用受控 mock 或临时数据库测试服务，不依赖 8200 正式后端。不要用真实采集、客户发送或正式迁移验证工程改动。[CI](.github/workflows/ci.yml) 使用 Windows Runner、Python 3.12 / Node 22，执行后端 pytest、Vitest、Typecheck、Build 与 E2E。
+禁用 scheduler 不等于隔离数据库；测试必须使用 fixture、临时 SQLite 和 mock。不要用真实采集、客户发送或正式迁移验证工程改动。[CI](.github/workflows/ci.yml) 使用 Windows Runner、Python 3.12 / Node 22，执行后端 pytest、Vitest、Typecheck 与 Build。前端 UI 行为按需人工验收。
 
 ## V2 Vibe Coding 工作流
 

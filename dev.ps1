@@ -93,7 +93,7 @@ function Start-Project {
     } finally {
         Pop-Location
     }
-    $backendCommand = "Set-Location -LiteralPath '$BackendDir'; & '$Python' -m uvicorn app.main:app --reload --host 127.0.0.1 --port $BackendPort *> '$backendLog'"
+    $backendCommand = "Set-Location -LiteralPath '$BackendDir'; `$env:PERSONAL_WORKBENCH_FRONTEND_ORIGIN = 'http://127.0.0.1:$FrontendPort'; & '$Python' -m uvicorn app.main:app --reload --host 127.0.0.1 --port $BackendPort *> '$backendLog'"
     $frontendCommand = "Set-Location -LiteralPath '$FrontendDir'; & '$Vite' --host 127.0.0.1 --port $FrontendPort --strictPort --open *> '$frontendLog'"
 
     $backendProcess = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-ExecutionPolicy', 'Bypass', '-Command', $backendCommand)

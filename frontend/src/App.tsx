@@ -7,6 +7,7 @@ import "./CompetitorList.css";
 import "./Workspace.css";
 import "./Dashboard.css";
 import { ProductLibrary } from "./ProductLibrary";
+import { WorkspaceTools, WorkspaceToolsProvider } from "./WorkspaceTools";
 import { CustomerReachPage } from "./CustomerReach";
 import { Toolbox } from "./Toolbox";
 
@@ -1054,7 +1055,7 @@ export function StatusBadge({ status }: { status: Competitor["status"] }) {
   return <span className={"status-badge status-" + status}>{labels[status]}</span>;
 }
 
-type ShellProps = { page: Page; onNavigate: (page: Page) => void; breadcrumb: string; children: ReactNode };
+type ShellProps = { page: Page; onNavigate: (page: Page) => void | boolean; breadcrumb: string; children: ReactNode };
 type NavIconName = "home" | "monitoring" | "library" | "assistant" | "compare" | "inquiry" | "listing" | "settings";
 
 function NavIcon({ name }: { name: NavIconName }) {
@@ -1120,7 +1121,7 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
 function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
   const monitoringPage = monitoringPages.has(page);
   return <div className={`app-shell workspace-shell${page === "settings" ? " settings-shell" : ""}${page === "group-detail" ? " group-detail-shell" : ""}`}><a className="workspace-skip" href="#workspace-main">跳至主内容</a><Sidebar page={page} onNavigate={onNavigate} /><main id="workspace-main" tabIndex={-1} className={`main-content${page === "dashboard" ? " main-content-dashboard" : ""}`} data-page={page}>
-    <div className="workspace-header"><nav className="breadcrumb" aria-label="当前位置"><button type="button" onClick={() => onNavigate("home")}>个人工作台</button><span aria-hidden="true">/</span>{monitoringPage && <><button type="button" aria-label="返回模块总览" onClick={() => onNavigate("dashboard")}>竞品监控</button><span aria-hidden="true">/</span></>}<strong aria-current="page">{breadcrumb}</strong></nav></div>
+    <div className="workspace-header"><nav className="breadcrumb" aria-label="当前位置"><button type="button" onClick={() => onNavigate("home")}>个人工作台</button><span aria-hidden="true">/</span>{monitoringPage && <><button type="button" aria-label="返回模块总览" onClick={() => onNavigate("dashboard")}>竞品监控</button><span aria-hidden="true">/</span></>}<strong aria-current="page">{breadcrumb}</strong></nav><WorkspaceTools onNavigate={onNavigate} /></div>
     {children}
   </main></div>;
 }
@@ -2666,6 +2667,7 @@ type SettingsPageProps = {
   submitting: boolean;
   onChange: (value: string) => void;
   onRetry: () => void;
+  onReset: () => void;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
   onNavigate: (page: Page) => void;
   basicDirty: boolean;
@@ -2678,19 +2680,75 @@ type SettingsPageProps = {
   onMonitoringChange: (value: CompetitorMonitoringSettings) => void;
   onMonitoringOpen: () => void;
   onMonitoringRetry: () => void;
+  onMonitoringReset: () => void;
   onMonitoringSave: (event: FormEvent<HTMLFormElement>) => void;
 };
 
 type CompetitorMonitoringSettings = { item_interval_seconds: number; continuous_collection_count: number; batch_rest_seconds: number; verification_cooldown_seconds: number; auto_resume_max: number; operating_metrics_retry_max: number; auto_collection_enabled: boolean; auto_collection_strategy: "rolling_24h" | "fixed_daily" | "fixed_interval"; auto_collection_time: string; auto_collection_times: string[]; auto_collection_interval_hours: number; auto_collection_daily_limit: number; auto_collection_missed_policy: "catch_up" | "skip" };
 
-export function SettingsPage({ configured, value, status, error, saveError, submitting, onChange, onRetry, onSave, onNavigate, monitoring, monitoringStatus, monitoringError, monitoringSaveError, monitoringSubmitting, onMonitoringChange, onMonitoringOpen, onMonitoringRetry, onMonitoringSave, basicDirty, monitoringDirty }: SettingsPageProps) {
-  const [module, setModule] = useState<"basic" | "monitoring">("basic");
+function WorkBrowserSettings({ onStatus }: { onStatus: (status: string) => void }) {
+  const [state, setState] = useState<{ status: string; message: string }>({ status: "unknown", message: "" });
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const response = await fetch("/api/work-browser");
+        if (!response.ok) throw new Error();
+        const result = await response.json();
+        if (active) setState(result);
+      } catch { if (active) setState({ status: "unknown", message: "无法读取浏览器状态。" }); }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+  const open = async (extensions = false) => {
+    setPending(true);
+    try {
+      const response = await fetch(extensions ? "/api/work-browser/extensions" : "/api/work-browser", { method: "POST", headers: { "Content-Type": "application/json", "X-Workbench-Request": "work-browser" }, body: "{}" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "打开失败，请检查后台服务。");
+      setState(result);
+    } catch (error) { setState({ status: "unknown", message: error instanceof Error ? error.message : "打开失败。" }); }
+    finally { setPending(false); }
+  };
+  const labels: Record<string, string> = { idle: "空闲", opening: "正在打开", managing: "管理中", closing: "正在关闭", collecting: "采集中", unknown: "未知" };
+  useEffect(() => { onStatus(labels[state.status] || "未知"); }, [state.status, onStatus]);
+  const unavailable = pending || !["idle", "managing", "opening"].includes(state.status);
+  return <section className="table-card settings-card"><div className="table-heading"><div><h2>工作浏览器</h2><span>管理 1688 采集使用的浏览器、账号和扩展。</span></div></div>
+    <div className="work-browser-settings">
+      <div className="work-browser-row"><div className="monitoring-setting-copy"><strong>浏览器状态</strong><small>管理期间暂停使用此浏览器进行采集。</small></div><span className="work-browser-value" role="status">{labels[state.status] || "未知"}</span></div>
+      <div className="work-browser-row"><div className="monitoring-setting-copy"><strong>1688 官方采购助手</strong><small>在插件管理中检查扩展，然后在商品页确认助手区域。</small></div><span className="work-browser-value">未自动检测</span></div>
+      <div className="work-browser-row"><div className="monitoring-setting-copy"><strong>工作浏览器配置目录</strong><small>沿用当前项目的采集配置，账号与扩展保存在本机。</small></div><span className="work-browser-value">项目根目录 / .browser-profile</span></div>
+      {state.message && <div className="feedback feedback-server-error" role="alert">{state.message}</div>}
+      <div className="settings-save-bar"><span className="settings-save-state">关闭整个浏览器后可继续采集。</span><button type="button" className="secondary-button" onClick={() => void open(true)} disabled={unavailable}>插件管理</button><button type="button" className="primary-button" onClick={() => void open()} disabled={unavailable}>{pending || state.status === "opening" ? "正在打开…" : "打开工作浏览器"}</button></div>
+    </div></section>;
+}
+
+export function SettingsPage({ configured, value, status, error, saveError, submitting, onChange, onRetry, onReset, onSave, onNavigate, monitoring, monitoringStatus, monitoringError, monitoringSaveError, monitoringSubmitting, onMonitoringChange, onMonitoringOpen, onMonitoringRetry, onMonitoringReset, onMonitoringSave, basicDirty, monitoringDirty }: SettingsPageProps) {
+  const [planned, setPlanned] = useState("产品库");
+  const [browserStatus, setBrowserStatus] = useState("未知");
+  const [activeSection, setActiveSection] = useState("settings-overview");
+  useEffect(() => {
+    const root = document.getElementById("workspace-main");
+    const sections = ["settings-overview", "settings-basic", "settings-monitoring", "settings-browser", "settings-future"].map(id => document.getElementById(id)).filter((element): element is HTMLElement => element !== null);
+    const observer = new IntersectionObserver(entries => {
+      const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+      if (visible.length) setActiveSection(visible[0].target.id);
+    }, { root, rootMargin: "-10% 0px -65% 0px" });
+    sections.forEach(section => observer.observe(section));
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => { onMonitoringOpen(); }, []);
   const dirty = basicDirty || monitoringDirty;
   const [invalid, setInvalid] = useState(false);
   const [invalidMessage, setInvalidMessage] = useState("请检查输入：数值须在范围内，时间点不得重复，计划时间须在同一天内。");
   const navigate = (page: Page) => {
-    if (submitting || monitoringSubmitting) return;
-    if (!dirty || window.confirm("有尚未保存的设置。离开后草稿仍会保留在本次工作台会话中，刷新或关闭页面会丢失。仍要离开吗？")) onNavigate(page);
+    if (page === "settings") return true;
+    if (submitting || monitoringSubmitting) return false;
+    if (dirty && !window.confirm("有尚未保存的设置。离开后草稿仍会保留在本次工作台会话中，刷新或关闭页面会丢失。仍要离开吗？")) return false;
+    onNavigate(page); return true;
   };
   const setNumber = (key: keyof CompetitorMonitoringSettings, value: string) => { if (monitoring) onMonitoringChange({ ...monitoring, [key]: value === "" ? NaN : Number(value) }); };
   const saveState = (changed: boolean, busy: boolean, failed: string | null, unconfigured = false) => <span className="settings-save-state" role="status">{busy ? "正在保存，请稍候…" : failed ? "保存失败，修改已保留，请重试" : changed ? "有未保存的修改" : unconfigured ? "尚未配置" : "当前设置已保存"}</span>;
@@ -2731,13 +2789,11 @@ export function SettingsPage({ configured, value, status, error, saveError, subm
     onMonitoringSave(event);
   };
   return <AppShell page="settings" onNavigate={navigate} breadcrumb="系统设置">
-    <header className="page-header"><div><h1>系统设置</h1><p className="page-description">按业务模块管理基础信息与竞品采集节奏。</p></div></header>
-    <div className="settings-layout"><nav aria-label="设置模块" className="settings-nav">
-      <button type="button" aria-current={module === "basic" ? "page" : undefined} className={module === "basic" ? "settings-module-active" : "settings-module"} onClick={() => { setModule("basic"); setInvalid(false); }}><strong>基础设置{basicDirty && <em>未保存</em>}</strong><span>店铺身份与商品识别</span></button>
-      <button type="button" aria-current={module === "monitoring" ? "page" : undefined} className={module === "monitoring" ? "settings-module-active" : "settings-module"} onClick={() => { setModule("monitoring"); setInvalid(false); onMonitoringOpen(); }}><strong>竞品监控{monitoringDirty && <em>未保存</em>}</strong><span>采集节奏、风控与自动计划</span></button>
-      <p>分类独立保存<br />切换分类保留修改</p>
-    </nav>
-    {module === "basic" && <section className="table-card settings-card"><div className="table-heading"><div><h2>基础设置</h2><span>配置店铺身份，让监控中的我方商品与竞品准确归属。</span></div></div>
+    <header className="page-header"><div><h1>系统设置</h1><p className="page-description">统一管理工作台的业务设置与使用偏好。</p></div></header>
+    <div className="settings-layout"><nav aria-label="设置模块" className="settings-side-nav"><strong>设置中心</strong><a href="#settings-overview" aria-current={activeSection === "settings-overview" ? "location" : undefined}>设置概览</a><span>竞品监控分析</span><a href="#settings-basic" aria-current={activeSection === "settings-basic" ? "location" : undefined}>店铺识别{basicDirty && " · 未保存"}</a><a href="#settings-monitoring" aria-current={activeSection === "settings-monitoring" ? "location" : undefined}>采集策略{monitoringDirty && " · 未保存"}</a><a href="#settings-browser" aria-current={activeSection === "settings-browser" ? "location" : undefined}>工作浏览器</a><span>其他模块 · 规划中</span>{["产品库", "客户触达", "AI 工具", "通用偏好"].map(name => <a href="#settings-future" key={name} onClick={() => setPlanned(name)}>{name}</a>)}</nav>
+    <div className="settings-content"><section id="settings-overview" className="settings-overview"><div><h2>设置概览</h2><p>在这里管理工作台各模块的设置。已接入功能可独立保存，其他模块持续规划中。</p></div><div className="settings-overview-grid"><div><span>店铺识别</span><strong>{status === "ready" ? basicDirty ? "有未保存修改" : configured ? "已配置" : "尚未配置" : "状态未知"}</strong></div><div><span>自动采集</span><strong>{monitoringStatus === "ready" && monitoring ? monitoringDirty ? "有未保存修改" : monitoring.auto_collection_enabled ? "已开启" : "已关闭" : "状态未知"}</strong></div><div><span>工作浏览器</span><strong>{browserStatus}</strong></div></div></section>
+    <div className="settings-group-heading"><h2>竞品监控分析</h2><p>管理店铺身份、采集策略与工作浏览器。</p></div>
+    <section id="settings-basic" className="table-card settings-card"><div className="table-heading"><div><h2>店铺识别</h2><span>配置店铺身份，让监控中的我方商品与竞品准确归属。</span></div></div>
       {status === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载系统设置…</strong></div>}
       {status === "error" && <div className="state-panel state-error"><strong>设置加载失败</strong><span>{error || "暂时无法读取系统设置。"}</span><button type="button" className="secondary-button" onClick={onRetry}>重试</button></div>}
       {status === "ready" && <form className="settings-form" onSubmit={onSave}>
@@ -2748,13 +2804,15 @@ export function SettingsPage({ configured, value, status, error, saveError, subm
           {!configured && <p className="hint">尚未配置。配置后才能从大屏添加监控商品。</p>}
         </div><aside className="settings-explanation"><h3>修改后会发生什么</h3><p>保存后会重新识别我方商品与竞品，并可能调整竞品组中的我方基准商品。</p><p>只按店铺名称精确匹配，不支持简称或关键词。首尾空白和连续空白会自动标准化。</p></aside></div>
         {saveError && <div className="feedback feedback-server-error" role="alert">{saveError}</div>}
-        <div className="settings-save-bar">{saveState(basicDirty, submitting, saveError, !configured)}<button type="button" className="secondary-button" onClick={() => navigate("dashboard")} disabled={submitting}>返回大屏</button><button type="submit" className="primary-button" disabled={submitting || !value.trim()}>{submitting ? "保存中…" : "保存设置"}</button></div>
+        <div className="settings-save-bar">{saveState(basicDirty, submitting, saveError, !configured)}{basicDirty && <button type="button" className="secondary-button" onClick={onReset} disabled={submitting}>撤销店铺修改</button>}<button type="button" className="secondary-button" onClick={() => navigate("dashboard")} disabled={submitting}>返回大屏</button><button type="submit" className="primary-button" disabled={submitting || !value.trim()}>{submitting ? "保存中…" : "保存设置"}</button></div>
       </form>}
 
-    </section>}
-    {module === "monitoring" && <section className="table-card settings-card settings-monitoring-card"><div className="settings-monitoring-heading"><h2>竞品监控设置</h2><p>管理访问节奏与自动计划。推荐值供参考，按实际需要调整。</p></div>{monitoringStatus === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载竞品监控设置…</strong></div>}{monitoringStatus === "error" && <div className="state-panel state-error"><strong>竞品监控设置加载失败</strong><span>{monitoringError || "暂时无法读取竞品监控设置。"}</span><button type="button" className="secondary-button" onClick={onMonitoringRetry}>重试</button></div>}{monitoringStatus === "ready" && monitoring && <form className="monitoring-settings-form" onSubmit={submitMonitoring} onInvalid={() => { setInvalid(true); setInvalidMessage("请检查输入：数值须在范围内，时间点不得重复，计划时间须在同一天内。"); }} onInput={() => setInvalid(false)}>
+    </section>
+    <section id="settings-monitoring" className="table-card settings-card settings-monitoring-card"><div className="settings-monitoring-heading"><h2>采集策略</h2><p>管理访问节奏与自动计划。推荐值供参考，按实际需要调整。</p></div>{monitoringStatus === "loading" && <div className="state-panel"><div className="spinner" /><strong>正在加载竞品监控设置…</strong></div>}{monitoringStatus === "error" && <div className="state-panel state-error"><strong>竞品监控设置加载失败</strong><span>{monitoringError || "暂时无法读取竞品监控设置。"}</span><button type="button" className="secondary-button" onClick={onMonitoringRetry}>重试</button></div>}{monitoringStatus === "ready" && monitoring && <form className="monitoring-settings-form" onSubmit={submitMonitoring} onInvalid={() => { setInvalid(true); setInvalidMessage("请检查输入：数值须在范围内，时间点不得重复，计划时间须在同一天内。"); }} onInput={() => setInvalid(false)}>
         <div className="settings-effect-note"><strong>生效范围</strong><span>采集节奏、风控与补采设置用于下一次新启动的批量采集，当前运行任务不变；自动调度设置对后续检查生效。</span></div>
-        <div className="settings-monitoring-columns"><div className="settings-runtime"><section className="monitoring-setting-group"><header><h3>采集节奏</h3><span>控制每次访问之间的节奏与计划内休息。</span></header>{monitoringRows.slice(0, 3).map(field)}</section><section className="monitoring-setting-group"><header><h3>风控处理</h3><span>触发验证后，按当前设置等待并尝试恢复。</span></header>{monitoringRows.slice(3, 5).map(field)}</section><section className="monitoring-setting-group"><header><h3>经营指标补采</h3><span>默认关闭；只补采符合条件的技术异常，真实页面占位不会重试。</span></header>{monitoringRows.slice(5).map(field)}</section></div><section className="monitoring-setting-group settings-automation"><header><h3>自动采集</h3><span>使用后端电脑本地时间，沿用上方采集节奏与风控设置。</span></header>{autoRow("每日自动采集", "开启后按所选策略自动发起批量采集", <><span className="settings-switch-state">{monitoring.auto_collection_enabled ? "已开启" : "已关闭"}</span><input className="monitoring-switch" aria-label="每日自动采集" type="checkbox" role="switch" aria-describedby="每日自动采集-description" checked={monitoring.auto_collection_enabled} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_enabled: event.target.checked })} /></>)}{autoRow("自动采集策略", "所有计划均使用后端电脑本地时间", radios("auto_collection_strategy", "自动采集策略", [{ value: "rolling_24h", label: "滚动 24 小时", description: "距商品最近一次正式尝试满 24 小时后进入自动采集范围；失败也算尝试。" }, { value: "fixed_daily", label: "每日固定时间", description: "每天在 1–8 个时间点各检查一次；每个商品每个时间点最多尝试一次。" }, { value: "fixed_interval", label: "每日固定间隔", description: "从开始时间按固定小时数采集，次数受每日上限约束，计划不会跨到次日。" }]))}{monitoring.auto_collection_strategy === "fixed_daily" && <>{monitoring.auto_collection_times.map((value, index) => autoRow(`时间点 ${index + 1}`, "后端电脑本地时间；每个时间点分别判断商品资格", <div className="settings-time-list-item"><input aria-label={`自动采集时间点 ${index + 1}`} type="time" required value={value} disabled={monitoringSubmitting} onChange={(event) => { if (event.target.value) changeTimes(monitoring.auto_collection_times.map((item, itemIndex) => itemIndex === index ? event.target.value : item)); }} /><button type="button" className="secondary-button" aria-label={`删除时间点 ${index + 1}`} disabled={monitoringSubmitting || monitoring.auto_collection_times.length <= 1} onClick={() => changeTimes(monitoring.auto_collection_times.filter((_, itemIndex) => itemIndex !== index))}>删除</button></div>))}{autoRow("新增时间点", "可设置 1–8 个不重复时间", <button type="button" className="secondary-button" disabled={monitoringSubmitting || monitoring.auto_collection_times.length >= 8} onClick={addTime}>新增时间点</button>)}</>}{monitoring.auto_collection_strategy === "fixed_interval" && <>{autoRow("每日开始时间", "后端电脑本地时间；作为当天第一个计划点", <input aria-label="每日开始时间" type="time" required value={monitoring.auto_collection_time} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_time: event.target.value })} />)}{autoRow("固定间隔小时数", "每次计划间隔 1–24 小时", <input aria-label="固定间隔小时数" type="number" min={1} max={24} step={1} required value={Number.isNaN(monitoring.auto_collection_interval_hours) ? "" : monitoring.auto_collection_interval_hours} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_interval_hours: event.target.value === "" ? NaN : Number(event.target.value) })} />)}{autoRow("每日最多采集次数", "最多 12 次；全部计划须落在当天", <input aria-label="每日最多采集次数" type="number" min={1} max={12} step={1} required value={Number.isNaN(monitoring.auto_collection_daily_limit) ? "" : monitoring.auto_collection_daily_limit} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_daily_limit: event.target.value === "" ? NaN : Number(event.target.value) })} />)}</>}{monitoring.auto_collection_strategy !== "rolling_24h" && autoRow("错过计划", "决定进程启动或策略变更时如何处理已到期计划", radios("auto_collection_missed_policy", "错过计划", [{ value: "catch_up", label: "补采最新到期计划", description: "计划已错过时只补最新到期点；忙碌期间不排队，稍后重算未尝试商品。" }, { value: "skip", label: "跳过已错过计划", description: "进程或策略在计划后启用时跳过当天；已运行进程遇忙时保留最新计划等待重试。" }]))}</section></div>{monitoringSaveError && <div className="feedback feedback-server-error" role="alert">{monitoringSaveError}</div>}{invalid && <p className="settings-validation" role="alert">{invalidMessage}</p>}<div className="settings-save-bar">{saveState(monitoringDirty, monitoringSubmitting, monitoringSaveError)}<button type="submit" className="primary-button" disabled={monitoringSubmitting}>{monitoringSubmitting ? "保存中…" : "保存设置"}</button></div></form>}</section>}</div>
+        <div className="settings-monitoring-columns"><section className="monitoring-setting-group settings-automation"><header><h3>自动采集</h3><span>使用后端电脑本地时间，沿用上方采集节奏与风控设置。</span></header>{autoRow("每日自动采集", "开启后按所选策略自动发起批量采集", <><span className="settings-switch-state">{monitoring.auto_collection_enabled ? "已开启" : "已关闭"}</span><input className="monitoring-switch" aria-label="每日自动采集" type="checkbox" role="switch" aria-describedby="每日自动采集-description" checked={monitoring.auto_collection_enabled} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_enabled: event.target.checked })} /></>)}{autoRow("自动采集策略", "所有计划均使用后端电脑本地时间", radios("auto_collection_strategy", "自动采集策略", [{ value: "rolling_24h", label: "滚动 24 小时", description: "距商品最近一次正式尝试满 24 小时后进入自动采集范围；失败也算尝试。" }, { value: "fixed_daily", label: "每日固定时间", description: "每天在 1–8 个时间点各检查一次；每个商品每个时间点最多尝试一次。" }, { value: "fixed_interval", label: "每日固定间隔", description: "从开始时间按固定小时数采集，次数受每日上限约束，计划不会跨到次日。" }]))}{monitoring.auto_collection_strategy === "fixed_daily" && <>{monitoring.auto_collection_times.map((value, index) => autoRow(`时间点 ${index + 1}`, "后端电脑本地时间；每个时间点分别判断商品资格", <div className="settings-time-list-item"><input aria-label={`自动采集时间点 ${index + 1}`} type="time" required value={value} disabled={monitoringSubmitting} onChange={(event) => { if (event.target.value) changeTimes(monitoring.auto_collection_times.map((item, itemIndex) => itemIndex === index ? event.target.value : item)); }} /><button type="button" className="secondary-button" aria-label={`删除时间点 ${index + 1}`} disabled={monitoringSubmitting || monitoring.auto_collection_times.length <= 1} onClick={() => changeTimes(monitoring.auto_collection_times.filter((_, itemIndex) => itemIndex !== index))}>删除</button></div>))}{autoRow("新增时间点", "可设置 1–8 个不重复时间", <button type="button" className="secondary-button" disabled={monitoringSubmitting || monitoring.auto_collection_times.length >= 8} onClick={addTime}>新增时间点</button>)}</>}{monitoring.auto_collection_strategy === "fixed_interval" && <>{autoRow("每日开始时间", "后端电脑本地时间；作为当天第一个计划点", <input aria-label="每日开始时间" type="time" required value={monitoring.auto_collection_time} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_time: event.target.value })} />)}{autoRow("固定间隔小时数", "每次计划间隔 1–24 小时", <input aria-label="固定间隔小时数" type="number" min={1} max={24} step={1} required value={Number.isNaN(monitoring.auto_collection_interval_hours) ? "" : monitoring.auto_collection_interval_hours} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_interval_hours: event.target.value === "" ? NaN : Number(event.target.value) })} />)}{autoRow("每日最多采集次数", "最多 12 次；全部计划须落在当天", <input aria-label="每日最多采集次数" type="number" min={1} max={12} step={1} required value={Number.isNaN(monitoring.auto_collection_daily_limit) ? "" : monitoring.auto_collection_daily_limit} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_daily_limit: event.target.value === "" ? NaN : Number(event.target.value) })} />)}</>}{monitoring.auto_collection_strategy !== "rolling_24h" && autoRow("错过计划", "决定进程启动或策略变更时如何处理已到期计划", radios("auto_collection_missed_policy", "错过计划", [{ value: "catch_up", label: "补采最新到期计划", description: "计划已错过时只补最新到期点；忙碌期间不排队，稍后重算未尝试商品。" }, { value: "skip", label: "跳过已错过计划", description: "进程或策略在计划后启用时跳过当天；已运行进程遇忙时保留最新计划等待重试。" }]))}</section><div className="settings-runtime"><section className="monitoring-setting-group"><header><h3>采集节奏</h3><span>控制每次访问之间的节奏与计划内休息。</span></header>{monitoringRows.slice(0, 3).map(field)}</section><section className="monitoring-setting-group"><header><h3>风控处理</h3><span>触发验证后，按当前设置等待并尝试恢复。</span></header>{monitoringRows.slice(3, 5).map(field)}</section><section className="monitoring-setting-group"><header><h3>经营指标补采</h3><span>默认关闭；只补采符合条件的技术异常，真实页面占位不会重试。</span></header>{monitoringRows.slice(5).map(field)}</section></div></div>{monitoringSaveError && <div className="feedback feedback-server-error" role="alert">{monitoringSaveError}</div>}{invalid && <p className="settings-validation" role="alert">{invalidMessage}</p>}<div className="settings-save-bar">{saveState(monitoringDirty, monitoringSubmitting, monitoringSaveError)}{monitoringDirty && <button type="button" className="secondary-button" onClick={() => { onMonitoringReset(); setInvalid(false); }} disabled={monitoringSubmitting}>撤销采集策略修改</button>}<button type="submit" className="primary-button" disabled={monitoringSubmitting}>{monitoringSubmitting ? "保存中…" : "保存设置"}</button></div></form>}</section>
+    <div id="settings-browser"><WorkBrowserSettings onStatus={setBrowserStatus} /></div>
+    <section id="settings-future" className="settings-future"><h2>其他模块设置</h2><p>工作台后续业务设置在此统一接入。</p><div className="settings-future-grid">{["产品库", "客户触达", "AI 工具", "通用偏好"].map(name => <button type="button" key={name} aria-pressed={planned === name} onClick={() => setPlanned(name)}><strong>{name}</strong><small>{({ "产品库": "产品资料与导入相关设置", "客户触达": "客户运营相关设置", "AI 工具": "模型和工具使用偏好", "通用偏好": "界面与工作台通用设置" } as Record<string, string>)[name]}</small><span>规划中</span></button>)}</div><p role="status"><strong>{planned}设置 · 尚未开放</strong><br />具体设置将在需求确认后接入。</p></section></div></div>
   </AppShell>;
 }
 
@@ -3068,11 +3126,11 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
   useEffect(() => {
-    const active = ["running", "pausing", "paused", "stopping", "resting", "cooling_down"].includes(batchState.status) || batchState.status === "verification_required" && batchState.browser_open;
+    const active = ["running", "pausing", "paused", "stopping", "resting", "cooling_down"].includes(batchState.status) || batchState.status === "verification_required" && batchState.browser_open || batchState.lifecycle_status === "terminal" && batchState.runner_active;
     if (page !== "dashboard" && !active) return;
     const timer = window.setInterval(() => { void loadBatchStatus(); }, active ? 1500 : 3000);
     return () => window.clearInterval(timer);
-  }, [page, batchState.status, batchState.browser_open]);
+  }, [page, batchState.status, batchState.browser_open, batchState.lifecycle_status, batchState.runner_active]);
   function navigate(nextPage: Page, initialGroupFilter: InitialGroupFilter = null) {
     if (nextPage !== "detail") { latestDetailRequestId.current += 1; setDetailRangeLoading(false); }
     if (nextPage !== "group-detail") { latestGroupDetailRequestId.current += 1; setGroupDetailRangeLoading(false); }
@@ -3492,7 +3550,7 @@ function App() {
     if (lifecycleDialog.action === "stop") void updateMonitoring(lifecycleDialog.competitor, false, "stop");
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
-  return <MonitoringNavigationContext.Provider value={{ expanded: monitoringExpanded, setExpanded: setMonitoringExpanded }}><>
+  return <WorkspaceToolsProvider batch={batchState}><MonitoringNavigationContext.Provider value={{ expanded: monitoringExpanded, setExpanded: setMonitoringExpanded }}><>
     {page === "home" && <HomePage onNavigate={navigate} />}
     {page === "product-library" && <AppShell page="product-library" breadcrumb="产品库" onNavigate={navigate}><ProductLibrary /></AppShell>}
     {page === "customer-reach" && <AppShell page="customer-reach" breadcrumb="客户触达" onNavigate={navigate}><CustomerReachPage /></AppShell>}
@@ -3505,7 +3563,7 @@ function App() {
     {page === "own-products" && <ListPage competitors={ownProducts} ownership="self" groups={groups} status={ownListStatus} error={ownListError} onRetry={() => void loadOwnProducts()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} paginationResetVersion={paginationResetVersion} />}
     {page === "competitors" && <ListPage competitors={competitors} ownership="competitor" groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} paginationResetVersion={paginationResetVersion} />}
     {page === "collection-tasks" && <CollectionTasksPage onNavigate={navigate} batchState={batchState} batchStatus={batchStatus} batchError={batchError} onRefreshBatch={loadBatchStatus} />}
-    {page === "settings" && <SettingsPage basicDirty={basicSettingsDirty} monitoringDirty={monitoringSettingsDirty} configured={settingsConfigured} value={settingsValue} status={settingsStatus} error={settingsError} saveError={settingsSaveError} submitting={settingsSubmitting} onChange={setSettingsValue} onRetry={() => void loadOwnShopName()} onSave={submitOwnShopName} onNavigate={navigate} monitoring={monitoringSettings} monitoringStatus={monitoringStatus} monitoringError={monitoringError} monitoringSaveError={monitoringSaveError} monitoringSubmitting={monitoringSubmitting} onMonitoringChange={setMonitoringSettings} onMonitoringOpen={() => { if (monitoringStatus !== "ready") void loadMonitoringSettings(); }} onMonitoringRetry={() => void loadMonitoringSettings()} onMonitoringSave={submitMonitoringSettings} />}
+    {page === "settings" && <SettingsPage basicDirty={basicSettingsDirty} monitoringDirty={monitoringSettingsDirty} configured={settingsConfigured} value={settingsValue} status={settingsStatus} error={settingsError} saveError={settingsSaveError} submitting={settingsSubmitting} onChange={setSettingsValue} onRetry={() => void loadOwnShopName()} onReset={() => { setSettingsValue(ownShopName || ""); setSettingsSaveError(null); }} onSave={submitOwnShopName} onNavigate={navigate} monitoring={monitoringSettings} monitoringStatus={monitoringStatus} monitoringError={monitoringError} monitoringSaveError={monitoringSaveError} monitoringSubmitting={monitoringSubmitting} onMonitoringChange={setMonitoringSettings} onMonitoringOpen={() => { if (monitoringStatus !== "ready") void loadMonitoringSettings(); }} onMonitoringRetry={() => void loadMonitoringSettings()} onMonitoringReset={() => { setMonitoringSettings(savedMonitoringSettings); setMonitoringSaveError(null); }} onMonitoringSave={submitMonitoringSettings} />}
     {page === "groups" && <GroupPage summary={groupSummary} status={groupStatus} error={groupError} onRetry={() => void loadGroups()} onCreate={openGroupCreateDialog} onViewCompetitors={(filter) => navigate("competitors", filter)} onViewAnalysis={openGroupDetail} onRename={openGroupRenameDialog} onDelete={openGroupDeleteDialog} onOwnProduct={(group, mode) => void openOwnProductDialog(group, mode)} onNavigate={navigate} />}
     {page === "group-detail" && <GroupDetailPage data={groupDetail} status={groupDetailStatus} error={groupDetailError} days={groupDetailDays} rangeLoading={groupDetailRangeLoading} rangeError={groupDetailRangeError} onRetry={() => selectedGroupId !== null && void loadGroupDetail(selectedGroupId, groupDetailDays, groupDetail !== null)} onRangeChange={changeGroupDetailRange} onBack={() => navigate("groups")} onViewCompetitors={(id) => navigate("competitors", id)} onAdd={(id) => { if (!ownShopName) { navigate("settings"); return; } openDialog(id); }} onOpenDetail={openDetail} onNavigate={navigate} />}
     {page === "detail" && <DetailPage data={detail} groups={groups} status={detailStatus} error={detailError} days={detailDays} rangeLoading={detailRangeLoading} onRetry={() => selectedCompetitorId !== null && void loadDetail(selectedCompetitorId, detailDays)} onRangeChange={changeDetailRange} onBack={() => navigate(detail?.competitor.ownership === "self" ? "own-products" : "competitors")} onChangeGroup={openGroupAssignmentDialog} onLifecycleAction={handleLifecycleAction} lifecycleSubmitting={lifecycleSubmitting} onNavigate={navigate} />}
@@ -3518,7 +3576,7 @@ function App() {
     {batchLifecycleDialog && <BatchLifecycleDialog action={batchLifecycleDialog.action} selectedCount={batchLifecycleDialog.selectedCount} eligibleCount={batchLifecycleDialog.competitorIds.length} ownCount={batchLifecycleDialog.ownCount} submitting={batchLifecycleSubmitting} error={batchLifecycleError} onClose={closeBatchLifecycleDialog} onConfirm={() => void submitBatchLifecycle()} />}
     {groupAssignmentDialog && <GroupAssignmentDialog groupId={groupAssignmentDialog.groupId} groups={groups} submitting={groupAssignmentSubmitting} error={groupAssignmentError} onChange={(groupId) => setGroupAssignmentDialog((current) => current ? { ...current, groupId } : current)} onClose={closeGroupAssignmentDialog} onSubmit={submitGroupAssignment} />}
     {lifecycleDialog && <ConfirmDialog action={lifecycleDialog.action} competitor={lifecycleDialog.competitor} submitting={lifecycleSubmitting} error={lifecycleError} onClose={closeLifecycleDialog} onConfirm={confirmLifecycleAction} />}
-  </></MonitoringNavigationContext.Provider>;
+  </></MonitoringNavigationContext.Provider></WorkspaceToolsProvider>;
 }
 
 export default App;
