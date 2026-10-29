@@ -34,7 +34,7 @@ def test_manual_identity_matrix_edit_stable_id_and_exact_collision(library):
         payload = {"manufacturer_name": "厂家", "model": model, "name": name}
         response = client.post(BASE + "/products", json=payload)
         assert response.status_code == 201
-    product(client, manufacturer_name="其他厂家", model="M", name="红色 10W")
+    assert client.post(BASE+'/products',json={'manufacturer_name':'其他厂家','model':'M','name':'红色 10W'}).status_code==409
     b = product(client, model="M", name="绿色 10W", allow_suspected_duplicate=True)
     payload = {key: b[key] for key in ("manufacturer_name", "model", "name", "parameters", "selling_points", "wholesale_price", "price_note", "version")}
     payload["name"] = a["name"]
@@ -57,7 +57,7 @@ def test_manual_identity_matrix_edit_stable_id_and_exact_collision(library):
 def test_file_identity_matrix(library, rows, categories):
     client, _ = library
     data = preview(client, rows).json()
-    assert data["identity_rule_version"] == 3
+    assert data["identity_rule_version"] == 4
     assert [row["category"] for row in data["rows"]] == categories
     result = confirm(client, data)
     assert result.status_code == 200 and result.json()["inserted"] == categories.count("new")
@@ -86,7 +86,7 @@ def test_exact_match_noop_and_field_update_only_exact_target(library):
     a = product(client, model="M", name="A", parameters="old")
     product(client, model="M", name="B")
     noop = preview(client, [["M", "A"]]).json()
-    assert noop["rows"][0]["allowed_actions"] == ["skip"]
+    assert noop["rows"][0]["allowed_actions"] == ["skip", "append_source"]
     data = preview(client, [["M", "A", "new"]]).json()
     row = data["rows"][0]
     assert row["category"] == "duplicate" and "insert" not in row["allowed_actions"]
@@ -126,7 +126,7 @@ def test_old_ready_rejected_and_old_committed_replays_without_schema_gate(librar
     # Recreate old schema on this isolated database only.
     with engine.begin() as connection:
         connection.execute(text("CREATE UNIQUE INDEX uq_library_products_manufacturer_model ON library_products(manufacturer_name,model) WHERE model IS NOT NULL"))
-        connection.execute(text("DROP INDEX uq_library_products_manufacturer_model_name"))
+        connection.execute(text("DROP INDEX uq_library_products_model_name"))
     assert client.get(f"{BASE}/imports/{committed['import_id']}").json()["inserted"] == result["inserted"]
     assert confirm(client, committed).status_code == 200
     assert client.post(BASE + "/products", json={"manufacturer_name": "厂家", "model": "Z", "name": "Z"}).json()["code"] == "identity_schema_required"
@@ -142,7 +142,7 @@ def test_new_preview_expiry_and_manufacturer_changes(library):
         db.get(LibraryImport, data["import_id"]).expires_at = now() - timedelta(seconds=1); db.commit()
     assert confirm(client, data).json()["code"] == "preview_expired"
     data = preview(client, [["M", "A"]]).json()
-    product(client, model="N", name="B")
+    product(client, manufacturer_name="跨来源", model="M", name="A")
     assert confirm(client, data).json()["code"] == "preview_stale"
 
 
@@ -239,17 +239,17 @@ def test_legacy_null_model_exact_duplicates_block_migration_without_changes(tmp_
     assert after["indexes"] == before["indexes"]
 
 @pytest.mark.parametrize("replacement", [
-    "CREATE INDEX uq_library_products_manufacturer_model_name ON library_products(manufacturer_name,model,name) WHERE model IS NOT NULL",
-    "CREATE UNIQUE INDEX uq_library_products_manufacturer_model_name ON library_products(manufacturer_name,model) WHERE model IS NOT NULL",
-    "CREATE UNIQUE INDEX uq_library_products_manufacturer_model_name ON library_products(manufacturer_name,model,name)",
-    "CREATE UNIQUE INDEX uq_library_products_manufacturer_model_name ON library_products(manufacturer_name,model,name) WHERE name IS NOT NULL",
+    "CREATE INDEX uq_library_products_model_name ON library_products(manufacturer_name,model,name) WHERE model IS NOT NULL",
+    "CREATE UNIQUE INDEX uq_library_products_model_name ON library_products(manufacturer_name,model) WHERE model IS NOT NULL",
+    "CREATE UNIQUE INDEX uq_library_products_model_name ON library_products(manufacturer_name,model,name)",
+    "CREATE UNIQUE INDEX uq_library_products_model_name ON library_products(manufacturer_name,model,name) WHERE name IS NOT NULL",
 ])
 def test_schema_gate_checks_actual_constraint_not_only_name(library, replacement):
     client, engine = library
     p = product(client)
     data = preview(client, [["NEW", "新增"]]).json()
     with engine.begin() as connection:
-        connection.execute(text("DROP INDEX uq_library_products_manufacturer_model_name"))
+        connection.execute(text("DROP INDEX uq_library_products_model_name"))
         connection.execute(text(replacement))
     assert confirm(client, data).json()["code"] == "identity_schema_required"
     payload = {key: p[key] for key in ("manufacturer_name", "model", "name", "parameters", "selling_points", "wholesale_price", "price_note", "version")}

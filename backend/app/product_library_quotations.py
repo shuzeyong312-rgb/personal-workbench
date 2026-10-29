@@ -9,7 +9,7 @@ from decimal import Decimal, DecimalException, ROUND_CEILING, ROUND_HALF_UP, loc
 from fastapi.responses import Response
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.models import LibraryProduct
 from app.product_library_service import error, list_products_service, price, product_versions, product_view
@@ -62,8 +62,8 @@ def quotation_options(payload):
     return moq, note.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def quotation_digest(items, rules, overrides=None, moq=1, note=""):
-    return hashlib.sha256(json.dumps({"items": items, "rules": rules, "overrides": overrides or {}, "moq": moq, "note": note}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+def quotation_digest(items, rules, overrides=None, moq=1, note="", snapshot=None):
+    return hashlib.sha256(json.dumps({"contract_version": 2, "snapshot": snapshot, "items": items, "rules": rules, "overrides": overrides or {}, "moq": moq, "note": note}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def text_risks(product, fields=CUSTOMER_FIELDS):
@@ -128,8 +128,10 @@ def quotation_overrides(raw, items):
 
 
 def preview_quotation_service(payload, db):
-    if set(payload) - {"scope", "items", "filters", "rules", "include_unquoted", "overrides", "moq", "note"}:
+    if set(payload) - {"scope", "items", "filters", "rules", "include_unquoted", "overrides", "moq", "note", "selections", "conditions_confirmed_ids"}:
         error(422, "invalid_quotation", "预览含未知字段")
+    if not db.in_transaction():
+        db.execute(text('BEGIN'))
     moq, note = quotation_options(payload)
     scope = payload.get("scope")
     if scope not in ("selected", "filtered", "all") or type(payload.get("include_unquoted", False)) is not bool:
@@ -148,20 +150,35 @@ def preview_quotation_service(payload, db):
         products = list_products_service(**({"q": "", "manufacturer": None, "sort": "updated_desc"} | filters), page=1, page_size=None, db=db)
         products = products["items"]
     if not payload.get("include_unquoted", False):
-        products = [product for product in products if product["wholesale_price"] is not None]
+        products = [product for product in products if product.get("price_state") != "unquoted"]
     items = [{"id": product["id"], "version": product["version"]} for product in products]
     # Ignore overrides outside the newly resolved scope; never silently attach them to other rows.
     raw = payload.get("overrides", {})
     if not isinstance(raw, dict):
         error(422, "invalid_quotation", "人工报价格式无效")
     overrides = quotation_overrides({key: value for key, value in raw.items() if key in {str(item["id"]) for item in items}}, items)
-    rows = []
-    for product in products:
+    selections = payload.get('selections', {})
+    conditions = payload.get('conditions_confirmed_ids', [])
+    if not isinstance(selections,dict) or not isinstance(conditions,list) or any(type(value) is not int for value in conditions):
+        error(422,'invalid_quotation','价格选择或条件确认格式无效')
+    if set(selections) - {str(product['id']) for product in products}:
+        error(422,'invalid_quotation','价格选择不属于本次产品')
+    rows, snapshots = [], []
+    for original in products:
+        product, selection_info, blocked, internal = quotation_selection(original, selections.get(str(original['id']),{}), conditions, moq, rules, db)
+        snapshots.append(selection_info)
         automatic = quote_row(product, rules)
+        if blocked:
+            automatic['final_price'] = None
+            automatic['error'] = blocked
         row = quote_row(product, rules, overrides[str(product["id"])]) if str(product["id"]) in overrides else automatic.copy()
         row["automatic_price"] = automatic["final_price"]
+        if internal.get('variant_required'):
+            row['error'] = '请选择本次客户报价规格'
+        row.update(internal)
+        row['text_risks'] += source_name_risks(product, internal['sources'])
         rows.append(row)
-    return {"items": items, "rules": rules, "digest": quotation_digest(items, rules, overrides, moq, note), "rows": rows, "moq": moq, "note": note, "note_risks": text_risks({"note": note}, ("note",)), "terms": TAX_NOTES[rules["tax_mode"]] + FREIGHT_NOTES[rules["freight_mode"]]}
+    return {"items": items, "rules": rules, "digest": quotation_digest(items, rules, overrides, moq, note, snapshots), "selections": selections, "conditions_confirmed_ids": conditions, "rows": rows, "moq": moq, "note": note, "note_risks": text_risks({"note": note}, ("note",)), "terms": TAX_NOTES[rules["tax_mode"]] + FREIGHT_NOTES[rules["freight_mode"]]}
 
 
 def read_snapshot(items, db):
@@ -173,16 +190,16 @@ def read_snapshot(items, db):
 
 
 def export_quotation_service(payload, db):
-    if set(payload) - {"moq", "note", "confirmed_note"} != {"items", "rules", "digest", "overrides", "confirmed_risk_ids", "confirmed_all_text"}:
+    if set(payload) - {"moq", "note", "confirmed_note", "selections", "conditions_confirmed_ids"} != {"items", "rules", "digest", "overrides", "confirmed_risk_ids", "confirmed_all_text"}:
         error(422, "invalid_quotation", "导出字段缺失或含未知字段")
     items = product_versions(payload["items"])
     rules = quotation_rules(payload["rules"])
     moq, note = quotation_options(payload)
     overrides = quotation_overrides(payload["overrides"], items)
-    if payload["digest"] != quotation_digest(items, rules, overrides, moq, note):
-        error(409, "quotation_preview_mismatch", "产品集合或规则已变化，请重新预览")
-    products = read_snapshot(items, db)
-    rows = [quote_row(product, rules, overrides.get(str(product["id"]))) for product in products]
+    preview = preview_quotation_service(dict(scope='selected',items=items,rules=rules,include_unquoted=True,overrides=overrides,moq=moq,note=note,selections=payload.get('selections',{}),conditions_confirmed_ids=payload.get('conditions_confirmed_ids',[])),db)
+    if payload['digest'] != preview['digest']:
+        error(409, 'quotation_preview_mismatch', '产品、选择或条件已变化，请重新预览')
+    rows = preview['rows']
     invalid = [{"id": row["id"], "fields": row["invalid_text_fields"]} for row in rows if row["invalid_text_fields"]]
     if invalid:
         error(422, "customer_text_invalid", "客户文本含 Excel 不支持的字符，请核查产品字段后重新预览", errors=invalid)
@@ -216,3 +233,61 @@ def export_quotation_service(payload, db):
     wb.save(output)
     wb.close()
     return Response(output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="customer-quotation.xlsx"'})
+
+
+def source_name_risks(product, sources):
+    risks=[]
+    for source in sources:
+        name=source.get('source_company')
+        if name:
+            for field in CUSTOMER_FIELDS:
+                if name in (product[field] or ''):
+                    risks.append(dict(field=field,word=name,snippet=product[field]))
+    return risks
+
+
+def quotation_selection(original, selection, confirmed, moq, rules, db):
+    from app.product_library_details import product_details, PURCHASE_TYPES
+    details=product_details(db,db.get(LibraryProduct,original['id']))
+    variants, prices, sources = details['variants'],details['prices'],details['sources']
+    if not isinstance(selection,dict) or set(selection)-{'variant_id','price_id','price_version'}:
+        error(422,'invalid_quotation','价格选择含未知字段')
+    if any(type(value) is not int or value<1 for value in selection.values()):
+        error(422,'invalid_quotation','价格/规格ID与版本必须为正整数')
+    variant=next((r for r in variants if r['id']==selection.get('variant_id')),None)
+    if 'variant_id' in selection and variant is None:
+        error(422,'invalid_quotation','所选规格属于其他产品或已删除')
+    explicit='price_id' in selection
+    selected=next((r for r in prices if r['id']==selection.get('price_id')),None) if explicit else next((r for r in prices if r['is_default_wholesale'] and r['variant_id'] is None),None)
+    if explicit:
+        if selected is None or selected['price_type'] not in PURCHASE_TYPES or selected['currency_code']!='CNY' or selected['price_unit']!='件' or selected['amount_text'] is None:
+            error(422,'invalid_quotation','仅可明确选择人民币/件的出厂价、批发价或一件代发价')
+        if selection.get('price_version')!=selected['version']:
+            error(409,'quotation_stale','价格已变化，请重新预览')
+    elif 'price_version' in selection:
+        error(422,'invalid_quotation','版本必须随所选价格提交')
+    if selected and selected['variant_id'] is not None and (variant is None or selected['variant_id']!=variant['id']):
+        error(422,'invalid_quotation','所选价格与规格不一致')
+    product=dict(original)
+    product['wholesale_price']=selected['amount_text'] if selected else None
+    blocked=None
+    conditions=[]
+    if variants and variant is None:
+        blocked='请选择本次客户报价规格'
+    if variant:
+        label=' / '.join(v for v in (variant['variant_name'],variant['color']) if v)
+        product['name'] += '（'+label+'）'
+        product['parameters'] = (product['parameters'] or '') + '\n规格：'+label
+    source=next((r for r in sources if selected and r['id']==selected['source_id']),None)
+    if selected:
+        if not selected['min_order_quantity'] or selected['min_order_unit']!='件' or Decimal(selected['min_order_quantity'])>moq:
+            conditions.append('采购起订量/单位未知、非件或高于客户MOQ')
+        if selected['tax_mode']=='unknown' or selected['freight_mode']=='unknown' or selected['customization_terms'] or selected['terms_text']:
+            conditions.append('请核对税费、运费及原文条件')
+        if selected['tax_mode']=='included' and rules['tax_mode']=='adjust' or selected['freight_mode']=='included' and rules['freight_mode']=='fixed':
+            conditions.append('可能重复增加税费或运费')
+        if conditions and original['id'] not in confirmed:
+            blocked=blocked or '请逐产品确认采购条件或人工填写最终价'
+    internal=dict(variants=variants,prices=prices,sources=sources,selection=selection,conditions=conditions,variant_required=bool(variants and variant is None))
+    snapshot=dict(product_version=original['version'],variant=variant,price=selected,source=source,selection=selection,conditions_confirmed=original['id'] in confirmed,customer={field:product[field] for field in CUSTOMER_FIELDS})
+    return product,snapshot,blocked,internal

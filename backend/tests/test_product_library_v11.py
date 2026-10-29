@@ -31,11 +31,11 @@ def test_price_filters_and_batch_partial_failure(library):
 def test_quotation_decimal_and_customer_workbook(library):
     client, _ = library
     p = product(client, name="=客户文本", parameters="普通参数", wholesale_price="1.00", price_note="PRIVATE_NOTE_913")
-    response = client.post(BASE + "/customer-quotations/preview", json={"scope": "all", "rules": {"markup_mode": "percent", "markup_value": "0.50"}})
+    response = client.post(BASE + "/customer-quotations/preview", json={"scope": "all", "conditions_confirmed_ids": [p["id"]], "rules": {"markup_mode": "percent", "markup_value": "0.50"}})
     assert response.status_code == 200
     data = response.json()
     assert data["rows"][0]["final_price"] == "1.01"
-    response = client.post(BASE + "/customer-quotations/export", json={"items": data["items"], "rules": data["rules"], "digest": data["digest"], "overrides": {}, "confirmed_risk_ids": [], "confirmed_all_text": True})
+    response = client.post(BASE + "/customer-quotations/export", json={"items": data["items"], "rules": data["rules"], "digest": data["digest"], "overrides": {}, "confirmed_risk_ids": [], "confirmed_all_text": True, "conditions_confirmed_ids": data["conditions_confirmed_ids"]})
     assert response.status_code == 200
     wb = load_workbook(io.BytesIO(response.content))
     assert len(wb.worksheets) == 1
@@ -50,13 +50,13 @@ def test_quotation_decimal_and_customer_workbook(library):
 
 
 def quote(client, **payload):
-    response = client.post(BASE + "/customer-quotations/preview", json={"scope": "all", **payload})
+    response = client.post(BASE + "/customer-quotations/preview", json={"scope": "all", "conditions_confirmed_ids": [item['id'] for item in client.get(BASE+'/products',params={'page_size':100}).json()['items']], **payload})
     assert response.status_code == 200, response.text
     return response.json()
 
 
 def export(client, data, **extra):
-    return client.post(BASE + "/customer-quotations/export", json={"items": data["items"], "rules": data["rules"], "digest": data["digest"], "overrides": {}, "confirmed_risk_ids": [], "confirmed_all_text": True, **extra})
+    return client.post(BASE + "/customer-quotations/export", json={"items": data["items"], "rules": data["rules"], "digest": data["digest"], "overrides": {}, "confirmed_risk_ids": [], "confirmed_all_text": True, "conditions_confirmed_ids": data.get("conditions_confirmed_ids", []), **extra})
 
 
 @pytest.mark.parametrize("cost,rules,expected", [

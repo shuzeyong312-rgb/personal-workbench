@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint, event, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, Numeric, String, UniqueConstraint, event, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -414,7 +414,8 @@ class LibraryProduct(Base):
     __table_args__ = (
         CheckConstraint("wholesale_price_cents IS NULL OR (wholesale_price_cents >= 0 AND wholesale_price_cents <= 99999999999)", name="ck_library_products_price"),
         CheckConstraint("version >= 1", name="ck_library_products_version"),
-        Index("uq_library_products_manufacturer_model_name", "manufacturer_name", "model", "name", unique=True, sqlite_where=text("model IS NOT NULL")),
+        Index("uq_library_products_model_name", "model", "name", unique=True, sqlite_where=text("model IS NOT NULL")),
+        Index("uq_library_products_null_model_name", "name", unique=True, sqlite_where=text("model IS NULL")),
         {"sqlite_autoincrement": True},
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -425,6 +426,8 @@ class LibraryProduct(Base):
     selling_points: Mapped[str | None] = mapped_column(String(10000))
     wholesale_price_cents: Mapped[int | None] = mapped_column(Integer)
     price_note: Mapped[str | None] = mapped_column(String(2000))
+    category: Mapped[str | None] = mapped_column(String(200))
+    structured_attributes: Mapped[list | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -442,3 +445,87 @@ class LibraryImport(Base):
     baseline_digest: Mapped[str | None] = mapped_column(String(64))
     decision_digest: Mapped[str | None] = mapped_column(String(64))
     result: Mapped[dict | None] = mapped_column(JSON)
+
+
+class LibraryProductVariant(Base):
+    __tablename__ = "library_product_variants"
+    __table_args__ = (
+        UniqueConstraint("id", "product_id"),
+        CheckConstraint("version >= 1"),
+        Index("uq_library_variant_code", "product_id", "variant_code", unique=True, sqlite_where=text("variant_code IS NOT NULL")),
+        Index("uq_library_variant_name", "product_id", "variant_name", text("coalesce(color,'')"), unique=True, sqlite_where=text("variant_code IS NULL")),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("library_products.id", ondelete="CASCADE"), nullable=False)
+    variant_code: Mapped[str | None] = mapped_column(String(200))
+    variant_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    color: Mapped[str | None] = mapped_column(String(200))
+    structured_attributes: Mapped[list | None] = mapped_column(JSON)
+    notes: Mapped[str | None] = mapped_column(String(10000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class LibraryProductSource(Base):
+    __tablename__ = "library_product_sources"
+    __table_args__ = (
+        UniqueConstraint("id", "product_id"),
+        CheckConstraint("version >= 1"),
+        CheckConstraint("source_type IN ('quote','catalog','specification','other')"),
+        Index("uq_library_source", "product_id", *[text(f"coalesce({field},'')") for field in ("source_company", "source_file_name", "source_page", "source_date", "source_type", "source_excerpt")], unique=True),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("library_products.id", ondelete="CASCADE"), nullable=False)
+    source_company: Mapped[str | None] = mapped_column(String(200))
+    claimed_manufacturer_name: Mapped[str | None] = mapped_column(String(200))
+    source_file_name: Mapped[str | None] = mapped_column(String(500))
+    source_page: Mapped[str | None] = mapped_column(String(500))
+    source_date: Mapped[str | None] = mapped_column(String(10))
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="other")
+    source_excerpt: Mapped[str | None] = mapped_column(String(30000))
+    notes: Mapped[str | None] = mapped_column(String(10000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class LibraryProductPrice(Base):
+    __tablename__ = "library_product_prices"
+    __table_args__ = (
+        ForeignKeyConstraint(["source_id", "product_id"], ["library_product_sources.id", "library_product_sources.product_id"]),
+        ForeignKeyConstraint(["variant_id", "product_id"], ["library_product_variants.id", "library_product_variants.product_id"]),
+        CheckConstraint("version >= 1"),
+        CheckConstraint("price_type IN ('出厂价','批发价','一件代发价','定制价','平台控价','建议零售价','零售价','其他')"),
+        CheckConstraint("tax_mode IN ('unknown','included','excluded')"),
+        CheckConstraint("freight_mode IN ('unknown','included','excluded','extra','negotiable')"),
+        CheckConstraint("amount_text IS NULL OR (length(amount_text)>0 AND amount_text NOT GLOB '*[^0-9.]*' AND CAST(amount_text AS NUMERIC)>=0)"),
+        CheckConstraint("freight_amount_cents IS NULL OR freight_amount_cents >= 0"),
+        CheckConstraint("is_default_wholesale IN (0,1) AND (is_default_wholesale=0 OR (price_type='批发价' AND currency_code='CNY' AND price_unit='件' AND amount_text IS NOT NULL AND CAST(amount_text AS NUMERIC)<=999999999.99))"),
+        Index("uq_library_default_product", "product_id", unique=True, sqlite_where=text("is_default_wholesale=1 AND variant_id IS NULL")),
+        Index("uq_library_default_variant", "product_id", "variant_id", unique=True, sqlite_where=text("is_default_wholesale=1 AND variant_id IS NOT NULL")),
+        Index("uq_library_price", "product_id", "source_id", *[text(f"coalesce({field},'')") for field in ("variant_id", "price_type", "price_channel", "currency_code", "price_unit", "quote_date", "min_order_quantity", "min_order_unit", "customization_terms")], unique=True),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("library_products.id", ondelete="CASCADE"), nullable=False)
+    variant_id: Mapped[int | None] = mapped_column(Integer)
+    source_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    price_channel: Mapped[str | None] = mapped_column(String(200))
+    amount_text: Mapped[str | None] = mapped_column(String(44))
+    currency_code: Mapped[str | None] = mapped_column(String(3))
+    price_unit: Mapped[str | None] = mapped_column(String(200))
+    min_order_quantity: Mapped[str | None] = mapped_column(String(20))
+    min_order_unit: Mapped[str | None] = mapped_column(String(200))
+    tax_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    freight_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    freight_amount_cents: Mapped[int | None] = mapped_column(Integer)
+    customization_terms: Mapped[str | None] = mapped_column(String(10000))
+    terms_text: Mapped[str | None] = mapped_column(String(10000))
+    notes: Mapped[str | None] = mapped_column(String(10000))
+    source_excerpt: Mapped[str | None] = mapped_column(String(10000))
+    quote_date: Mapped[str | None] = mapped_column(String(10))
+    is_default_wholesale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

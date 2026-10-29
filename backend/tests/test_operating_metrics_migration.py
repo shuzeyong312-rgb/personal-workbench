@@ -28,7 +28,7 @@ def test_operating_metrics_migration_preserves_old_runs_and_downgrades(tmp_path,
             "VALUES (1, 1, 'product_offline', '2026-10-01', 1)"
         ))
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261010_13")
     with engine.connect() as connection:
         assert connection.execute(text("SELECT operating_metrics_status FROM collection_runs WHERE id=1")).scalar_one() == "not_attempted"
         assert connection.execute(text("SELECT count(*) FROM operating_metric_observations")).scalar_one() == 0
@@ -65,7 +65,7 @@ def test_operating_metrics_migration_preserves_old_runs_and_downgrades(tmp_path,
         with pytest.raises(RuntimeError, match="injected failure after observation table create"):
             with monkeypatch.context() as migration_patch:
                 migration_patch.setattr(Operations, "create_table", fail_after_observation_table_create)
-                command.upgrade(config, "head")
+                command.upgrade(config, "20261010_13")
     finally:
         event.remove(Engine, "before_cursor_execute", record_foreign_key_pragma)
 

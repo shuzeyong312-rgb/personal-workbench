@@ -87,3 +87,44 @@ def test_noncanonical_identity_is_not_rewritten(tmp_path):
         run_command(url, NEW)
     assert state(engine) == before
     engine.dispose()
+
+
+def test_details_backfill_preserves_legacy_rows_receipts_and_amount(tmp_path):
+    url, engine = seed(tmp_path)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("INSERT INTO library_imports(import_id,manufacturer_name,created_at,expires_at,status,result) VALUES ('old','A','2026-10-29','2026-10-30','committed','{\"kept\":true}')")
+        before = connection.exec_driver_sql('SELECT * FROM library_products').all()
+        receipts = connection.exec_driver_sql('SELECT * FROM library_imports').all()
+    run_command(url, '20261029_21')
+    with engine.connect() as connection:
+        after = connection.exec_driver_sql('SELECT * FROM library_products').all()
+        assert [tuple(row[:len(before[0])]) for row in after] == [tuple(row) for row in before]
+        assert connection.exec_driver_sql('SELECT * FROM library_imports').all() == receipts
+        assert connection.exec_driver_sql('SELECT amount_text,currency_code,price_unit,is_default_wholesale FROM library_product_prices').one() == ('12.34','CNY','件',1)
+        assert connection.exec_driver_sql('SELECT notes,claimed_manufacturer_name,source_date FROM library_product_sources').one() == ('legacy_backfill',None,None)
+        assert connection.exec_driver_sql('PRAGMA foreign_key_check').all() == []
+    current = state(engine)
+    with pytest.raises(RuntimeError, match='Unsafe downgrade'):
+        run_command(url, OLD, downgrade=True)
+    assert state(engine) == current
+    engine.dispose()
+
+
+@pytest.mark.parametrize('stage',['ddl','backfill','stamp'])
+def test_complete_v2_upgrade_failure_restores_prior_revision(tmp_path,stage):
+    url,engine=seed(tmp_path)
+    before=state(engine)
+    def fail(connection,cursor,statement,parameters,context,executemany):
+        if (stage=='ddl' and 'CREATE TABLE library_product_prices' in statement
+            or stage=='backfill' and 'INSERT INTO library_product_prices' in statement
+            or stage=='stamp' and statement.startswith('UPDATE alembic_version') and '20261029_21' in statement+str(parameters)):
+            raise RuntimeError('injected')
+    event.listen(Engine,'before_cursor_execute',fail)
+    try:
+        with pytest.raises(RuntimeError,match='injected'):
+            run_command(url,'20261029_21')
+    finally:
+        event.remove(Engine,'before_cursor_execute',fail)
+    assert state(engine)==before
+    run_command(url,'20261029_21')
+    engine.dispose()

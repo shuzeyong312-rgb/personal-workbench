@@ -66,7 +66,7 @@ def confirm(client, receipt, overrides=None):
         {
             "row_number": row["row_number"],
             "action": (overrides or {}).get(row["row_number"], row["default_action"]),
-            **({"target_id": row["existing_id"], "target_version": row["version"]} if (overrides or {}).get(row["row_number"], row["default_action"]) == "update" else {}),
+            **({"target_id": row["existing_id"], "target_version": row["version"]} if (overrides or {}).get(row["row_number"], row["default_action"]) in ("update", "append_source") else {}),
         }
         for row in receipt["rows"]
     ]
@@ -120,7 +120,7 @@ def test_update_diff_blank_zero_and_manual_clear(library):
     )
     data = preview(client, [["M1", "风扇", None, None, "0", None]]).json()
     row = data["rows"][0]
-    assert row["category"] == "duplicate" and row["default_action"] == "skip"
+    assert row["category"] == "duplicate" and row["default_action"] == "append_source"
     assert row["diff"]["parameters"] == {
         "old": "旧参数",
         "incoming": None,
@@ -128,11 +128,10 @@ def test_update_diff_blank_zero_and_manual_clear(library):
         "changed": False,
         "preserved": True,
     }
-    assert confirm(client, data).status_code == 422
-    assert confirm(client, data, {2: "update"}).json()["updated"] == 1
+    assert confirm(client, data, {2: "append_source"}).json()["updated"] == 1
     saved = client.get(f"/api/product-library/products/{original['id']}").json()
     assert (
-        saved["wholesale_price"] == "0.00"
+        saved["wholesale_price"] == "30.00"
         and saved["parameters"] == "旧参数"
         and saved["version"] == 2
     )
@@ -160,14 +159,19 @@ def test_update_diff_blank_zero_and_manual_clear(library):
     )
 
 
-def test_no_change_existing_and_independent_manufacturers(library):
+def test_existing_identity_appends_source_across_companies(library):
     client, _ = library
     first = product(client)
-    product(client, manufacturer_name="另一厂家")
-    data = preview(client, [["M1", "风扇"]]).json()
-    assert data["rows"][0]["allowed_actions"] == ["skip"]
-    assert confirm(client, data).status_code == 422
-    assert client.get(f"/api/product-library/products/{first['id']}").json() == first
+    response=client.post('/api/product-library/products',json={'manufacturer_name':'另一厂家','model':'M1','name':'风扇'})
+    assert response.status_code==409
+    data=preview(client,[["M1","风扇"]],manufacturer='另一厂家').json()
+    assert data['rows'][0]['default_action']=='append_source'
+    assert confirm(client,data).status_code==200
+    saved=client.get(f"/api/product-library/products/{first['id']}").json()
+    assert saved['manufacturer_name']==first['manufacturer_name']
+    assert saved['version']==first['version']+1
+    repeated=preview(client,[["M1","风扇"]],manufacturer='另一厂家').json()
+    assert repeated['rows'][0]['allowed_actions']==['skip']
 
 
 @pytest.mark.parametrize(
@@ -207,7 +211,7 @@ def test_partial_identity_matches_are_allowed_but_exact_null_model_is_duplicate(
     ).json()["code"] == "product_exists"
     data = preview(client, [[None, "风扇"]]).json()
     assert data["rows"][0]["category"] == "duplicate"
-    assert data["rows"][0]["allowed_actions"] == ["skip"]
+    assert data["rows"][0]["allowed_actions"] == ["skip", "append_source"]
 
 
 @pytest.mark.parametrize(
@@ -304,59 +308,25 @@ def test_search_sort_normalization_and_delete(library):
     assert product(client, model="D", name="后续")["id"] > 3
 
 
-@pytest.mark.parametrize(
-    "change", ["create", "edit", "delete", "move_in", "move_out", "other"]
-)
-def test_preview_baseline(library, change):
-    client, _ = library
-    original = product(client)
-    outside = product(client, manufacturer_name="外部")
-    data = preview(client, [["NEW", "新品"]]).json()
-    if change in ("create", "other"):
-        product(
-            client,
-            model="X",
-            name="变更",
-            manufacturer_name="厂家" if change == "create" else "外部",
-        )
-    elif change == "delete":
-        client.request(
-            "DELETE",
-            f"/api/product-library/products/{original['id']}",
-            json={"version": 1},
-        )
+@pytest.mark.parametrize('change',['create','edit','delete','unrelated'])
+def test_preview_baseline(library,change):
+    client,_=library
+    original=product(client)
+    data=preview(client,[["NEW","新品"]] if change=='create' else [["M1","风扇"]]).json()
+    if change=='create':
+        product(client,manufacturer_name='其他来源',model='NEW',name='新品')
+    elif change=='unrelated':
+        product(client,model='OTHER',name='无关产品')
+    elif change=='delete':
+        client.request('DELETE',f"/api/product-library/products/{original['id']}",json={'version':1})
     else:
-        item = outside if change == "move_in" else original
-        payload = {
-            f: item[f]
-            for f in (
-                "manufacturer_name",
-                *(
-                    "model",
-                    "name",
-                    "parameters",
-                    "selling_points",
-                    "wholesale_price",
-                    "price_note",
-                ),
-                "version",
-            )
-        }
-        if change == "edit":
-            payload["parameters"] = "变化"
-        else:
-            payload["manufacturer_name"] = "厂家" if change == "move_in" else "外部"
-        payload["allow_suspected_duplicate"] = True
-        if change in ("move_in", "move_out"):
-            payload["model"] = "OUT"
-        response = client.put(
-            f"/api/product-library/products/{item['id']}", json=payload
-        )
-        assert response.status_code == 200, response.text
-    response = confirm(client, data)
-    assert response.status_code == (200 if change == "other" else 409)
-    if change != "other":
-        assert response.json()["code"] == "preview_stale"
+        payload={field:original[field] for field in ('manufacturer_name','model','name','parameters','selling_points','wholesale_price','price_note','version')}
+        payload['parameters']='变化'
+        assert client.put(f"/api/product-library/products/{original['id']}",json=payload).status_code==200
+    response=confirm(client,data)
+    assert response.status_code==(200 if change=='unrelated' else 409),response.text
+    if change!='unrelated':
+        assert response.json()['code']=='preview_stale'
 
 
 def test_expiry_decisions_and_idempotency(library):
@@ -720,7 +690,7 @@ def test_readonly_skips_extra_sheet_cells_and_styled_extremes(library, monkeypat
     )
     assert response.status_code == 201, response.text
     assert response.json()["counts"]["total_rows"] == 1
-    assert read_sheets == ["产品数据"]
+    assert read_sheets and set(read_sheets) == {"产品数据"}
 
 
 @pytest.mark.parametrize("relation_type", ["package", "oleObject"])
@@ -766,12 +736,13 @@ def test_preview_work_runs_off_event_loop(monkeypatch):
     caller_thread = threading.get_ident()
     worker_threads = []
 
-    def service(content, manufacturer, db):
+    def service(content, manufacturer, db, workbook_name=None):
         worker_threads.append(threading.get_ident())
         assert content == b"binary" and manufacturer == "厂家"
         return {"status": "ready"}
 
     monkeypatch.setattr(routes, "preview_import_service", service)
+    monkeypatch.setattr("app.product_library_v2_import.preview", lambda *args: None)
 
     async def receive():
         return {"type": "http.request", "body": b"binary", "more_body": False}
@@ -1009,10 +980,11 @@ def test_additional_header_and_sheet_structure_cases(library, kind):
 def test_manufacturer_case_width_and_newline_fidelity(library):
     client, _ = library
     manufacturers = ["ABC", "abc", "ＡＢＣ"]
-    for manufacturer in manufacturers:
+    for index, manufacturer in enumerate(manufacturers):
         product(
             client,
             manufacturer_name=manufacturer,
+            model=f"M{index}",
             parameters="3.7V\r3000mAh\r\n10W\n±5%",
             selling_points=" 保留\n第二行 ",
         )
