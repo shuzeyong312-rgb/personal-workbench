@@ -3,7 +3,7 @@ import { fieldLabels } from './ProductLibraryDetails';
 import { api, json, LibraryDialog } from './ProductLibrary';
 
 type RowKey = { sheet: string; row_number: number; record_type: string; temp_id: string | null };
-type Row = { row_key: RowKey; kind: string; product_ref: string; incoming: Record<string, unknown>; old: Record<string, unknown> | null; effective: Record<string, unknown>; errors: { message: string }[]; dependencies: RowKey[]; allowed_actions: string[]; default_action: string; target_id: number | null; target_version: number | null };
+type Row = { row_key: RowKey; kind: string; product_ref: string; incoming: Record<string, unknown>; old: Record<string, unknown> | null; effective: Record<string, unknown>; errors: { message: string }[]; dependencies: RowKey[]; allowed_actions: string[]; default_action: string; target_id: number | null; target_version: number | null; main_source_company?: string | null; first_company?: string | null; source_company_options?: string[]; main_row_provenance?: boolean };
 export type V2Preview = { template_version: 2; import_id: string; status: 'ready'; expires_at: string; attachment_warning: string; rows: Row[]; counts: Record<string, number> };
 type Decision = { row_key: RowKey; action: string; target_id?: number; target_version?: number; set_default?: boolean };
 type Result = { status: 'committed'; rows: { row_key: RowKey; target_id: number | null; outcome: string; reason_code: string }[]; counts: Record<string, Record<string, number>> };
@@ -12,7 +12,7 @@ const rowToken = (row: RowKey) => JSON.stringify(row);
 const valueLabels: Record<string,string> = {unknown:'未知',included:'已含',excluded:'不含',extra:'另计',negotiable:'协商',quote:'报价',catalog:'目录',specification:'规格书',other:'其他',true:'是',false:'否'};
 const show = (value: unknown) => value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : valueLabels[String(value)] ?? String(value);
 
-export function V2ImportReview({ preview, onClose, onSaved }: { preview: V2Preview; onClose: () => void; onSaved: () => void }) {
+export function V2ImportReview({ preview, onClose, onSaved, onReupload }: { preview: V2Preview; onClose: () => void; onSaved: () => void; onReupload?: () => void }) {
   const [actions, setActions] = useState<Record<string, string>>({});
   const [defaults, setDefaults] = useState<Record<string, boolean>>({});
   const [attachments, setAttachments] = useState(false);
@@ -59,14 +59,18 @@ export function V2ImportReview({ preview, onClose, onSaved }: { preview: V2Previ
     <div className="table-scroll"><table className="library-audit-table library-v2-audit"><thead><tr><th>行 / 产品</th><th>资料与差异</th><th>操作</th></tr></thead><tbody>{rows.slice((page - 1) * 20, page * 20).map(row => {
       const token = rowToken(row.row_key); const outcome = result?.rows.find(item => rowToken(item.row_key) === token);
       const action = actions[token] ?? row.default_action;
+      const parent = preview.rows.find(item => item.kind === 'product' && item.product_ref === row.product_ref);
+      const parentSkipped = parent && (actions[rowToken(parent.row_key)] ?? parent.default_action) === 'skip_product';
       return <tr key={token}><td>{row.row_key.sheet} · {row.row_key.row_number}<p>{row.row_key.temp_id ?? '参数'} / {row.product_ref}</p>{row.target_id != null && <small>已有记录 #{row.target_id} · v{row.target_version}</small>}</td><td>
         {row.errors.map((item, index) => <p className="library-row-error" key={index}>{item.message}</p>)}
+        {row.kind === 'product' && 'main_source_company' in row && <p className="library-hint">主行全文归属：{row.main_source_company ?? '待核对'}；首录资料公司{row.old ? '（保持原值）' : ''}：{show(row.old?.manufacturer_name ?? row.first_company)}。全文另存为来源资料，不覆盖已有主资料。{(row.source_company_options?.length ?? 0) > 1 && `涉及 ${row.source_company_options!.join('、')}；需变更归属时可放弃当前逐行选择并返回上传，文件仍保留；在批次资料公司明确选择后重新预览。`}</p>}
+        {row.main_row_provenance && <p className="library-hint">主行全文保存位置：保留产品时须新增或复用此来源记录。</p>}
         <dl className="library-details">{Object.entries(row.incoming).filter(([, value]) => value != null).map(([field, value]) => <div key={field}><dt>{fieldLabels[field] ?? field}</dt><dd>{show(value)}{row.old && row.old[field] !== value && <small className="library-match">原值：{show(row.old[field])}；生效值：{show(row.kind === 'product' && action === 'update_main' && field !== 'wholesale_price' && value != null ? value : row.effective[field])}</small>}</dd></div>)}</dl>
         {row.dependencies.length > 1 && <p className="library-hint">依赖：{row.dependencies.slice(1).map(dep => `${dep.sheet} ${dep.temp_id}`).join('、')}；如不写入，请一并跳过依赖行。</p>}
-      </td><td>{outcome ? labels[outcome.outcome] ?? outcome.outcome : <><label>行操作<select disabled={locked} value={action} onChange={event => setActions(current => ({ ...current, [token]: event.target.value }))}>{row.allowed_actions.map(value => <option key={value} value={value}>{labels[value] ?? value}</option>)}</select></label>
+      </td><td>{outcome ? labels[outcome.outcome] ?? outcome.outcome : <><label>行操作<select disabled={locked} value={action} onChange={event => setActions(current => ({ ...current, [token]: event.target.value }))}>{row.allowed_actions.map(value => <option key={value} value={value} disabled={value === 'skip' && row.main_row_provenance && !parentSkipped}>{labels[value] ?? value}</option>)}</select></label>
         {row.kind === 'prices' && action !== 'skip' && <label className="library-check"><input type="checkbox" disabled={locked} checked={defaults[token] ?? Boolean(row.old?.is_default_wholesale ?? (preview.rows.find(parent => parent.kind === 'product' && parent.product_ref === row.product_ref)?.default_action === 'insert' && row.incoming.is_default_wholesale))} onChange={event => setDefaults(current => ({ ...current, [token]: event.target.checked }))} />明确设为默认批发价</label>}</>}</td></tr>;
     })}</tbody></table></div>
     <div className="pagination-bar"><button disabled={page === 1} onClick={() => setPage(page - 1)}>上一页</button><span>{page} / {Math.max(1, Math.ceil(rows.length / 20))}</span><button disabled={page * 20 >= rows.length} onClick={() => setPage(page + 1)}>下一页</button></div>
-    <div className="dialog-actions library-sticky-actions">{result ? <button className="primary-button" onClick={onClose}>完成</button> : <><button className="secondary-button" disabled={busy} onClick={() => void lookup()}>查询原导入结果</button><button className="primary-button" disabled={busy || uncertain || !attachments || Date.parse(preview.expires_at) <= Date.now()} onClick={() => void submit()}>{busy ? '处理中…' : retry ? '按原决策重试' : '确认导入'}</button></>}</div>
+    <div className="dialog-actions library-sticky-actions">{result ? <button className="primary-button" onClick={onClose}>完成</button> : <>{onReupload && preview.rows.some(row => row.kind === 'product' && (row.source_company_options?.length ?? 0) > 1) && <button className="secondary-button" disabled={busy || uncertain || retry !== null} onClick={onReupload}>放弃选择并返回上传</button>}<button className="secondary-button" disabled={busy} onClick={() => void lookup()}>查询原导入结果</button><button className="primary-button" disabled={busy || uncertain || !attachments || Date.parse(preview.expires_at) <= Date.now()} onClick={() => void submit()}>{busy ? '处理中…' : retry ? '按原决策重试' : '确认导入'}</button></>}</div>
   </LibraryDialog>;
 }

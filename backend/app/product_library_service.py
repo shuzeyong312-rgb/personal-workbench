@@ -37,6 +37,7 @@ LIMITS = {
     "price_note": 2000,
 }
 IDENTITY_RULE_VERSION = 4
+V2_IMPORT_PLAN_VERSION = 2
 MIB = 1024 * 1024
 
 
@@ -491,6 +492,9 @@ def receipt(db, import_id):
         error(404, "import_not_found", "导入预览不存在")
     if item.status == "ready" and (item.preview or {}).get("identity_rule_version") != IDENTITY_RULE_VERSION:
         error(409, "preview_rule_changed", "预览使用旧身份规则，不能继续确认；请重新上传并核对")
+    if (item.status == "ready" and (item.preview or {}).get("template_version") == 2
+            and (item.preview or {}).get("import_plan_version") != V2_IMPORT_PLAN_VERSION):
+        error(409, "preview_rule_changed", "预览使用旧来源保存规则，请重新上传并核对原文归属")
     if item.status == "ready" and utc(item.expires_at) <= now():
         error(410, "preview_expired", "预览已过期，请重新上传")
     return item

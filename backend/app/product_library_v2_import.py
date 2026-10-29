@@ -15,7 +15,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.models import LibraryImport, LibraryProduct
-from app.product_library_service import (FIELDS as MAIN_FIELDS, HEADERS as V1_HEADERS, baseline, begin_write, database_error,
+from app.product_library_service import (V2_IMPORT_PLAN_VERSION, HEADERS as V1_HEADERS, begin_write, database_error,
     digest, error, normalized_text, now, price, product_view, read_excel, receipt, require_identity_schema)
 from app.product_library_details import (ATTACHMENT_WARNING, FIELDS, MODELS, PRICE_KEY, SOURCE_KEY, attributes,
     decimal_text, detail_view, product_details, project_price, records, text_value, touch, validate_detail)
@@ -159,7 +159,7 @@ def parse(wb, content):
 
 
 def main_excerpt(raw):
-    return '\n'.join(f'{name}: {value}' for name, value in raw.items() if value is not None)
+    return '\n'.join(f'{name}: {value}' for name, value in raw.items() if value is not None).strip()
 
 
 def normalize_rows(rows, company, db, workbook_name=None):
@@ -199,14 +199,29 @@ def normalize_rows(rows, company, db, workbook_name=None):
     for product in [row for row in rows if row['kind'] == 'product']:
         ref = product['product_ref']
         group_sources = [row for row in sources.values() if row['product_ref'] == ref]
-        if not group_sources:
-            temp_id = f'@source:{ref}'
-            while temp_id in sources:
-                temp_id += ':'
-            synthetic = dict(row_key=row_id('资料索引', product['row_key']['row_number'], temp_id), kind='sources', product_ref=ref, variant_ref=None, source_ref=None, raw={}, synthetic=True, errors=[], dependencies=[], incoming=dict(source_company=company, source_type='other', source_file_name=None, source_page=None, source_date=None, source_excerpt=main_excerpt(product['raw']), notes=f'整理工作簿：{workbook_name or "未提供"}；原件文件名未知', claimed_manufacturer_name=None))
+        companies = sorted({row['incoming']['source_company'] for row in group_sources if not row['errors'] and row['incoming'].get('source_company')})
+        if len(companies) == 1:
+            origin = companies[0]
+        elif not companies or company in companies:
+            origin = company
+        else:
+            origin = None
+        product.update(main_source_company=origin, first_company=company or origin, source_company_options=companies)
+        if len(companies) > 1 and origin is None:
+            product['errors'].append({**product['row_key'], 'field':'source_company', 'message':f'主行原文涉及多家公司，请在批次资料公司明确选择归属后重新预览：{"、".join(companies)}'})
+        excerpt = main_excerpt(product['raw'])
+        provenance = next((row for row in group_sources if not row['errors'] and row['incoming'].get('source_company') == origin and row['incoming'].get('source_excerpt') == excerpt), None)
+        if provenance is None:
+            temp_id = derived_id(rows, 'sources', f'@source:{ref}')
+            synthetic = dict(row_key=row_id('资料索引', product['row_key']['row_number'], temp_id), kind='sources', product_ref=ref, variant_ref=None, source_ref=None, raw={}, synthetic=True, errors=[], dependencies=[], incoming=dict(source_company=origin, source_type='other', source_file_name=None, source_page=None, source_date=None, source_excerpt=excerpt, notes=f'整理工作簿：{workbook_name or "未提供"}；原件文件名未知', claimed_manufacturer_name=None))
             rows.append(synthetic)
             sources[temp_id] = synthetic
-            group_sources = [synthetic]
+            provenance = synthetic
+            # Derived main-row provenance must not change explicit price/attribute references.
+            if not group_sources:
+                group_sources = [synthetic]
+        product['main_source_row_key'] = provenance['row_key']
+        provenance['main_row_provenance'] = True
         for row in [r for r in rows if r['product_ref'] == ref and r['kind'] in ('attribute','prices')]:
             if row['source_ref'] is None:
                 if len(group_sources) != 1:
@@ -248,7 +263,7 @@ def match_key(kind, data):
     return tuple(data.get(field) for field in fields)
 
 
-def plan(db, rows, company=None):
+def plan(db, rows):
     products = { (p.model,p.name): p for p in db.scalars(select(LibraryProduct)) }
     product_rows = {r['product_ref']: r for r in rows if r['kind'] == 'product'}
     refs = {(r['kind'],r['row_key']['temp_id']): r for r in rows if r['row_key']['temp_id'] is not None}
@@ -266,10 +281,11 @@ def plan(db, rows, company=None):
         product = products.get((parent['incoming'].get('model'),parent['incoming'].get('name')))
         row.update(old=None, effective=data, candidate=[], target_id=None, target_version=None)
         if kind == 'product':
-            if product is None and not company:
+            if product is None and not row['first_company']:
                 row['errors'].append({**row['row_key'],'field':'source_company','message':'新产品的首录资料公司未知，请保留待处理并核实；不得编造公司名'})
             if product:
-                row.update(target_id=product.id,target_version=product.version,old=product_view(product), effective=product_view(product), allowed_actions=['update_main','use_existing','append_source','skip_product'],default_action='use_existing')
+                old = product_view(product)
+                row.update(target_id=product.id,target_version=product.version,old=old, effective=old, allowed_actions=['update_main','use_existing','append_source','skip_product'],default_action='use_existing')
             else:
                 row.update(allowed_actions=['insert','skip_product'],default_action='insert')
         else:
@@ -338,11 +354,11 @@ def preview(content, company, db, workbook_name=None):
         workbook_name = text_value(workbook_name,'整理工作簿名',500)
         db.execute(text('BEGIN'))
         require_identity_schema(db)
-        rows = plan(db,normalize_rows(parsed,company,db,workbook_name),company)
+        rows = plan(db,normalize_rows(parsed,company,db,workbook_name))
         stamp = snapshot(db,rows)
         db.rollback()
         created = now()
-        result = dict(import_id=str(uuid4()),status='ready',template_version=2,identity_rule_version=4,expires_at=(created+timedelta(minutes=30)).isoformat(),manufacturer_name=company or '',rows=rows,attachment_warning=ATTACHMENT_WARNING,counts={kind:sum(r['kind']==kind for r in rows) for kind in ('product','variants','sources','prices','attribute')})
+        result = dict(import_id=str(uuid4()),status='ready',template_version=2,identity_rule_version=4,import_plan_version=V2_IMPORT_PLAN_VERSION,expires_at=(created+timedelta(minutes=30)).isoformat(),manufacturer_name=company or '',rows=rows,attachment_warning=ATTACHMENT_WARNING,counts={kind:sum(r['kind']==kind for r in rows) for kind in ('product','variants','sources','prices','attribute')})
         begin_write(db)
         db.add(LibraryImport(import_id=result['import_id'],manufacturer_name=company or '',created_at=created,expires_at=created+timedelta(minutes=30),status='ready',preview=result,baseline_digest=stamp))
         db.commit()
@@ -411,6 +427,10 @@ def confirm(import_id,payload,db):
             parent_action = selected[key(parents[row['product_ref']])]['action']
             if action in ('skip','skip_product') or parent_action == 'skip_product':
                 continue
+            if row['kind'] == 'product':
+                provenance_key = json.dumps(row['main_source_row_key'],ensure_ascii=False,sort_keys=True)
+                if selected[provenance_key]['action'] == 'skip':
+                    error(422,'invalid_decisions','保留产品时必须保存或复用主行全文来源；放弃整个产品请选整组跳过')
             if parent_action=='append_source' and row['kind'] in ('variants','attribute') and action not in ('reuse','skip'):
                 error(422,'invalid_decisions','追加来源不能创建规格或修改参数')
             for dep in row['dependencies'][1:]:
@@ -428,7 +448,7 @@ def confirm(import_id,payload,db):
             if kind=='product':
                 if action=='insert':
                     data.pop('wholesale_price',None)
-                    product = LibraryProduct(**data,manufacturer_name=item.manufacturer_name,created_at=now(),updated_at=now(),version=1)
+                    product = LibraryProduct(**data,manufacturer_name=row['first_company'],created_at=now(),updated_at=now(),version=1)
                     db.add(product)
                     db.flush()
                     changed = True
@@ -499,7 +519,7 @@ def confirm(import_id,payload,db):
                 touch(product)
         for container in parameter_containers.values():
             touch(container)
-        result=dict(import_id=import_id,status='committed',template_version=2,identity_rule_version=4,attachments_not_imported=True,rows=outcomes,counts={})
+        result=dict(import_id=import_id,status='committed',template_version=2,identity_rule_version=4,import_plan_version=V2_IMPORT_PLAN_VERSION,attachments_not_imported=True,rows=outcomes,counts={})
         for kind in ('product','sources','variants','attribute','prices'):
             result['counts'][kind]={outcome:sum(r['row_key']['record_type']==kind and r['outcome']==outcome for r in outcomes) for outcome in ('inserted','updated','reused','skipped')}
         item.status='committed'

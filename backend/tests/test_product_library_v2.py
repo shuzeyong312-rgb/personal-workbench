@@ -79,7 +79,7 @@ def test_five_sheet_atomic_import_replay_and_unknowns(library):
     assert response.status_code==200,response.text
     assert confirm(client,data,payload).json()==response.json()
     p=detail(client)
-    assert len(p['prices'])==4 and len(p['variants'])==2 and len(p['sources'])==1
+    assert len(p['prices'])==4 and len(p['variants'])==2 and len(p['sources'])==2
     assert p['wholesale_price'] is None and p['price_state']=='multiple'
     assert p['variants'][0]['structured_attributes'][0]['source_id']==p['sources'][0]['id']
     assert p['sources'][0]['claimed_manufacturer_name'] is None
@@ -364,3 +364,135 @@ def test_long_synthesized_source_can_be_edited_without_losing_excerpt(library):
     response=client.put(BASE+f"/products/{p['id']}/sources/{source['id']}",json={'product_version':p['version'],'version':source['version'],'notes':'补充核对记录'})
     assert response.status_code==200,response.text
     assert response.json()['source_excerpt']==source['source_excerpt']
+
+
+def test_new_product_uses_single_explicit_source_when_batch_company_unknown(library):
+    client,_=library
+    data=upload(client,{'产品数据':[['P','X','资料']], '资料索引':[['S','P','明确来源公司',None,'原件.pdf','3',None,'quote','页码摘录']]},company='').json()
+    parent=next(row for row in data['rows'] if row['kind']=='product')
+    assert not parent['errors'],parent['errors']
+    response=confirm(client,data)
+    assert response.status_code==200,response.text
+    p=detail(client)
+    assert p['manufacturer_name']=='明确来源公司'
+    assert {source['source_company'] for source in p['sources']}=={'明确来源公司'}
+
+
+def test_mixed_workbook_resolves_first_company_per_product(library):
+    client,_=library
+    data=upload(client,{'产品数据':[['P','X','产品甲'],['Q','Y','产品乙']], '资料索引':[['S','P','公司甲'],['T','Q','公司乙']]},company='').json()
+    response=confirm(client,data)
+    assert response.status_code==200,response.text
+    assert detail(client,1)['manufacturer_name']=='公司甲'
+    assert detail(client,2)['manufacturer_name']=='公司乙'
+
+
+def test_existing_product_retains_full_main_row_with_explicit_source(library):
+    client,engine=library
+    old=product(client,model='X',name='产品',parameters='旧参数',selling_points='旧卖点',price_note='旧备注',wholesale_price='9.00')
+    incoming={'产品数据':[['P','X','产品',None,'完整新参数\n第二段','完整新卖点\n第二项',None,'新价格条件备注']],
+              '资料索引':[['S','P','资料提供公司',None,'原始资料.pdf','第3页',None,'quote','简短页码摘录']]}
+    data=upload(client,incoming,company='').json()
+    assert next(row for row in data['rows'] if row['kind']=='product')['default_action']=='use_existing'
+    response=confirm(client,data)
+    assert response.status_code==200,response.text
+    p=detail(client,old['id'])
+    for field in ('manufacturer_name','parameters','selling_points','price_note','wholesale_price'):
+        assert p[field]==old[field]
+    full=next((source for source in p['sources'] if '完整新参数\n第二段' in (source['source_excerpt'] or '')),None)
+    assert full is not None,'主行全文在预览清除后必须仍可查询'
+    assert '完整新卖点\n第二项' in full['source_excerpt'] and '新价格条件备注' in full['source_excerpt']
+    assert full['source_company']=='资料提供公司'
+    assert full['source_file_name'] is None and full['source_page'] is None
+    explicit=next(source for source in p['sources'] if source['source_file_name']=='原始资料.pdf')
+    assert explicit['source_excerpt']=='简短页码摘录' and explicit['source_page']=='第3页'
+    assert p['version']==old['version']+1
+    with Session(engine) as db:
+        assert db.get(LibraryImport,data['import_id']).preview is None
+    repeated=upload(client,incoming,company='').json()
+    assert confirm(client,repeated).json()['code']=='no_changes_selected'
+
+
+@pytest.mark.parametrize('existing',[False,True])
+def test_multiple_source_companies_require_explicit_main_row_attribution(library,existing):
+    client,_=library
+    if existing:
+        product(client,model='X',name='产品',parameters='旧参数')
+    incoming={'产品数据':[['P','X','产品',None,'主行原文']], '资料索引':[['S','P','公司甲'],['T','P','公司乙']]}
+    for company in ('','不在资料中的公司'):
+        data=upload(client,incoming,company=company).json()
+        parent=next(row for row in data['rows'] if row['kind']=='product')
+        assert parent['source_company_options']==['公司乙','公司甲']
+        assert parent['allowed_actions']==['skip_product'] and parent['main_source_company'] is None
+        assert confirm(client,data).json()['code']=='no_changes_selected'
+    data=upload(client,incoming,company='公司乙').json()
+    parent=next(row for row in data['rows'] if row['kind']=='product')
+    assert parent['main_source_company']=='公司乙'
+    assert confirm(client,data).status_code==200
+    p=detail(client)
+    assert p['manufacturer_name']==('厂家' if existing else '公司乙')
+    assert {source['source_company'] for source in p['sources']} >= {'公司甲','公司乙'}
+    raw=next(source for source in p['sources'] if '主行原文' in (source['source_excerpt'] or ''))
+    assert raw['source_company']=='公司乙'
+
+
+def test_main_row_provenance_cannot_be_silently_skipped(library):
+    client,_=library
+    incoming={'产品数据':[['P','X','产品',None,'必须保留的原文']], '资料索引':[['S','P','公司','明确厂家','原件.pdf','1',None,'quote','短摘录']]}
+    data=upload(client,incoming,company='').json()
+    raw=next(row for row in data['rows'] if row.get('main_row_provenance'))
+    payload=plan(data,{(raw['row_key']['sheet'],raw['row_key']['temp_id']):{'action':'skip'}})
+    assert confirm(client,data,payload).json()['code']=='invalid_decisions'
+    assert client.get(BASE+'/products').json()['total']==0
+    payload=plan(data,{('产品数据','P'):{'action':'skip_product'},(raw['row_key']['sheet'],raw['row_key']['temp_id']):{'action':'skip'}})
+    assert confirm(client,data,payload).json()['code']=='no_changes_selected'
+    assert confirm(client,data).status_code==200
+
+
+def test_old_v2_ready_requires_repreview_but_committed_receipt_still_replays(library):
+    client,engine=library
+    ready=upload(client,{'产品数据':[['P','X','待导入']]}).json()
+    saved=upload(client,{'产品数据':[['P','Y','已导入']]}).json()
+    payload=plan(saved)
+    result=confirm(client,saved,payload).json()
+    with Session(engine) as db:
+        item=db.get(LibraryImport,ready['import_id'])
+        preview=copy.deepcopy(item.preview);preview.pop('import_plan_version');item.preview=preview
+        item=db.get(LibraryImport,saved['import_id'])
+        old=copy.deepcopy(item.result);old.pop('import_plan_version');item.result=old
+        db.commit()
+    assert client.get(BASE+f"/imports/{ready['import_id']}").json()['code']=='preview_rule_changed'
+    assert confirm(client,ready).json()['code']=='preview_rule_changed'
+    result.pop('import_plan_version')
+    assert client.get(BASE+f"/imports/{saved['import_id']}").json()==result
+    assert confirm(client,saved,payload).json()==result
+
+
+def test_main_row_source_failure_rolls_back_explicit_source_and_receipt(library):
+    from sqlalchemy.exc import OperationalError
+    client,engine=library
+    old=product(client,model='X',name='产品',parameters='旧参数')
+    incoming={'产品数据':[['P','X','产品',None,'主行事务哨兵']], '资料索引':[['S','P','明确公司',None,None,None,None,'quote','短摘录']]}
+    data=upload(client,incoming,company='').json()
+    def fail(connection,cursor,statement,parameters,context,executemany):
+        if statement.startswith('INSERT INTO library_product_sources') and '主行事务哨兵' in str(parameters):
+            raise OperationalError(statement,parameters,Exception('injected main-row source failure'))
+    event.listen(engine,'before_cursor_execute',fail)
+    try:
+        assert confirm(client,data).json()['code']=='import_save_failed'
+    finally:
+        event.remove(engine,'before_cursor_execute',fail)
+    assert detail(client,old['id'])==old
+    with Session(engine) as db:
+        assert db.get(LibraryImport,data['import_id']).status=='ready'
+    assert confirm(client,data).status_code==200
+    assert any('主行事务哨兵' in (source['source_excerpt'] or '') for source in detail(client)['sources'])
+
+
+def test_explicit_full_excerpt_reused_without_duplicate_provenance(library):
+    client,_=library
+    excerpt='产品临时ID: P\n产品型号: X\n产品名称: 产品\n产品参数原文: 新原文'
+    data=upload(client,{'产品数据':[['P','X','产品',None,'新原文']], '资料索引':[['S','P','明确公司',None,'原件.pdf','3',None,'quote',excerpt]]},company='').json()
+    assert sum(row['kind']=='sources' for row in data['rows'])==1
+    assert confirm(client,data).status_code==200
+    assert detail(client)['sources'][0]['source_excerpt']==excerpt

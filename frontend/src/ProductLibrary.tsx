@@ -234,7 +234,7 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const expired = !!preview && Date.parse(preview.expires_at) <= Date.now();
   const [, tick] = useState(0);
   useEffect(() => { if (!preview) return; const timer = setInterval(() => tick(value => value + 1), 1000); return () => clearInterval(timer); }, [preview]);
-  if (v2Preview) return <V2ImportReview preview={v2Preview} onClose={onClose} onSaved={onSaved} />;
+  if (v2Preview) return <V2ImportReview preview={v2Preview} onClose={onClose} onSaved={onSaved} onReupload={() => setV2Preview(null)} />;
   return <LibraryDialog wide review={!!preview} title={`批量导入 · 步骤 ${receipt?.status === "committed" ? 3 : preview ? 2 : 1}/3`} busy={busy} onClose={close}>
     <ol className="library-steps" aria-label="导入进度">{["上传文件", "核对与决策", "导入结果"].map((label, index) => <li key={label} aria-current={(receipt?.status === "committed" ? 2 : preview ? 1 : 0) === index ? "step" : undefined}><span>{index + 1}</span>{label}</li>)}</ol>
     {error && <div className="feedback feedback-server-error" role="alert">{error}</div>}
