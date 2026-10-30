@@ -53,6 +53,7 @@ def test_customer_conditions_roundtrip_and_preview_integrity(library):
     wb = load_workbook(io.BytesIO(response.content))
     ws = wb.active
     assert list(ws.values)[1][4:] == (1001, 120, data['note'])
+    assert ws.cell(ws.max_row, 7).value == data['terms']
     assert ws['G2'].data_type == 's' and ws['G2'].alignment.wrap_text
     assert len(wb.worksheets) == 1 and ws.sheet_state == 'visible'
     assert not any(c.data_type == 'f' or c.comment for row in ws for c in row)

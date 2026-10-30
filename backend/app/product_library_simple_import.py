@@ -143,7 +143,17 @@ def preview(content, supplier, filename, db):
     products = db.scalars(select(LibraryProduct)).all()
     for row in parsed['rows']:
         values = row['values']
-        source_names = re.findall(r'(?:供应商|厂家|供货商)\s*[:：]\s*([^\n;；，,]+)', values['notes'] or '')
+        if not values['price_text']:
+            row['price_status'], row['price_reason'] = 'empty', '未提供批发价'
+        elif row['prices'] is None:
+            row['price_status'], row['price_reason'] = 'pending', '价格类型、规格、金额或单位不明确，请核对原文'
+        elif has_non_wholesale_semantics(values['notes']):
+            row['price_status'], row['price_reason'] = 'pending', '来源备注含非出厂价格语义，请核对'
+        elif parsed['template_version'] == 1:
+            row['price_status'], row['price_reason'] = 'pending', '旧六列价格须确认出厂语义'
+        else:
+            row['price_status'], row['price_reason'] = 'eligible_on_confirm', '确认导入后按出厂批发价保存'
+        source_names = re.findall(r'(?:供应商|厂家|供货商)(?:名称|姓名|名字)?\s*[:：]\s*([^\n;；，,]+)', values['notes'] or '')
         if any(' '.join(name.split()) != supplier for name in source_names):
             row['errors'].append({'field': 'notes', 'message': '来源标注与上传供应商不一致，请先拆分文件或核对归属'})
         identity = (values['model'], values['name'])

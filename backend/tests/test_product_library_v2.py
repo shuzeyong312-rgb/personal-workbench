@@ -1,6 +1,8 @@
 import copy
 import io
+import json
 import zipfile
+from functools import lru_cache
 
 import pytest
 from openpyxl import Workbook, load_workbook
@@ -67,9 +69,15 @@ def detail(client,product_id=1):
     return response.json()
 
 
-def upload_simple(client, rows, company='资料公司'):
+@lru_cache(maxsize=None)
+def simple_workbook_bytes(serialized_rows):
     from test_product_library_simple_import import workbook as simple_workbook, HEADERS
-    response = client.post(BASE + '/imports/preview', params={'manufacturer_name': company}, headers={'X-Filename': 'simple.xlsx'}, content=simple_workbook('产品清单', HEADERS, rows))
+    return simple_workbook('产品清单', HEADERS, json.loads(serialized_rows))
+
+
+def upload_simple(client, rows, company='资料公司'):
+    content = simple_workbook_bytes(json.dumps(rows, ensure_ascii=False, sort_keys=True))
+    response = client.post(BASE + '/imports/preview', params={'manufacturer_name': company}, headers={'X-Filename': 'simple.xlsx'}, content=content)
     assert response.status_code == 201, response.text
     return response.json()
 

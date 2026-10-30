@@ -239,6 +239,9 @@ def export_quotation_service(payload, db):
                 cell.data_type = "s"
             cell.alignment = Alignment(wrap_text=True, vertical="top")
         ws.cell(ws.max_row, 5).number_format = "0.00"
+    ws.append(["", "", "", "", "", "", preview['terms']])
+    ws.cell(ws.max_row, 7).data_type = 's'
+    ws.cell(ws.max_row, 7).alignment = Alignment(wrap_text=True, vertical='top')
     for column, width in zip("ABCDEFG", (20, 28, 55, 45, 18, 16, 65)):
         ws.column_dimensions[column].width = width
         ws[f"{column}1"].font = Font(bold=True)

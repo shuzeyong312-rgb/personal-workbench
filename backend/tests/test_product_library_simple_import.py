@@ -64,6 +64,37 @@ def test_supplier_attribution_conflict_blocks_row(library):
     assert result.status_code == 422
 
 
+@pytest.mark.parametrize('label', ['供应商名称', '厂家名称', '供货商名称'])
+def test_supplier_name_label_conflict_blocks_row(library, label):
+    client, _ = library
+    data = workbook('产品清单', HEADERS, [[None, 'M', '名称', None, '12', None, None, f'{label}：另一公司']])
+    result = client.post('/api/product-library/imports/preview?manufacturer_name=A', headers={'X-Filename': 'test.xlsx'}, content=data).json()
+    assert result['rows'][0]['errors']
+
+
+def test_ambiguous_price_preview_and_source_are_preserved(library):
+    client, _ = library
+    data = workbook('产品清单', HEADERS, [[None, 'M', '名称', None, '定制价：26', None, None, '条件']])
+    preview = client.post('/api/product-library/imports/preview?manufacturer_name=A', headers={'X-Filename': 'test.xlsx'}, content=data).json()
+    assert preview['rows'][0]['price_status'] == 'pending' and preview['rows'][0]['price_reason']
+    result = client.post(f"/api/product-library/imports/{preview['import_id']}/confirm", json={'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}]})
+    assert result.status_code == 200
+    detail = client.get('/api/product-library/products/1').json()
+    assert detail['quotes'] == [] and detail['sources'][0]['price_text'] == '定制价：26'
+    assert detail['sources'][0]['raw_values']['values']['批发价'] == '定制价：26'
+
+
+@pytest.mark.parametrize('note', ['定制价', '供货价', '一件代发'])
+def test_non_wholesale_note_cannot_make_price_eligible(library, note):
+    client, _ = library
+    data = workbook('产品清单', HEADERS, [[None, 'M', '名称', None, '26', None, None, note]])
+    preview = client.post('/api/product-library/imports/preview?manufacturer_name=A', headers={'X-Filename': 'test.xlsx'}, content=data).json()
+    assert preview['rows'][0]['price_status'] == 'pending'
+    response = client.post(f"/api/product-library/imports/{preview['import_id']}/confirm", json={'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}]})
+    assert response.status_code == 200
+    assert client.get('/api/product-library/products/1').json()['quotes'][0]['eligibility'] == 'pending'
+
+
 def test_reject_extra_sheet_and_preserve_formula_as_error():
     with pytest.raises(HTTPException):
         parse(workbook('产品清单', HEADERS, [['类', 'M', '名称']], '其他'))
