@@ -1029,4 +1029,16 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .settings-shell .settings-future-grid small { color:#626b78; line-height:1.6; }
 @media (max-width:600px) { .settings-shell .settings-radio-group,.settings-shell .settings-future-grid { grid-template-columns:1fr; } }
 
-.offer-more-popover { position: fixed; z-index: 100; }
+.offer-more-trigger { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 8px; color: #5f6368; background: transparent; cursor: pointer; }
+.offer-more-trigger:hover, .offer-more-trigger[aria-expanded="true"] { color: #20242c; background: #f0f1f2; }
+.offer-more-trigger:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.offer-more-trigger:disabled { opacity: .5; cursor: default; }
+.offer-more-trigger svg { width: 18px; height: 18px; }
+.offer-more-popover { position: fixed; z-index: 100; display: flex; flex-direction: column; box-sizing: border-box; width: min(180px, calc(100vw - 16px)); min-width: 0; max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; border: 1px solid #e3e5e8; border-radius: 12px; background: #fff; box-shadow: 0 12px 28px rgba(32, 36, 44, .14), 0 2px 6px rgba(32, 36, 44, .06); }
+.offer-more-popover button { display: flex; align-items: center; gap: 12px; flex: 0 0 42px; width: 100%; padding: 0 10px; border: 0; border-radius: 7px; color: #20242c; background: transparent; font-size: 13px; font-weight: 400; text-align: left; cursor: pointer; }
+.offer-more-popover button:hover, .offer-more-popover button:focus-visible { color: #20242c; background: #f3f4f6; }
+.offer-more-popover button:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
+.offer-more-popover button svg { flex: 0 0 18px; width: 18px; height: 18px; fill: none; stroke: #71767d; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.offer-more-popover .offer-menu-danger { margin-top: 6px; color: #c83e42; }
+.offer-more-popover .offer-menu-danger:hover, .offer-more-popover .offer-menu-danger:focus-visible { color: #c83e42; }
+.offer-more-popover .offer-menu-danger svg { stroke: currentColor; }

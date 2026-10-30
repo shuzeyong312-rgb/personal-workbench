@@ -1,3 +1,4 @@
+import { offerMenuPosition } from "./App";
 import { updateGroupOfferAfterLifecycle } from "./App";
 import { isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -1210,6 +1211,12 @@ test("summarizes meaningful group differences without turning unknown fields int
   expect(getGroupDifferenceLabels({ price: "lower", min_order_quantity: "lower", sku_count: "more", total_stock: "unknown" }, true)).toEqual({ primary: ["低价", "起批更低", "SKU 更多"], stock: [], hasUnknown: true });
   expect(getGroupDifferenceLabels({ price: "overlap", min_order_quantity: "equal", sku_count: "equal", total_stock: "equal" }, true)).toEqual({ primary: [], stock: [], hasUnknown: false });
   expect(getGroupDifferenceLabels({ price: "unknown", min_order_quantity: "unknown", sku_count: "unknown", total_stock: "unknown" }, false)).toEqual({ primary: ["未建立基准"], stock: [], hasUnknown: false });
+});
+
+test("keeps offer menu within the viewport and flips it above near the bottom", () => {
+  expect(offerMenuPosition({ top: 100, bottom: 134, right: 400 }, 500, 500)).toEqual({ top: 140, right: 100 });
+  expect(offerMenuPosition({ top: 460, bottom: 494, right: 40 }, 500, 500)).toEqual({ top: 304, right: 312 });
+  expect(offerMenuPosition({ top: 5, bottom: 39, right: 50 }, 120, 100)).toEqual({ top: 8, right: 8 });
 });
 
 test("updates only the selected offer when same-shop offers are stopped or deleted", () => {

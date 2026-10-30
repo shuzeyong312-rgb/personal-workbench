@@ -1178,6 +1178,13 @@ function GroupMoreMenu({ onRename, onDelete }: { onRename: () => void; onDelete:
   </div>;
 }
 
+export function offerMenuPosition(rect: Pick<DOMRect, "top" | "bottom" | "right">, width: number, height: number) {
+  const menuWidth = Math.min(180, Math.max(0, width - 16));
+  const menuHeight = Math.min(150, Math.max(0, height - 16));
+  const top = rect.bottom + 6 + menuHeight <= height - 8 ? rect.bottom + 6 : rect.top - 6 - menuHeight;
+  return { top: Math.max(8, Math.min(top, height - 8 - menuHeight)), right: Math.max(8, Math.min(width - rect.right, width - menuWidth - 8)) };
+}
+
 function OfferMoreMenu({ product, isSelf, busy, onOpenDetail, onAction }: { product: GroupProductFacts; isSelf: boolean; busy: boolean; onOpenDetail: (id: number) => void; onAction: (action: "stop" | "delete", product: LifecycleCompetitor) => void }) {
   const [position, setPosition] = useState<{ top: number; right: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -1192,14 +1199,14 @@ function OfferMoreMenu({ product, isSelf, busy, onOpenDetail, onAction }: { prod
   }, [position]);
   const target: LifecycleCompetitor = { ...product, ownership: isSelf ? "self" : "competitor", group_role: isSelf ? "own" : "competitor" };
   return <div className="position-row-actions" onClick={event => event.stopPropagation()}>
-    <button ref={trigger} type="button" className="detail-button" aria-label={`Offer ${product.offer_id} 更多操作`} aria-haspopup="menu" aria-expanded={!!position} disabled={busy} onClick={() => { const rect = trigger.current!.getBoundingClientRect(); setPosition(position ? null : { top: Math.min(rect.bottom + 6, window.innerHeight - 130), right: Math.max(8, window.innerWidth - rect.right) }); }}>•••</button>
+    <button ref={trigger} type="button" className="offer-more-trigger" aria-label={`Offer ${product.offer_id} 更多操作`} aria-haspopup="menu" aria-expanded={!!position} disabled={busy} onClick={() => { const rect = trigger.current!.getBoundingClientRect(); setPosition(position ? null : offerMenuPosition(rect, window.innerWidth, window.innerHeight)); }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></svg></button>
     {position && createPortal(<div ref={menu} className="group-more-popover offer-more-popover" role="menu" style={position} onClick={event => event.stopPropagation()} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget) && event.relatedTarget !== trigger.current) setPosition(null); }} onKeyDown={event => {
       if (event.key === "Escape") { setPosition(null); trigger.current?.focus(); }
       if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')); const index = items.indexOf(document.activeElement as HTMLButtonElement); items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus(); }
     }}>
-      <button type="button" role="menuitem" onClick={() => { setPosition(null); onOpenDetail(product.id); }}>查看详情</button>
-      <button type="button" role="menuitem" onClick={() => { setPosition(null); onAction("stop", target); }}>停止监控</button>
-      <button type="button" role="menuitem" className="more-menu-danger" onClick={() => { setPosition(null); onAction("delete", target); }}>删除{isSelf ? "我方商品" : "竞品"}</button>
+      <button type="button" role="menuitem" onClick={() => { setPosition(null); onOpenDetail(product.id); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h8" /></svg>查看详情</button>
+      <button type="button" role="menuitem" onClick={() => { setPosition(null); onAction("stop", target); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" /></svg>停止监控</button>
+      <button type="button" role="menuitem" className="offer-menu-danger" onClick={() => { setPosition(null); onAction("delete", target); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 10v6M14 10v6" /></svg>删除{isSelf ? "我方商品" : "竞品"}</button>
     </div>, document.body)}
   </div>;
 }
