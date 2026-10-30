@@ -1,3 +1,4 @@
+import { updateGroupOfferAfterLifecycle } from "./App";
 import { isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
@@ -1211,6 +1212,17 @@ test("summarizes meaningful group differences without turning unknown fields int
   expect(getGroupDifferenceLabels({ price: "unknown", min_order_quantity: "unknown", sku_count: "unknown", total_stock: "unknown" }, false)).toEqual({ primary: ["未建立基准"], stock: [], hasUnknown: false });
 });
 
+test("updates only the selected offer when same-shop offers are stopped or deleted", () => {
+  const first = groupDetailData.competitors[0];
+  const second = { ...first, id: first.id + 1000, offer_id: "other-offer", shop_name: first.shop_name };
+  const data = { ...groupDetailData, competitors: [first, second] };
+  const stopped = updateGroupOfferAfterLifecycle(data, first.id, false);
+  expect(stopped.competitors.map(item => [item.id, item.is_active])).toEqual([[first.id, false], [second.id, second.is_active]]);
+  const deleted = updateGroupOfferAfterLifecycle(data, first.id, true);
+  expect(deleted.competitors).toEqual([second]);
+  expect(deleted.own_product).toEqual(data.own_product);
+});
+
 test("renders competitive workbench states and compact product preview", () => {
   const props = { data: groupDetailData, status: "ready" as const, error: null, days: 7 as const, rangeLoading: false, rangeError: null, onRetry: noop, onRangeChange: noop, onBack: noop, onViewCompetitors: noop, onOpenDetail: noop, onNavigate: noop };
   expect(renderToStaticMarkup(<GroupDetailPage {...props} data={null} status="loading" />)).toContain("正在加载组分析");
@@ -1218,7 +1230,7 @@ test("renders competitive workbench states and compact product preview", () => {
   const html = renderToStaticMarkup(<GroupDetailPage {...props} />);
   for (const text of ["组内经营景气信号", "评分规则未冻结", "经营字段历史有效值", "当前经营决策提示", "仅监控样本，非实时报价", "经营表现", "口碑履约", "平台标签", "待接入", "证据不足", "MOQ ↑", "aria-sort=\"ascending\"", "筛选不改变全组排名", "可查看全部变化", "自有商品", "商品速览", "Offer ID：700", "展示报价", "完整库存", "最近有效基础快照", "查看详情", "成交类指标按页面显示档位排序"]) expect(html).toContain(text);
   for (const text of ["待接入：评分规则未冻结", "评分拆解", "来源快照 #", "经营指标原值", "排名覆盖：", "字段依据：", "报价仅按完整区间下限排名"]) expect(html).not.toContain(text);
-  expect(html.match(/class=\"position-row-actions\"><button class=\"detail-button\">查看详情<\/button><\/div>/g)).toHaveLength(groupDetailData.competitors.length + 1);
+  expect(html.match(/aria-label="Offer [^"]+ 更多操作"/g)).toHaveLength(groupDetailData.competitors.length + 1);
   expect(html).toContain("平台标签 <small class=\"position-tag-pending\">待接入</small>");
   expect(html.match(/role=\"tab\"/g)).toHaveLength(5);
   expect(html).not.toContain("role=\"tab\" aria-selected=\"false\" class=\"\">平台标签");

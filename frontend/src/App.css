@@ -1028,3 +1028,5 @@ nav { display: grid; gap: 4px; }.nav-item, .nav-group-title { display: flex; wid
 .settings-shell .settings-future-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .settings-shell .settings-future-grid small { color:#626b78; line-height:1.6; }
 @media (max-width:600px) { .settings-shell .settings-radio-group,.settings-shell .settings-future-grid { grid-template-columns:1fr; } }
+
+.offer-more-popover { position: fixed; z-index: 100; }
