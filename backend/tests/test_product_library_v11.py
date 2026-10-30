@@ -7,11 +7,31 @@ from openpyxl import load_workbook
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from test_product_library import library, product, preview, confirm
+from test_product_library import library, preview, confirm
 from app.models import LibraryProduct
 from app.product_library_quotations import RISK_WORDS
 
 BASE = "/api/product-library"
+
+
+def product(client, **values):
+    from uuid import uuid4
+    supplier = values.pop('manufacturer_name', '测试供应商')
+    amount = values.pop('wholesale_price', None)
+    notes = values.pop('price_note', None) or '采购条件已核对'
+    payload = {'model': 'M1', 'name': '风扇', **values}
+    response = client.post(BASE + '/products', json=payload)
+    assert response.status_code == 201, response.text
+    item = response.json()
+    if amount is not None:
+        base = f"{BASE}/products/{item['id']}"
+        response = client.post(base + '/manual-quotes', json={'product_version': item['version'], 'supplier': supplier, 'variant': None, 'price_text': amount, 'conditions': notes, 'idempotency_key': str(uuid4())})
+        assert response.status_code == 201, response.text
+        source = response.json()
+        response = client.post(base + f"/quotes/{source['quote_version_id']}/review", json={'product_version': item['version'] + 1, 'status': 'eligible', 'reason': '已核对出厂价', 'source_id': source['source_id']})
+        assert response.status_code == 200, response.text
+        item = client.get(base).json()
+    return item
 
 
 def test_price_filters_and_batch_partial_failure(library):
@@ -31,11 +51,9 @@ def test_price_filters_and_batch_partial_failure(library):
 def test_quotation_decimal_and_customer_workbook(library):
     client, _ = library
     p = product(client, name="=客户文本", parameters="普通参数", wholesale_price="1.00", price_note="PRIVATE_NOTE_913")
-    response = client.post(BASE + "/customer-quotations/preview", json={"scope": "all", "conditions_confirmed_ids": [p["id"]], "rules": {"markup_mode": "percent", "markup_value": "0.50"}})
-    assert response.status_code == 200
-    data = response.json()
+    data = quote(client, rules={"markup_mode": "percent", "markup_value": "0.50"})
     assert data["rows"][0]["final_price"] == "1.01"
-    response = client.post(BASE + "/customer-quotations/export", json={"items": data["items"], "rules": data["rules"], "digest": data["digest"], "overrides": {}, "confirmed_risk_ids": [], "confirmed_all_text": True, "conditions_confirmed_ids": data["conditions_confirmed_ids"]})
+    response = export(client, data)
     assert response.status_code == 200
     wb = load_workbook(io.BytesIO(response.content))
     assert len(wb.worksheets) == 1
@@ -50,13 +68,25 @@ def test_quotation_decimal_and_customer_workbook(library):
 
 
 def quote(client, **payload):
-    response = client.post(BASE + "/customer-quotations/preview", json={"scope": "all", "conditions_confirmed_ids": [item['id'] for item in client.get(BASE+'/products',params={'page_size':100}).json()['items']], **payload})
+    scope = payload.get('scope', 'all')
+    params = {'page_size': 100} | (payload.get('filters', {}) if scope == 'filtered' else {})
+    products = client.get(BASE + '/products', params=params).json()['items']
+    if scope == 'selected':
+        ids = {item['id'] for item in payload['items']}
+        products = [item for item in products if item['id'] in ids]
+    selections = {}
+    for item in products:
+        detail = client.get(f"{BASE}/products/{item['id']}").json()
+        current = next((q for q in detail['quotes'] if q['is_current'] and q['eligibility'] == 'eligible'), None)
+        if current:
+            selections[str(item['id'])] = {'quote_version_id': current['id'], 'source_id': current['source_ids'][0], 'supplier': current['supplier_name'], 'variant': current['variant'], 'final_conditions': '采购未税，运费另计', 'rules_confirmed': True}
+    response = client.post(BASE + "/customer-quotations/preview", json={"scope": "all", "selections": selections, "conditions_confirmed_ids": [item['id'] for item in products], **payload})
     assert response.status_code == 200, response.text
     return response.json()
 
 
 def export(client, data, **extra):
-    return client.post(BASE + "/customer-quotations/export", json={"items": data["items"], "rules": data["rules"], "digest": data["digest"], "overrides": {}, "confirmed_risk_ids": [], "confirmed_all_text": True, "conditions_confirmed_ids": data.get("conditions_confirmed_ids", []), **extra})
+    return client.post(BASE + "/customer-quotations/export", json={"items": data["items"], "rules": data["rules"], "digest": data["digest"], "overrides": {}, "confirmed_risk_ids": [], "confirmed_all_text": True, "selections": data['selections'], "conditions_confirmed_ids": data.get("conditions_confirmed_ids", []), **extra})
 
 
 @pytest.mark.parametrize("cost,rules,expected", [
@@ -101,12 +131,11 @@ def test_unquoted_manual_cost_and_text_confirmation(library):
     assert set(r["word"] for r in row["text_risks"]) == set(RISK_WORDS)
     assert export(client, data).status_code == 422
     response = export(client, data, confirmed_risk_ids=[p["id"]])
-    assert response.status_code == 200
-    assert load_workbook(io.BytesIO(response.content)).active["E2"].value == "待报价"
+    assert response.status_code == 422
     overrides = {str(p["id"]): "12.34"}
     manual = quote(client, include_unquoted=True, overrides=overrides, rules={"markup_mode": "percent", "markup_value": "1000"})
-    assert manual["rows"][0]["final_price"] == "12.34"
-    assert export(client, manual, overrides=overrides, confirmed_risk_ids=[p["id"]]).status_code == 200
+    assert manual["rows"][0]["final_price"] is None
+    assert export(client, manual, overrides=overrides, confirmed_risk_ids=[p["id"]]).status_code == 422
     for value in ["-1", "NaN", "1.001", "1000000000", 1, ""]:
         assert export(client, manual, overrides={str(p["id"]): value}, confirmed_risk_ids=[p["id"]]).status_code == 422
 
@@ -118,7 +147,8 @@ def test_low_cost_warning_does_not_block_and_rules_preserve_override(library):
     data = quote(client, overrides=overrides, rules={"markup_mode": "percent", "markup_value": "100"})
     assert data["rows"][0]["final_price"] == "9.00"
     assert "低于采购成本" in data["rows"][0]["risks"]
-    assert export(client, data, overrides=overrides).status_code == 200
+    assert export(client, data, overrides=overrides).status_code == 422
+    assert export(client, data, overrides=overrides, confirmed_below_cost_ids=[p['id']]).status_code == 200
 
 
 def test_snapshot_mismatch_and_stale(library):
@@ -132,8 +162,8 @@ def test_snapshot_mismatch_and_stale(library):
     assert export(client, data, automatic_prices=["0"]).status_code == 422
     with Session(engine) as db:
         db.get(LibraryProduct, first["id"]).version += 1
-        db.delete(db.get(LibraryProduct, second["id"]))
         db.commit()
+    assert client.request('DELETE', BASE + f"/products/{second['id']}", json={'version': second['version']}).status_code == 204
     response = export(client, data)
     assert response.status_code == 409
     assert {item["reason"] for item in response.json()["items"]} == {"missing", "stale"}
@@ -156,11 +186,14 @@ def test_batch_delete_commit_failure_rolls_back_and_validates_items(library, mon
 
 def test_193_plus_8_import_and_filtered_all_scopes(library):
     client, _ = library
-    rows = [[f"M{i:03}", f"灯{i}", "3.7V", "便携", str(i), None] for i in range(193)]
-    rows += [[None, None, "无名称", None, None, None] for _ in range(8)]
-    receipt = preview(client, rows).json()
-    assert receipt["counts"]["new"] == 193 and receipt["counts"]["invalid"] == 8
-    assert confirm(client, receipt).json()["inserted"] == 193
+    from test_product_library_simple_import import workbook, HEADERS
+    rows = [[None, f"M{i:03}", f"灯{i}", "3.7V", str(i), None, "便携", None] for i in range(193)]
+    rows += [[None, None, None, "无名称", None, None, None, None] for _ in range(8)]
+    receipt = client.post(BASE + '/imports/preview', params={'manufacturer_name': '厂家'}, headers={'X-Filename': 'test.xlsx'}, content=workbook('产品清单', HEADERS, rows)).json()
+    assert sum(bool(row['errors']) for row in receipt['rows']) == 8
+    decisions = [{'row_number': row['row_number'], 'action': 'skip' if row['errors'] else 'apply'} for row in receipt['rows']]
+    result = client.post(BASE + f"/imports/{receipt['import_id']}/confirm", json={'decisions': decisions, 'confirmed_attachments_not_imported': True})
+    assert result.status_code == 200 and sum(row['action'] == 'imported' for row in result.json()['rows']) == 193
     filters = {"q": "3.7V", "manufacturer": "厂家", "price_status": "quoted", "price_mode": "between", "price_min": "10", "price_max": "80", "sort": "price_asc"}
     ids = []
     for page in range(1, 5):
@@ -215,14 +248,14 @@ def test_excel_illegal_text_reports_product_and_field_without_rewriting(library,
 def test_vnext_receipt_retains_source_identity_and_error_after_preview_purged(library):
     client, _ = library
     data = preview(client, [["A", "新增名称", None, None, "12.34"], ["B", None], ["C", "跳过名称"]]).json()
-    result = confirm(client, data, {4: "skip"}).json()
-    assert (result["inserted"], result["skipped"], result["invalid"]) == (1, 1, 1)
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}, {'row_number': 3, 'action': 'skip'}, {'row_number': 4, 'action': 'skip'}]}
+    result = client.post(BASE + f"/imports/{data['import_id']}/confirm", json=payload).json()
     receipt = client.get(BASE + f"/imports/{data['import_id']}").json()
     assert receipt == result
-    assert [(row["row_number"], row["model"], row["name"], row["outcome"]) for row in receipt["rows"]] == [(2, "A", "新增名称", "inserted"), (3, "B", None, "invalid"), (4, "C", "跳过名称", "skipped")]
+    assert [(row['row_number'], row['values']['model'], row['values']['name'], row['action']) for row in receipt['rows']] == [(2, 'A', '新增名称', 'imported'), (3, 'B', None, 'skipped'), (4, 'C', '跳过名称', 'skipped')]
     assert receipt["rows"][1]["errors"]
     assert client.get(BASE + "/products").json()["total"] == 1
-    assert confirm(client, data, {4: "skip"}).json() == receipt
+    assert client.post(BASE + f"/imports/{data['import_id']}/confirm", json=payload).json() == receipt
 
 
 def test_vnext_auto_manual_and_excel_share_authoritative_decimal_calculation(library):
@@ -233,7 +266,7 @@ def test_vnext_auto_manual_and_excel_share_authoritative_decimal_calculation(lib
     data = quote(client, overrides=overrides, rules=rules)
     assert data["rows"][0]["automatic_price"] == "14.00"
     assert data["rows"][0]["final_price"] == "9.00"
-    response = export(client, data, overrides=overrides)
+    response = export(client, data, overrides=overrides, confirmed_below_cost_ids=[p['id']])
     wb = load_workbook(io.BytesIO(response.content))
     assert Decimal(str(wb.active['E2'].value)) == Decimal(data['rows'][0]['final_price'])
     assert wb.active['B2'].value == '=客户名称' and wb.active['B2'].data_type == 's'

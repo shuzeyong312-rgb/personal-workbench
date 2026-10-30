@@ -8,7 +8,9 @@ from starlette.concurrency import run_in_threadpool
 from urllib.parse import unquote
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import get_db
 from app.product_library_service import (
@@ -31,23 +33,89 @@ from app.product_library_quotations import preview_quotation_service, export_quo
 router = APIRouter(prefix="/api/product-library", tags=["product-library"])
 
 
+def simple_write(service, db, *args):
+    from app.product_library_service import database_error
+    try:
+        return service(*args, db)
+    except SQLAlchemyError as exc:
+        database_error(db, exc, 'product_save_failed')
+
+
+@router.get("/archived-products")
+def archived_products(db: Session = Depends(get_db)):
+    from app.models import LibraryProduct
+    return {'items': [{'id': p.id, 'version': p.version, 'model': p.model, 'name': p.name} for p in db.scalars(select(LibraryProduct).where(LibraryProduct.archived_at.is_not(None)).order_by(LibraryProduct.id)).all()]}
+
+
+@router.get("/products/{product_id}/history")
+def product_history(product_id: int, db: Session = Depends(get_db)):
+    from app.models import LibraryProduct
+    if db.get(LibraryProduct, product_id) is None:
+        error(404, 'product_not_found', '产品不存在')
+    tables = ('library_products', 'library_product_variants', 'library_product_sources', 'library_product_prices')
+    available = set(db.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).scalars())
+    history = {}
+    for table in tables:
+        snapshot = f'{table}_history_snapshot'
+        if snapshot not in available:
+            history[table] = []
+            continue
+        column = 'id' if table == 'library_products' else 'product_id'
+        history[table] = [dict(row) for row in db.execute(text(f'SELECT * FROM "{snapshot}" WHERE {column}=:id'), {'id': product_id}).mappings()]
+    return history
+
+
+@router.post("/products/{product_id}/restore")
+def restore_product(product_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_simple_quotes import restore_product as restore
+    return simple_write(restore, db, product_id, payload)
+
+
+@router.post("/products/{product_id}/manual-quotes", status_code=201)
+def create_manual_quote(product_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_simple_quotes import manual_quote
+    return simple_write(manual_quote, db, product_id, payload)
+
+
+@router.post("/products/{product_id}/quotes/{quote_id}/review")
+def review_quote(product_id: int, quote_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_simple_quotes import review_quote as review
+    return simple_write(review, db, product_id, quote_id, payload)
+
+
+@router.post("/products/{product_id}/quotes/{quote_id}/confirm-source")
+def confirm_quote_source(product_id: int, quote_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_simple_quotes import confirm_same_price_source
+    return simple_write(confirm_same_price_source, db, product_id, quote_id, payload)
+
+
+@router.delete("/products/{product_id}/sources/{source_id}", status_code=204)
+def archive_simple_source(product_id: int, source_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_simple_quotes import archive_source
+    simple_write(archive_source, db, product_id, source_id, payload)
+    return Response(status_code=204)
+
+
+@router.delete("/products/{product_id}/quotes/{quote_id}", status_code=204)
+def archive_simple_quote(product_id: int, quote_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_simple_quotes import archive_quote
+    simple_write(archive_quote, db, product_id, quote_id, payload)
+    return Response(status_code=204)
+
+
 @router.post("/products/{product_id}/{kind}", status_code=201)
 def create_detail(product_id: int, kind: str, payload: dict = Body(...), db: Session = Depends(get_db)):
-    from app.product_library_details import mutate_detail
-    return mutate_detail(product_id, kind, None, payload, "POST", db)
+    error(410, 'legacy_details_retired', '历史资料只读，请使用供应商报价入口')
 
 
 @router.put("/products/{product_id}/{kind}/{record_id}")
 def update_detail(product_id: int, kind: str, record_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
-    from app.product_library_details import mutate_detail
-    return mutate_detail(product_id, kind, record_id, payload, "PUT", db)
+    error(410, 'legacy_details_retired', '历史资料只读，请使用供应商报价入口')
 
 
 @router.delete("/products/{product_id}/{kind}/{record_id}", status_code=204)
 def delete_detail(product_id: int, kind: str, record_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
-    from app.product_library_details import mutate_detail
-    mutate_detail(product_id, kind, record_id, payload, "DELETE", db)
-    return Response(status_code=204)
+    error(410, 'legacy_details_retired', '历史资料只读，请使用供应商报价入口')
 
 
 @router.get("/products")
@@ -114,12 +182,14 @@ def delete_product(
 
 
 @router.get("/template")
-def template(template_version: int = 1):
+def template(template_version: int = 3):
+    if template_version == 3:
+        from app.product_library_simple_import import template_bytes
+        return Response(template_bytes(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition': 'attachment; filename="product-library-simple.xlsx"'})
     if template_version not in (1, 2):
         error(422, 'invalid_template_version', '模板版本仅支持1或2')
     if template_version == 2:
-        from app.product_library_v2_import import template_bytes
-        return Response(template_bytes(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition': 'attachment; filename="product-library-v2.xlsx"'})
+        error(410, 'template_retired', '五表模板已停用，请下载八列模板')
     wb = Workbook()
     ws = wb.active
     ws.title = "产品数据"
@@ -177,9 +247,8 @@ async def preview_import(
         if len(content) > 5 * MIB:
             error(413, "file_too_large", "文件不能超过5 MiB")
     def preview():
-        from app.product_library_v2_import import preview as preview_v2
-        result = preview_v2(bytes(content), manufacturer_name, db, unquote(filename))
-        return result if result is not None else preview_import_service(bytes(content), manufacturer_name, db, unquote(filename))
+        from app.product_library_simple_import import preview as preview_simple
+        return preview_simple(bytes(content), manufacturer_name, unquote(filename), db)
     return await run_in_threadpool(preview)
 
 
@@ -195,7 +264,18 @@ def confirm_import(
     from app.models import LibraryImport
     item = db.get(LibraryImport, import_id)
     version = ((item.result if item.status == 'committed' else item.preview) or {}).get('template_version') if item else None
+    simple = item is not None and ((item.status == 'ready' and (item.preview or {}).get('sha256')) or (item.status == 'committed' and (item.result or {}).get('simple_import')))
+    old_ready = item is not None and item.status == 'ready' and not simple
     db.rollback()
+    if old_ready:
+        error(409, 'import_stale', '旧预览已失效，请重新预览')
+    if simple:
+        from app.product_library_simple_import import confirm as confirm_simple
+        from app.product_library_service import database_error
+        try:
+            return confirm_simple(import_id, payload, db)
+        except SQLAlchemyError as exc:
+            database_error(db, exc, 'import_save_failed')
     if version == 2:
         from app.product_library_v2_import import confirm as confirm_v2
         return confirm_v2(import_id, payload, db)

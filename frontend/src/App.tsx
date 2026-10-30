@@ -7,7 +7,7 @@ import "./App.css";
 import "./CompetitorList.css";
 import "./Workspace.css";
 import "./Dashboard.css";
-import { ProductLibrary } from "./ProductLibrary";
+import { ProductLibrarySimple as ProductLibrary } from "./ProductLibrarySimple";
 import { WorkspaceTools, WorkspaceToolsProvider } from "./WorkspaceTools";
 import { CustomerReachPage } from "./CustomerReach";
 

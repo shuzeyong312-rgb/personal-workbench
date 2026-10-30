@@ -1,0 +1,24 @@
+.product-library { max-width: 1500px; margin: 0 auto; color: #20242c; }
+.product-library h1 { font-size: 28px; margin: 0 0 20px; }
+.product-library h2 { font-size: 18px; margin: 0 0 16px; }
+.product-library h3 { font-size: 15px; margin: 22px 0 12px; }
+.product-library section { background: #fff; border: 1px solid #dde1e6; border-radius: 8px; padding: 22px; margin-bottom: 16px; }
+.product-library p { line-height: 1.6; white-space: pre-line; }
+.product-library button, .product-library input, .product-library select, .product-library textarea { font: inherit; border: 1px solid #b9c1cb; border-radius: 5px; padding: 8px 10px; background: #fff; color: inherit; }
+.product-library button { cursor: pointer; margin: 2px 6px 2px 0; }
+.product-library button:hover { border-color: #2563eb; color: #2563eb; }
+.product-library button:disabled { opacity: .5; cursor: not-allowed; }
+.product-library :focus-visible { outline: 3px solid #80a8ff; outline-offset: 2px; }
+.product-library form label { display: grid; gap: 6px; margin: 12px 0; }
+.product-library textarea { width: min(100%, 700px); min-height: 52px; resize: vertical; }
+.product-library article { border-top: 1px solid #dde1e6; padding: 8px 0 16px; }
+.product-library article label { display: block; margin: 8px 0; }
+.product-library input[type="checkbox"] { margin-right: 6px; }
+.product-library details { border-top: 1px solid #dde1e6; margin-top: 16px; padding-top: 12px; }
+.product-library summary { cursor: pointer; font-weight: 600; }
+.product-library .simple-table { overflow-x: auto; margin-top: 14px; }
+.product-library table { border-collapse: collapse; width: 100%; min-width: 600px; }
+.product-library th, .product-library td { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+.product-library th { color: #626b78; background: #f6f7f8; }
+.product-library [role="alert"] { color: #b04e5d; }
+@media (max-width: 700px) { .product-library section { padding: 16px; } .product-library input[type="file"] { max-width: 100%; } }

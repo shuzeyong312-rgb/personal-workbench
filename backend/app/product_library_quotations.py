@@ -172,17 +172,22 @@ def preview_quotation_service(payload, db):
             automatic['final_price'] = None
             automatic['error'] = blocked
         row = quote_row(product, rules, overrides[str(product["id"])]) if str(product["id"]) in overrides else automatic.copy()
+        if blocked:
+            row['final_price'] = None
+            row['error'] = blocked
         row["automatic_price"] = automatic["final_price"]
         if internal.get('variant_required'):
             row['error'] = '请选择本次客户报价规格'
         row.update(internal)
-        row['text_risks'] += source_name_risks(product, internal['sources'])
+        supplier_risks = source_name_risks(product, internal['sources'])
+        row['text_risks'] += supplier_risks
+        row['supplier_leak'] = bool(supplier_risks or any(source['source_company'] in note for source in internal['sources'] if source.get('source_company')))
         rows.append(row)
-    return {"items": items, "rules": rules, "digest": quotation_digest(items, rules, overrides, moq, note, snapshots), "selections": selections, "conditions_confirmed_ids": conditions, "rows": rows, "moq": moq, "note": note, "note_risks": text_risks({"note": note}, ("note",)), "terms": TAX_NOTES[rules["tax_mode"]] + FREIGHT_NOTES[rules["freight_mode"]]}
+    return {"items": items, "rules": rules, "digest": quotation_digest(items, rules, overrides, moq, note, snapshots), "snapshots": snapshots, "selections": selections, "conditions_confirmed_ids": conditions, "rows": rows, "moq": moq, "note": note, "note_risks": text_risks({"note": note}, ("note",)), "terms": TAX_NOTES[rules["tax_mode"]] + FREIGHT_NOTES[rules["freight_mode"]]}
 
 
 def read_snapshot(items, db):
-    products = {product.id: product for product in db.scalars(select(LibraryProduct).where(LibraryProduct.id.in_([item["id"] for item in items]))).all()}
+    products = {product.id: product for product in db.scalars(select(LibraryProduct).where(LibraryProduct.id.in_([item["id"] for item in items]), LibraryProduct.archived_at.is_(None))).all()}
     affected = [{**item, "reason": "missing" if item["id"] not in products else "stale"} for item in items if item["id"] not in products or products[item["id"]].version != item["version"]]
     if affected:
         error(409, "quotation_stale", "产品已变化，请刷新受影响项并重新预览", items=affected)
@@ -190,12 +195,16 @@ def read_snapshot(items, db):
 
 
 def export_quotation_service(payload, db):
-    if set(payload) - {"moq", "note", "confirmed_note", "selections", "conditions_confirmed_ids"} != {"items", "rules", "digest", "overrides", "confirmed_risk_ids", "confirmed_all_text"}:
+    if set(payload) - {"moq", "note", "confirmed_note", "selections", "conditions_confirmed_ids", "confirmed_below_cost_ids"} != {"items", "rules", "digest", "overrides", "confirmed_risk_ids", "confirmed_all_text"}:
         error(422, "invalid_quotation", "导出字段缺失或含未知字段")
     items = product_versions(payload["items"])
     rules = quotation_rules(payload["rules"])
     moq, note = quotation_options(payload)
     overrides = quotation_overrides(payload["overrides"], items)
+    if not isinstance(payload.get('selections', {}), dict):
+        error(422, 'invalid_quotation', '价格选择格式无效')
+    if set(payload.get('selections', {})) - {str(item['id']) for item in items}:
+        error(409, 'quotation_preview_mismatch', '报价范围已变化，请重新预览')
     preview = preview_quotation_service(dict(scope='selected',items=items,rules=rules,include_unquoted=True,overrides=overrides,moq=moq,note=note,selections=payload.get('selections',{}),conditions_confirmed_ids=payload.get('conditions_confirmed_ids',[])),db)
     if payload['digest'] != preview['digest']:
         error(409, 'quotation_preview_mismatch', '产品、选择或条件已变化，请重新预览')
@@ -212,6 +221,12 @@ def export_quotation_service(payload, db):
         error(422, "customer_text_unconfirmed", "请核查报价说明中的敏感文本")
     if any(row["error"] for row in rows):
         error(422, "quotation_overflow", "存在超限报价，请调整后重新预览")
+    if any(row['supplier_leak'] for row in rows):
+        error(422, 'supplier_leak', '客户内容含供应商名称，请移除后重新预览')
+    below_cost = {row['id'] for row in rows if '低于采购成本' in row['risks']}
+    confirmed_below = payload.get('confirmed_below_cost_ids', [])
+    if not isinstance(confirmed_below, list) or any(type(value) is not int for value in confirmed_below) or not below_cost.issubset(confirmed_below):
+        error(422, 'below_cost_unconfirmed', '低于采购成本的报价须明确确认')
     wb = Workbook()
     ws = wb.active
     ws.title = "客户报价"
@@ -247,47 +262,55 @@ def source_name_risks(product, sources):
 
 
 def quotation_selection(original, selection, confirmed, moq, rules, db):
-    from app.product_library_details import product_details, PURCHASE_TYPES
-    details=product_details(db,db.get(LibraryProduct,original['id']))
-    variants, prices, sources = details['variants'],details['prices'],details['sources']
-    if not isinstance(selection,dict) or set(selection)-{'variant_id','price_id','price_version'}:
-        error(422,'invalid_quotation','价格选择含未知字段')
-    if any(type(value) is not int or value<1 for value in selection.values()):
-        error(422,'invalid_quotation','价格/规格ID与版本必须为正整数')
-    variant=next((r for r in variants if r['id']==selection.get('variant_id')),None)
-    if 'variant_id' in selection and variant is None:
-        error(422,'invalid_quotation','所选规格属于其他产品或已删除')
-    explicit='price_id' in selection
-    selected=next((r for r in prices if r['id']==selection.get('price_id')),None) if explicit else next((r for r in prices if r['is_default_wholesale'] and r['variant_id'] is None),None)
-    if explicit:
-        if selected is None or selected['price_type'] not in PURCHASE_TYPES or selected['currency_code']!='CNY' or selected['price_unit']!='件' or selected['amount_text'] is None:
-            error(422,'invalid_quotation','仅可明确选择人民币/件的出厂价、批发价或一件代发价')
-        if selection.get('price_version')!=selected['version']:
-            error(409,'quotation_stale','价格已变化，请重新预览')
-    elif 'price_version' in selection:
-        error(422,'invalid_quotation','版本必须随所选价格提交')
-    if selected and selected['variant_id'] is not None and (variant is None or selected['variant_id']!=variant['id']):
-        error(422,'invalid_quotation','所选价格与规格不一致')
+    from app.models import LibrarySimpleQuoteEvidence, LibrarySimpleQuoteKey, LibrarySimpleQuoteVersion, LibrarySimpleSource
+    if not isinstance(selection, dict):
+        error(422, 'invalid_quotation', '价格选择格式无效')
     product=dict(original)
-    product['wholesale_price']=selected['amount_text'] if selected else None
-    blocked=None
-    conditions=[]
-    if variants and variant is None:
-        blocked='请选择本次客户报价规格'
-    if variant:
-        label=' / '.join(v for v in (variant['variant_name'],variant['color']) if v)
-        product['name'] += '（'+label+'）'
-        product['parameters'] = (product['parameters'] or '') + '\n规格：'+label
-    source=next((r for r in sources if selected and r['id']==selected['source_id']),None)
-    if selected:
-        if not selected['min_order_quantity'] or selected['min_order_unit']!='件' or Decimal(selected['min_order_quantity'])>moq:
-            conditions.append('采购起订量/单位未知、非件或高于客户MOQ')
-        if selected['tax_mode']=='unknown' or selected['freight_mode']=='unknown' or selected['customization_terms'] or selected['terms_text']:
-            conditions.append('请核对税费、运费及原文条件')
-        if selected['tax_mode']=='included' and rules['tax_mode']=='adjust' or selected['freight_mode']=='included' and rules['freight_mode']=='fixed':
-            conditions.append('可能重复增加税费或运费')
-        if conditions and original['id'] not in confirmed:
-            blocked=blocked or '请逐产品确认采购条件或人工填写最终价'
-    internal=dict(variants=variants,prices=prices,sources=sources,selection=selection,conditions=conditions,variant_required=bool(variants and variant is None))
-    snapshot=dict(product_version=original['version'],variant=variant,price=selected,source=source,selection=selection,conditions_confirmed=original['id'] in confirmed,customer={field:product[field] for field in CUSTOMER_FIELDS})
+    product['wholesale_price'] = None
+    internal = dict(variants=[], prices=[], sources=[], selection=selection, conditions=[], variant_required=False)
+    snapshot = dict(product_version=original['version'], selection=selection, customer={field: product[field] for field in CUSTOMER_FIELDS})
+    if not selection:
+        return product, snapshot, '请选择供应商、规格、合格报价及来源', internal
+    if set(selection) != {'quote_version_id', 'source_id', 'supplier', 'variant', 'final_conditions', 'rules_confirmed'} or selection.get('rules_confirmed') is not True:
+        error(422, 'invalid_quotation', '必须明确选择报价、供应商、规格、来源及最终条件')
+    if any(type(selection[field]) is not int or selection[field] < 1 for field in ('quote_version_id', 'source_id')):
+        error(422, 'invalid_quotation', '报价和来源 ID 无效')
+    if not isinstance(selection['supplier'], str) or (selection['variant'] is not None and not isinstance(selection['variant'], str)):
+        error(422, 'invalid_quotation', '供应商或规格无效')
+    final_conditions = selection['final_conditions']
+    if not isinstance(final_conditions, str) or len(final_conditions) > 10000 or not final_conditions.strip() or any(word in final_conditions for word in ('未知', '不详', '待确认', '待定', '另议')):
+        error(422, 'invalid_quotation', '请填写明确的最终采购条件')
+    quote = db.get(LibrarySimpleQuoteVersion, selection['quote_version_id'])
+    key = db.get(LibrarySimpleQuoteKey, quote.quote_key_id) if quote else None
+    source = db.get(LibrarySimpleSource, selection['source_id'])
+    evidence = db.get(LibrarySimpleQuoteEvidence, (selection['quote_version_id'], selection['source_id']))
+    if (quote is None or key is None or source is None or evidence is None or
+        key.product_id != original['id'] or source.product_id != original['id'] or source.archived_at is not None or
+        key.supplier_name != selection['supplier'] or source.supplier_name != key.supplier_name or
+        key.variant != selection['variant'] or not quote.is_current or quote.eligibility != 'eligible' or
+        quote.currency != 'CNY' or quote.unit != '件'):
+        error(409, 'quotation_stale', '所选报价、来源或资格无效，请重新选择')
+    source_terms = source.notes or ''
+    if '含税' in source_terms and '不含税' not in source_terms and rules['tax_mode'] == 'excluded' and '客户报价未税' not in final_conditions:
+        error(422, 'conditions_conflict', '来源含税而客户报价未税，请在最终条件明确写明客户报价未税')
+    if ('不含税' in source_terms or '未税' in source_terms) and rules['tax_mode'] == 'included' and '客户报价含税' not in final_conditions:
+        error(422, 'conditions_conflict', '来源未税而客户报价含税，请在最终条件明确写明客户报价含税')
+    if '含税' in source_terms and '不含税' not in source_terms and rules['tax_mode'] == 'adjust' and '客户报价另加税费' not in final_conditions:
+        error(422, 'conditions_conflict', '来源含税而客户报价另加税费，请在最终条件明确说明')
+    if '含运费' in source_terms and '不含运费' not in source_terms and rules['freight_mode'] == 'fixed' and '客户报价另计单件运费' not in final_conditions:
+        error(422, 'conditions_conflict', '来源含运费而客户报价增加运费，请在最终条件明确说明')
+    if ('运费另计' in source_terms or '不含运费' in source_terms) and rules['freight_mode'] == 'included' and '客户报价含运费' not in final_conditions:
+        error(422, 'conditions_conflict', '来源运费另计而客户报价含运费，请在最终条件明确说明')
+    product['wholesale_price'] = f'{Decimal(quote.amount_cents) / 100:.2f}'
+    if key.variant:
+        product['name'] += '（' + key.variant + '）'
+    blocked = None if original['id'] in confirmed else '请确认实际采用的来源和最终条件'
+    internal['sources'] = [{'source_company': name} for name in db.scalars(select(LibrarySimpleSource.supplier_name).where(LibrarySimpleSource.product_id == original['id']).distinct())]
+    internal['conditions'] = [source.notes or '来源条件未知', final_conditions.strip()]
+    snapshot.update(quote_version_id=quote.id, quote_key_id=key.id, amount_cents=quote.amount_cents,
+                    eligibility=quote.eligibility, supplier=key.supplier_name, variant=key.variant,
+                    source_id=source.id, source_version=source.version, source_conditions=source.notes,
+                    source_price_text=source.price_text, source_file_sha256=source.file_sha256,
+                    source_file_name=source.file_name, source_sheet=source.sheet_name, source_row=source.row_number,
+                    final_conditions=final_conditions.strip(), conditions_confirmed=original['id'] in confirmed)
     return product,snapshot,blocked,internal

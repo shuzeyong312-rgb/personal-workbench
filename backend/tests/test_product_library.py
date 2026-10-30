@@ -98,59 +98,57 @@ def test_hundred_and_partial_invalid_rows(library):
         [f"M{i}", f"产品{i}", "3.7V\r\n10W", "便携", "12.30", None] for i in range(100)
     ]
     data = preview(client, rows).json()
-    assert data["counts"]["new"] == 100
+    assert len(data['rows']) == 100 and not any(row['errors'] for row in data['rows'])
     assert client.get("/api/product-library/products").json()["total"] == 0
-    result = confirm(client, data).json()
-    assert result["inserted"] == 100
-    assert confirm(client, data).json() == result
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': row['row_number'], 'action': 'apply'} for row in data['rows']]}
+    endpoint = f"/api/product-library/imports/{data['import_id']}/confirm"
+    result = client.post(endpoint, json=payload).json()
+    assert sum(row['action'] == 'imported' for row in result['rows']) == 100
+    assert client.post(endpoint, json=payload).json() == result
     rows = [[f"B{i}", f"名称{i}", None, None, None, None] for i in range(100)]
     for i in range(5):
         rows[i][0] = i
     data = preview(client, rows).json()
-    assert data["counts"]["invalid"] == 5
+    assert sum(bool(row['errors']) for row in data['rows']) == 5
     assert [r["row_number"] for r in data["rows"] if r["errors"]] == [2, 3, 4, 5, 6]
-    result = confirm(client, data).json()
-    assert (result["inserted"], result["invalid"], result["skipped"]) == (95, 5, 0)
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': row['row_number'], 'action': 'skip' if row['errors'] else 'apply'} for row in data['rows']]}
+    result = client.post(f"/api/product-library/imports/{data['import_id']}/confirm", json=payload).json()
+    assert (sum(row['action'] == 'imported' for row in result['rows']), sum(bool(row['errors']) for row in result['rows'])) == (95, 5)
 
 
 def test_update_diff_blank_zero_and_manual_clear(library):
     client, _ = library
-    original = product(
-        client, parameters="旧参数", selling_points="旧卖点", wholesale_price="30.00"
-    )
+    original = client.post('/api/product-library/products', json={'model': 'M1', 'name': '风扇', 'parameters': '旧参数', 'selling_points': '旧卖点'}).json()
+    base = f"/api/product-library/products/{original['id']}"
+    added = client.post(base + '/manual-quotes', json={'product_version': original['version'], 'supplier': '厂家', 'variant': None, 'price_text': '30.00', 'conditions': '未税', 'idempotency_key': 'original-price'}).json()
+    reviewed = client.post(base + f"/quotes/{added['quote_version_id']}/review", json={'product_version': original['version'] + 1, 'source_id': added['source_id'], 'status': 'eligible', 'reason': '已核对出厂价'}).json()
+    original = client.get(base).json()
+    assert original['version'] == reviewed['product_version']
     data = preview(client, [["M1", "风扇", None, None, "0", None]]).json()
     row = data["rows"][0]
-    assert row["category"] == "duplicate" and row["default_action"] == "append_source"
-    assert row["diff"]["parameters"] == {
-        "old": "旧参数",
-        "incoming": None,
-        "effective": "旧参数",
-        "changed": False,
-        "preserved": True,
-    }
-    assert confirm(client, data, {2: "append_source"}).json()["updated"] == 1
+    assert row['product_id'] == original['id'] and 'parameters' not in row['differences']
+    assert row['price_conflicts'][0]['incoming_cents'] == 0
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply', 'price_decisions': {'': 'keep'}}]}
+    assert client.post(f"/api/product-library/imports/{data['import_id']}/confirm", json=payload).status_code == 200
     saved = client.get(f"/api/product-library/products/{original['id']}").json()
-    assert (
-        saved["wholesale_price"] == "30.00"
-        and saved["parameters"] == "旧参数"
-        and saved["version"] == 2
-    )
+    assert saved['parameters'] == '旧参数' and saved['version'] == original['version'] + 1
+    assert saved['quotes'][0]['amount_cents'] == 3000 and saved['quotes'][0]['eligibility'] == 'eligible'
+    assert saved['sources'][-1]['price_text'] == '0.00'
     payload = {
         field: saved[field]
         for field in (
-            "manufacturer_name",
             "model",
             "name",
+            "category",
             "parameters",
+            "control_price",
             "selling_points",
-            "wholesale_price",
-            "price_note",
             "version",
         )
     }
     payload["parameters"] = None
     response = client.put(f"/api/product-library/products/{saved['id']}", json=payload)
-    assert response.json()["parameters"] is None and response.json()["version"] == 3
+    assert response.json()["parameters"] is None and response.json()["version"] == saved['version'] + 1
     assert (
         client.put(
             f"/api/product-library/products/{saved['id']}", json=payload
@@ -161,57 +159,56 @@ def test_update_diff_blank_zero_and_manual_clear(library):
 
 def test_existing_identity_appends_source_across_companies(library):
     client, _ = library
-    first = product(client)
-    response=client.post('/api/product-library/products',json={'manufacturer_name':'另一厂家','model':'M1','name':'风扇'})
+    first = client.post('/api/product-library/products', json={'model': 'M1', 'name': '风扇'}).json()
+    response=client.post('/api/product-library/products',json={'model':'M1','name':'风扇'})
     assert response.status_code==409
     data=preview(client,[["M1","风扇"]],manufacturer='另一厂家').json()
-    assert data['rows'][0]['default_action']=='append_source'
-    assert confirm(client,data).status_code==200
+    assert data['rows'][0]['product_id'] == first['id']
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}]}
+    assert client.post(f"/api/product-library/imports/{data['import_id']}/confirm", json=payload).status_code == 200
     saved=client.get(f"/api/product-library/products/{first['id']}").json()
-    assert saved['manufacturer_name']==first['manufacturer_name']
+    assert saved['manufacturer_name'] is None and saved['sources'][0]['supplier_name'] == '另一厂家'
     assert saved['version']==first['version']+1
     repeated=preview(client,[["M1","风扇"]],manufacturer='另一厂家').json()
-    assert repeated['rows'][0]['allowed_actions']==['skip']
+    assert repeated['rows'][0]['product_id'] == first['id']
 
 
 @pytest.mark.parametrize(
-    "rows,categories",
+    "rows,invalid",
     [
-        ([["A", "同名"], ["A", "异名"], ["B", "合法"]], ["new", "new", "new"]),
-        ([["A", "同名"], ["B", "同名"], [None, "同名"]], ["new", "new", "new"]),
+        ([["A", "同名"], ["A", "异名"], ["B", "合法"]], [False, False, False]),
+        ([["A", "同名"], ["B", "同名"], [None, "同名"]], [False, False, False]),
         (
             [[None, "同名"], [None, "同名"], ["A", "同名"]],
-            ["new", "duplicate", "new"],
+            [True, True, False],
         ),
-        ([[123, "同名"], ["123", "同名"]], ["invalid", "new"]),
+        ([[123, "同名"], ["123", "同名"]], [True, False]),
     ],
 )
-def test_file_duplicate_rules(library, rows, categories):
+def test_file_duplicate_rules(library, rows, invalid):
     client, _ = library
     data = preview(client, rows).json()
-    assert [row["category"] for row in data["rows"]] == categories
-    response = confirm(client, data)
+    assert [bool(row['errors']) for row in data['rows']] == invalid
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': row['row_number'], 'action': 'skip' if bad else 'apply'} for row, bad in zip(data['rows'], invalid)]}
+    response = client.post(f"/api/product-library/imports/{data['import_id']}/confirm", json=payload)
     assert response.status_code == 200
-    assert response.json()["inserted"] == categories.count("new")
-    for row in data["rows"]:
-        assert all("id" not in item for item in row["file_candidates"])
+    assert sum(row['action'] == 'imported' for row in response.json()['rows']) == invalid.count(False)
 
 
 def test_partial_identity_matches_are_allowed_but_exact_null_model_is_duplicate(library):
     client, _ = library
-    product(client)
+    assert client.post('/api/product-library/products', json={'model': 'M1', 'name': '风扇'}).status_code == 201
     response = client.post(
         "/api/product-library/products",
-        json={"manufacturer_name": "厂家", "name": "风扇"},
+        json={"name": "风扇", "allow_suspected_duplicate": True},
     )
     assert response.status_code == 201
     assert client.post(
         "/api/product-library/products",
-        json={"manufacturer_name": "厂家", "name": "风扇"},
+        json={"name": "风扇", "allow_suspected_duplicate": True},
     ).json()["code"] == "product_exists"
     data = preview(client, [[None, "风扇"]]).json()
-    assert data["rows"][0]["category"] == "duplicate"
-    assert data["rows"][0]["allowed_actions"] == ["skip", "append_source"]
+    assert data['rows'][0]['product_id'] == response.json()['id']
 
 
 @pytest.mark.parametrize(
@@ -253,12 +250,13 @@ def test_excel_bad_types_are_row_errors(library, field, value):
     row[field] = value
     response = preview(client, [row])
     assert response.status_code == 201, response.text
-    assert response.json()["rows"][0]["category"] == "invalid"
+    assert response.json()["rows"][0]["errors"]
 
 
 def test_search_sort_normalization_and_delete(library):
+    from test_product_library_v11 import product as simple_product
     client, _ = library
-    first = product(
+    first = simple_product(
         client,
         manufacturer_name="  厂家\u3000 \nA ",
         model="001",
@@ -267,10 +265,10 @@ def test_search_sort_normalization_and_delete(library):
         selling_points="独特_卖点",
         wholesale_price="20",
     )
-    second = product(client, model="B", name="产品", wholesale_price="10")
-    product(client, model="C", name="未知")
+    second = simple_product(client, model="B", name="产品", wholesale_price="10")
+    simple_product(client, model="C", name="未知")
     assert (
-        first["manufacturer_name"] == "厂家 A" and first["parameters"] == "3.7V\n电池"
+        first['source_companies'] == ['厂家 A'] and first["parameters"] == "3.7V\n电池"
     )
     for q in ("001", "风扇%", "电池", "独特_", "厂家 A", "%", "_"):
         assert (
@@ -284,16 +282,16 @@ def test_search_sort_normalization_and_delete(library):
         == 0
     )
     assert [
-        p["wholesale_price"]
+        p["id"]
         for p in client.get(
             "/api/product-library/products", params={"sort": "price_asc"}
         ).json()["items"]
-    ] == ["10.00", "20.00", None]
+    ] == [second['id'], first['id'], 3]
     assert (
         client.request(
             "DELETE",
             f"/api/product-library/products/{second['id']}",
-            json={"version": 2},
+            json={"version": second['version'] + 1},
         ).status_code
         == 409
     )
@@ -301,32 +299,32 @@ def test_search_sort_normalization_and_delete(library):
         client.request(
             "DELETE",
             f"/api/product-library/products/{second['id']}",
-            json={"version": 1},
+            json={"version": second['version']},
         ).status_code
         == 204
     )
-    assert product(client, model="D", name="后续")["id"] > 3
+    assert simple_product(client, model="D", name="后续")["id"] > 3
 
 
 @pytest.mark.parametrize('change',['create','edit','delete','unrelated'])
 def test_preview_baseline(library,change):
     client,_=library
-    original=product(client)
+    original=client.post('/api/product-library/products', json={'model': 'M1', 'name': '风扇'}).json()
     data=preview(client,[["NEW","新品"]] if change=='create' else [["M1","风扇"]]).json()
     if change=='create':
-        product(client,manufacturer_name='其他来源',model='NEW',name='新品')
+        assert client.post('/api/product-library/products', json={'model': 'NEW', 'name': '新品'}).status_code == 201
     elif change=='unrelated':
-        product(client,model='OTHER',name='无关产品')
+        assert client.post('/api/product-library/products', json={'model': 'OTHER', 'name': '无关产品'}).status_code == 201
     elif change=='delete':
         client.request('DELETE',f"/api/product-library/products/{original['id']}",json={'version':1})
     else:
-        payload={field:original[field] for field in ('manufacturer_name','model','name','parameters','selling_points','wholesale_price','price_note','version')}
+        payload={field:original[field] for field in ('model','name','category','parameters','control_price','selling_points','version')}
         payload['parameters']='变化'
         assert client.put(f"/api/product-library/products/{original['id']}",json=payload).status_code==200
-    response=confirm(client,data)
+    response=client.post(f"/api/product-library/imports/{data['import_id']}/confirm", json={'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}]})
     assert response.status_code==(200 if change=='unrelated' else 409),response.text
     if change!='unrelated':
-        assert response.json()['code']=='preview_stale'
+        assert response.json()['code']=='import_stale'
 
 
 def test_expiry_decisions_and_idempotency(library):
@@ -335,18 +333,21 @@ def test_expiry_decisions_and_idempotency(library):
     url = f"/api/product-library/imports/{data['import_id']}/confirm"
     for choices in (
         [],
-        [{"row_number": 2, "action": "insert"}],
-        [{"row_number": 2, "action": "insert"}] * 2,
-        [{"row_number": 2, "action": "skip"}, {"row_number": 3, "action": "skip"}],
+        [{"row_number": 2, "action": "apply"}],
+        [{"row_number": 2, "action": "apply"}] * 2,
     ):
-        assert client.post(url, json={"decisions": choices}).status_code == 422
-    result = confirm(client, data).json()
+        assert client.post(url, json={'confirmed_attachments_not_imported': True, 'decisions': choices}).status_code == 422
+    skipped = preview(client, [['S', '跳过']]).json()
+    skip_result = client.post(f"/api/product-library/imports/{skipped['import_id']}/confirm", json={'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'skip'}]})
+    assert skip_result.status_code == 200 and skip_result.json()['rows'][0]['action'] == 'skipped'
+    choices = [{'row_number': r['row_number'], 'action': 'apply'} for r in data['rows']]
+    result = client.post(url, json={'confirmed_attachments_not_imported': True, 'decisions': choices}).json()
     reversed_choices = [
-        {"row_number": r["row_number"], "action": "insert"}
+        {"row_number": r["row_number"], "action": "apply"}
         for r in reversed(data["rows"])
     ]
-    assert client.post(url, json={"decisions": reversed_choices}).json() == result
-    assert confirm(client, data, {2: "skip"}).status_code == 409
+    assert client.post(url, json={'confirmed_attachments_not_imported': True, 'decisions': reversed_choices}).json() == result
+    assert client.post(url, json={'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'skip'}, {'row_number': 3, 'action': 'apply'}]}).status_code == 409
     with Session(engine) as db:
         item = db.get(LibraryImport, data["import_id"])
         item.expires_at = now() - timedelta(hours=1)
@@ -357,7 +358,7 @@ def test_expiry_decisions_and_idempotency(library):
         item = db.get(LibraryImport, data["import_id"])
         item.expires_at = now() - timedelta(hours=1)
         db.commit()
-    assert confirm(client, data).status_code == 410
+    assert client.post(f"/api/product-library/imports/{data['import_id']}/confirm", json={'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}]}).status_code == 409
 
 
 def test_atomic_rollback_on_second_insert(library, monkeypatch):
@@ -377,22 +378,24 @@ def test_atomic_rollback_on_second_insert(library, monkeypatch):
         return original_flush(db, *args, **kwargs)
 
     monkeypatch.setattr(Session, "flush", fail)
-    response = confirm(client, data)
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': row['row_number'], 'action': 'apply'} for row in data['rows']]}
+    endpoint = f"/api/product-library/imports/{data['import_id']}/confirm"
+    response = client.post(endpoint, json=payload)
     assert response.status_code == 500
     with Session(engine) as db:
         assert db.scalars(select(LibraryProduct)).all() == []
         assert db.get(LibraryImport, data["import_id"]).status == "ready"
     monkeypatch.setattr(Session, "flush", original_flush)
-    assert confirm(client, data).json()["inserted"] == 2
+    assert sum(row['action'] == 'imported' for row in client.post(endpoint, json=payload).json()['rows']) == 2
 
 
 def test_template_and_row_boundary(library):
     client, _ = library
     response = client.get("/api/product-library/template")
     wb = load_workbook(io.BytesIO(response.content))
-    assert wb.sheetnames == ["产品数据", "填写说明"]
-    assert tuple(c.value for c in wb["产品数据"][1]) == HEADERS
-    assert wb["产品数据"]["A2"].number_format == "@"
+    assert wb.sheetnames == ["产品清单"]
+    assert tuple(c.value for c in wb["产品清单"][1]) == ("分类", "产品型号", "产品名称", "产品参数", "批发价", "控价", "卖点", "备注")
+    assert wb["产品清单"]["B2"].number_format == "@"
     wb.close()
     assert preview(client, []).json()["code"] == "no_product_rows"
     assert (
@@ -478,15 +481,16 @@ def test_concurrent_confirm_and_deleted_product_replay(library):
 
     client, _ = library
     data = preview(client, [["M", "名称"]]).json()
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}]}
+    endpoint = f"/api/product-library/imports/{data['import_id']}/confirm"
     with ThreadPoolExecutor(max_workers=2) as pool:
-        responses = list(pool.map(lambda _: confirm(client, data), range(2)))
+        responses = list(pool.map(lambda _: client.post(endpoint, json=payload), range(2)))
     assert all(r.status_code == 200 for r in responses)
     assert responses[0].json() == responses[1].json()
     product_id = responses[0].json()["rows"][0]["product_id"]
-    client.request(
-        "DELETE", f"/api/product-library/products/{product_id}", json={"version": 1}
-    )
-    assert confirm(client, data).json() == responses[0].json()
+    current = client.get(f'/api/product-library/products/{product_id}').json()
+    assert client.request('DELETE', f'/api/product-library/products/{product_id}', json={'version': current['version']}).status_code == 204
+    assert client.post(endpoint, json=payload).json() == responses[0].json()
     assert client.get("/api/product-library/products").json()["total"] == 0
 
 
@@ -495,8 +499,10 @@ def test_receipt_and_commit_failure_rolls_back_updates(library, monkeypatch, fai
     from sqlalchemy.exc import OperationalError
 
     client, engine = library
-    original = product(client, parameters="before")
+    original = client.post('/api/product-library/products', json={'model': 'M1', 'name': '风扇', 'parameters': 'before'}).json()
     data = preview(client, [["M1", "风扇", "after"], ["N", "新增"]]).json()
+    endpoint = f"/api/product-library/imports/{data['import_id']}/confirm"
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply', 'update_fields': ['parameters']}, {'row_number': 3, 'action': 'apply'}]}
     original_method = getattr(Session, "commit" if failure == "commit" else "flush")
 
     def fail(db, *args, **kwargs):
@@ -507,7 +513,7 @@ def test_receipt_and_commit_failure_rolls_back_updates(library, monkeypatch, fai
         return original_method(db, *args, **kwargs)
 
     monkeypatch.setattr(Session, "commit" if failure == "commit" else "flush", fail)
-    response = confirm(client, data, {2: "update"})
+    response = client.post(endpoint, json=payload)
     assert response.status_code == 500
     monkeypatch.setattr(
         Session, "commit" if failure == "commit" else "flush", original_method
@@ -516,11 +522,11 @@ def test_receipt_and_commit_failure_rolls_back_updates(library, monkeypatch, fai
         client.get(f"/api/product-library/products/{original['id']}").json() == original
     )
     assert client.get("/api/product-library/products").json()["total"] == 1
-    assert (
-        client.get(f"/api/product-library/imports/{data['import_id']}").json()["status"]
-        == "ready"
-    )
-    assert confirm(client, data, {2: "update"}).json()["updated"] == 1
+    with Session(engine) as db:
+        assert db.get(LibraryImport, data['import_id']).status == 'ready'
+    result = client.post(endpoint, json=payload)
+    assert result.status_code == 200
+    assert client.get(f"/api/product-library/products/{original['id']}").json()['parameters'] == 'after'
 
 
 def test_xml_security_and_zip_limits(library):
@@ -599,7 +605,8 @@ def test_false_dimension_and_exact_thousand_rows(library):
         content=out.getvalue(),
     )
     assert response.status_code == 201, response.text
-    assert response.json()["counts"]["new"] == 1000
+    assert len(response.json()['rows']) == 1000
+    assert not any(row['errors'] for row in response.json()['rows'])
 
 
 def test_exact_package_limits(library):
@@ -689,7 +696,7 @@ def test_readonly_skips_extra_sheet_cells_and_styled_extremes(library, monkeypat
         content=output.getvalue(),
     )
     assert response.status_code == 201, response.text
-    assert response.json()["counts"]["total_rows"] == 1
+    assert len(response.json()['rows']) == 1
     assert read_sheets and set(read_sheets) == {"产品数据"}
 
 
@@ -736,13 +743,12 @@ def test_preview_work_runs_off_event_loop(monkeypatch):
     caller_thread = threading.get_ident()
     worker_threads = []
 
-    def service(content, manufacturer, db, workbook_name=None):
+    def service(content, manufacturer, workbook_name, db):
         worker_threads.append(threading.get_ident())
         assert content == b"binary" and manufacturer == "厂家"
         return {"status": "ready"}
 
-    monkeypatch.setattr(routes, "preview_import_service", service)
-    monkeypatch.setattr("app.product_library_v2_import.preview", lambda *args: None)
+    monkeypatch.setattr("app.product_library_simple_import.preview", service)
 
     async def receive():
         return {"type": "http.request", "body": b"binary", "more_body": False}
@@ -785,7 +791,7 @@ def test_error_cell_without_cached_value_is_not_ignored(library, coordinate, sta
     )
     assert response.status_code == status, response.text
     if status == 201:
-        assert response.json()["rows"][0]["category"] == "invalid"
+        assert response.json()["rows"][0]["errors"]
         assert response.json()["rows"][0]["row_number"] == 2
 
 
@@ -852,7 +858,8 @@ def test_restart_process_reads_and_replays_durable_receipt(library):
 
     client, engine = library
     data = preview(client, [["M", "名称"]]).json()
-    result = confirm(client, data).json()
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}]}
+    result = client.post(f"/api/product-library/imports/{data['import_id']}/confirm", json=payload).json()
     script = r"""
 import json, sys
 from fastapi.testclient import TestClient
@@ -868,7 +875,7 @@ app.dependency_overrides[get_db] = isolated
 client = TestClient(app)
 url = "/api/product-library/imports/" + sys.argv[2]
 read = client.get(url)
-replay = client.post(url + "/confirm", json={"decisions": [{"row_number": 2, "action": "insert"}]})
+replay = client.post(url + "/confirm", json={"confirmed_attachments_not_imported": True, "decisions": [{"row_number": 2, "action": "apply"}]})
 assert read.status_code == 200 and replay.status_code == 200
 assert read.json() == replay.json()
 print(json.dumps(read.json(), ensure_ascii=True))
@@ -921,7 +928,7 @@ def test_cached_formula_is_invalid_even_when_cache_is_numeric(library):
         content=output.getvalue(),
     )
     assert response.status_code == 201
-    assert response.json()["rows"][0]["category"] == "invalid"
+    assert response.json()["rows"][0]["errors"]
     assert any(
         error["code"] == "formula_or_error"
         for error in response.json()["rows"][0]["errors"]
@@ -932,8 +939,8 @@ def test_cached_formula_is_invalid_even_when_cache_is_numeric(library):
 def test_additional_price_validation_cases(library, value):
     client, _ = library
     data = preview(client, [["001", "名称", None, None, value]]).json()
-    assert data["rows"][0]["category"] == "invalid"
-    assert data["rows"][0]["model"] == "001"
+    assert data["rows"][0]["errors"]
+    assert data["rows"][0]["values"]["model"] == "001"
 
 
 def test_date_cells_rejected_and_leading_zero_text_preserved(library):
@@ -948,8 +955,9 @@ def test_date_cells_rejected_and_leading_zero_text_preserved(library):
             ["003", "日期价格", None, None, datetime(2026, 10, 18)],
         ],
     ).json()
-    assert [row["category"] for row in data["rows"]] == ["new", "invalid", "invalid"]
-    result = confirm(client, data).json()
+    assert [bool(row['errors']) for row in data['rows']] == [False, True, True]
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': row['row_number'], 'action': 'skip' if row['errors'] else 'apply'} for row in data['rows']]}
+    result = client.post(f"/api/product-library/imports/{data['import_id']}/confirm", json=payload).json()
     saved = client.get(
         f"/api/product-library/products/{result['rows'][0]['product_id']}"
     ).json()
@@ -981,13 +989,9 @@ def test_manufacturer_case_width_and_newline_fidelity(library):
     client, _ = library
     manufacturers = ["ABC", "abc", "ＡＢＣ"]
     for index, manufacturer in enumerate(manufacturers):
-        product(
-            client,
-            manufacturer_name=manufacturer,
-            model=f"M{index}",
-            parameters="3.7V\r3000mAh\r\n10W\n±5%",
-            selling_points=" 保留\n第二行 ",
-        )
+        item = client.post('/api/product-library/products', json={'name': '风扇', 'model': f'M{index}', 'parameters': '3.7V\r3000mAh\r\n10W\n±5%', 'selling_points': ' 保留\n第二行 '}).json()
+        response = client.post(f"/api/product-library/products/{item['id']}/manual-quotes", json={'product_version': item['version'], 'supplier': manufacturer, 'variant': None, 'price_text': '0', 'conditions': '已核对', 'idempotency_key': f'supplier-{index}'})
+        assert response.status_code == 201, response.text
     assert client.get("/api/product-library/products").json()["total"] == 3
     assert set(client.get("/api/product-library/manufacturers").json()["items"]) == set(
         manufacturers
@@ -1016,18 +1020,18 @@ def test_real_sqlite_busy_confirm_retries_original_receipt(library):
 
     app.dependency_overrides[get_db] = short_timeout_session
     connection = engine.raw_connection()
+    payload = {'confirmed_attachments_not_imported': True, 'decisions': [{'row_number': 2, 'action': 'apply'}]}
+    endpoint = f"/api/product-library/imports/{data['import_id']}/confirm"
     try:
         connection.execute("BEGIN IMMEDIATE")
-        response = confirm(client, data)
+        response = client.post(endpoint, json=payload)
         assert response.status_code == 503
         assert response.json()["code"] == "database_busy"
     finally:
         connection.rollback()
         connection.close()
         app.dependency_overrides[get_db] = original_override
-    assert (
-        client.get(f"/api/product-library/imports/{data['import_id']}").json()["status"]
-        == "ready"
-    )
+    with Session(engine) as db:
+        assert db.get(LibraryImport, data['import_id']).status == 'ready'
     assert client.get("/api/product-library/products").json()["total"] == 0
-    assert confirm(client, data).json()["inserted"] == 1
+    assert client.post(endpoint, json=payload).json()['rows'][0]['action'] == 'imported'

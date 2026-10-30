@@ -4,8 +4,36 @@ import zipfile
 import pytest
 from openpyxl import load_workbook
 
-from test_product_library import library, product
-from test_product_library_v11 import BASE, quote, export
+from test_product_library import library
+
+BASE = '/api/product-library'
+
+
+def product(client, wholesale_price, price_note='采购条件已核对'):
+    response = client.post(BASE + '/products', json={'model': 'M1', 'name': '风扇'})
+    assert response.status_code == 201, response.text
+    item = response.json()
+    base = f"{BASE}/products/{item['id']}"
+    source = client.post(base + '/manual-quotes', json={'product_version': item['version'], 'supplier': '测试供应商', 'variant': None, 'price_text': wholesale_price, 'conditions': price_note, 'idempotency_key': 'customer-test'}).json()
+    reviewed = client.post(base + f"/quotes/{source['quote_version_id']}/review", json={'product_version': item['version'] + 1, 'status': 'eligible', 'reason': '已核对出厂价', 'source_id': source['source_id']})
+    assert reviewed.status_code == 200, reviewed.text
+    return client.get(base).json()
+
+
+def quote(client, **payload):
+    products = client.get(BASE + '/products').json()['items']
+    selections = {}
+    for item in products:
+        detail = client.get(f"{BASE}/products/{item['id']}").json()
+        current = next(q for q in detail['quotes'] if q['is_current'] and q['eligibility'] == 'eligible')
+        selections[str(item['id'])] = {'quote_version_id': current['id'], 'source_id': current['source_ids'][0], 'supplier': current['supplier_name'], 'variant': current['variant'], 'final_conditions': '采购未税，运费另计', 'rules_confirmed': True}
+    response = client.post(BASE + '/customer-quotations/preview', json={'scope': 'all', 'selections': selections, 'conditions_confirmed_ids': [p['id'] for p in products], **payload})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def export(client, data, **extra):
+    return client.post(BASE + '/customer-quotations/export', json={'items': data['items'], 'rules': data['rules'], 'digest': data['digest'], 'overrides': {}, 'confirmed_risk_ids': [], 'confirmed_all_text': True, 'selections': data['selections'], 'conditions_confirmed_ids': data['conditions_confirmed_ids'], **extra})
 
 
 def test_customer_conditions_roundtrip_and_preview_integrity(library):

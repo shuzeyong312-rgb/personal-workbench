@@ -5,6 +5,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
@@ -26,13 +27,14 @@ def main(port=8217):
                 connection.execute(text("""INSERT INTO library_products(manufacturer_name,model,name,parameters,selling_points,wholesale_price_cents,price_note,version,created_at,updated_at)
                     VALUES ('隔离验收厂家',:model,:name,'3.7V，客户参数','便携',:price,'PRIVATE_INTERNAL_NOTE',1,:stamp,:stamp)"""),dict(model=f'QA-{index:03}',name=f'验收灯 {index}',price=1001+index,stamp=now()))
             before=connection.exec_driver_sql('SELECT id,model,name,wholesale_price_cents,version FROM library_products ORDER BY id').all()
-        migrate(db_path, '20261029_21')
+        migrate(db_path, '20261030_22')
         with engine.connect() as connection:
             assert connection.exec_driver_sql('SELECT id,model,name,wholesale_price_cents,version FROM library_products ORDER BY id').all()==before
         assert facts(db_path)['foreign_key_violations']==0
         app = FastAPI()
         app.include_router(router)
         app.add_exception_handler(HTTPException, http_exception_handler)
+        app.mount('/', StaticFiles(directory=Path(__file__).parents[2] / 'frontend' / 'dist', html=True), name='frontend')
         def session():
             with Session(engine) as db:
                 yield db

@@ -419,7 +419,7 @@ class LibraryProduct(Base):
         {"sqlite_autoincrement": True},
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    manufacturer_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    manufacturer_name: Mapped[str | None] = mapped_column(String(200))
     model: Mapped[str | None] = mapped_column(String(200))
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     parameters: Mapped[str | None] = mapped_column(String(10000))
@@ -428,6 +428,8 @@ class LibraryProduct(Base):
     price_note: Mapped[str | None] = mapped_column(String(2000))
     category: Mapped[str | None] = mapped_column(String(200))
     structured_attributes: Mapped[list | None] = mapped_column(JSON)
+    control_price: Mapped[str | None] = mapped_column(String(2000))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -445,6 +447,104 @@ class LibraryImport(Base):
     baseline_digest: Mapped[str | None] = mapped_column(String(64))
     decision_digest: Mapped[str | None] = mapped_column(String(64))
     result: Mapped[dict | None] = mapped_column(JSON)
+
+
+class LibrarySimpleSource(Base):
+    __tablename__ = "library_simple_sources"
+    __table_args__ = (
+        UniqueConstraint("id", "product_id"),
+        CheckConstraint("version >= 1"),
+        Index("uq_library_simple_file_row", "file_sha256", "supplier_name", "sheet_name", "row_number", unique=True, sqlite_where=text("file_sha256 IS NOT NULL")),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("library_products.id"), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    file_sha256: Mapped[str | None] = mapped_column(String(64))
+    file_name: Mapped[str | None] = mapped_column(String(500))
+    sheet_name: Mapped[str | None] = mapped_column(String(200))
+    row_number: Mapped[int | None] = mapped_column(Integer)
+    raw_values: Mapped[dict | None] = mapped_column(JSON)
+    price_text: Mapped[str | None] = mapped_column(String(10000))
+    notes: Mapped[str | None] = mapped_column(String(10000))
+    manual_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class LibrarySimpleQuoteKey(Base):
+    __tablename__ = "library_simple_quote_keys"
+    __table_args__ = (
+        UniqueConstraint("id", "product_id"),
+        Index("uq_library_simple_quote_key", "product_id", "supplier_name", text("coalesce(variant,'')"), unique=True),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("library_products.id"), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    variant: Mapped[str | None] = mapped_column(String(200))
+
+
+class LibrarySimpleQuoteVersion(Base):
+    __tablename__ = "library_simple_quote_versions"
+    __table_args__ = (
+        UniqueConstraint("id", "quote_key_id"),
+        UniqueConstraint("quote_key_id", "version_number"),
+        CheckConstraint("amount_cents BETWEEN 0 AND 99999999999"),
+        CheckConstraint("eligibility IN ('pending','eligible','ineligible')"),
+        CheckConstraint("is_current IN (0,1)"),
+        Index("uq_library_simple_current_quote", "quote_key_id", unique=True, sqlite_where=text("is_current=1")),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    quote_key_id: Mapped[int] = mapped_column(ForeignKey("library_simple_quote_keys.id"), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    eligibility: Mapped[str] = mapped_column(String(16), nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LibrarySimpleQuoteEvidence(Base):
+    __tablename__ = "library_simple_quote_evidence"
+    __table_args__ = (
+        ForeignKeyConstraint(["quote_version_id", "quote_key_id"], ["library_simple_quote_versions.id", "library_simple_quote_versions.quote_key_id"]),
+        ForeignKeyConstraint(["quote_key_id", "product_id"], ["library_simple_quote_keys.id", "library_simple_quote_keys.product_id"]),
+        ForeignKeyConstraint(["source_id", "product_id"], ["library_simple_sources.id", "library_simple_sources.product_id"]),
+    )
+    quote_version_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    quote_key_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class LibrarySimpleEligibilityAudit(Base):
+    __tablename__ = "library_simple_eligibility_audit"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    quote_version_id: Mapped[int] = mapped_column(ForeignKey("library_simple_quote_versions.id"), nullable=False)
+    before_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    after_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LibrarySimpleProductEvent(Base):
+    __tablename__ = "library_simple_product_events"
+    __table_args__ = (CheckConstraint("action IN ('archive','restore')"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("library_products.id"), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    product_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LibrarySimpleSourceEvent(Base):
+    __tablename__ = "library_simple_source_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("library_simple_sources.id"), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class LibraryProductVariant(Base):

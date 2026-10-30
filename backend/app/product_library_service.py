@@ -113,15 +113,17 @@ def validate(data, *, excel=False):
 
 def product_view(product):
     from sqlalchemy.orm import object_session
-    from app.product_library_details import records, PURCHASE_TYPES
+    from app.models import LibrarySimpleQuoteKey, LibrarySimpleQuoteVersion, LibrarySimpleSource
     db = object_session(product)
-    prices = records(db, product.id, 'prices') if db else []
-    source_companies = sorted({row.source_company for row in records(db, product.id, 'sources') if row.source_company}) if db else []
-    quoted = any(row.amount_text is not None and row.currency_code == 'CNY' and row.price_type in PURCHASE_TYPES for row in prices)
+    source_companies = sorted(set(db.scalars(select(LibrarySimpleSource.supplier_name).where(LibrarySimpleSource.product_id == product.id, LibrarySimpleSource.archived_at.is_(None))))) if db else []
+    quoted = bool(db.scalar(select(LibrarySimpleQuoteVersion.id).join(LibrarySimpleQuoteKey).where(
+        LibrarySimpleQuoteKey.product_id == product.id, LibrarySimpleQuoteVersion.is_current.is_(True),
+        LibrarySimpleQuoteVersion.eligibility == 'eligible').limit(1))) if db else False
     return {
         "category": product.category,
+        "control_price": product.control_price,
         "source_companies": source_companies,
-        "price_state": "default" if product.wholesale_price_cents is not None else "multiple" if quoted else "unquoted",
+        "price_state": "multiple" if quoted else "unquoted",
         "id": product.id,
         "manufacturer_name": product.manufacturer_name,
         **{
@@ -129,11 +131,7 @@ def product_view(product):
             for field in FIELDS
             if field != "wholesale_price"
         },
-        "wholesale_price": (
-            None
-            if product.wholesale_price_cents is None
-            else f"{Decimal(product.wholesale_price_cents) / 100:.2f}"
-        ),
+        "wholesale_price": None,
         "version": product.version,
         "created_at": utc(product.created_at).isoformat(),
         "updated_at": utc(product.updated_at).isoformat(),
@@ -171,14 +169,14 @@ def product_or_404(db, product_id):
     if product_id < 1:
         error(404, "product_not_found", "产品不存在")
     product = db.get(LibraryProduct, product_id)
-    if product is None:
+    if product is None or product.archived_at is not None:
         error(404, "product_not_found", "产品不存在")
     return product
 
 
 def require_identity_schema(db):
     schema = inspect(db.connection())
-    if not {'library_product_variants','library_product_sources','library_product_prices'}.issubset(schema.get_table_names()) or not {'category','structured_attributes'}.issubset({column['name'] for column in schema.get_columns('library_products')}):
+    if not {'library_simple_sources','library_simple_quote_keys','library_simple_quote_versions','library_simple_quote_evidence'}.issubset(schema.get_table_names()) or not {'category','control_price','archived_at'}.issubset({column['name'] for column in schema.get_columns('library_products')}):
         error(503, 'identity_schema_required', '产品库V2尚未完成授权迁移；本次未写入')
     indexes = {row[1]: row for row in db.execute(text('PRAGMA index_list("library_products")'))}
     for name, columns, predicate in (
@@ -238,6 +236,8 @@ def version_value(payload):
 def check_duplicates(db, values, exclude=None):
     exact = candidates_for(db, values, exclude)
     if exact:
+        if exact[0].archived_at is not None:
+            error(409, 'product_archived', '该产品已归档，请恢复原产品或取消', candidates=[product_view(p) for p in exact])
         error(
             409,
             "product_exists",
@@ -524,13 +524,16 @@ def list_products_service(q, manufacturer, sort, page, page_size, db,
                           price_status="all", price_mode=None, price_min=None, price_max=None):
     if sort not in ("updated_desc", "price_asc", "price_desc"):
         error(422, "invalid_product", "排序无效")
-    query = select(LibraryProduct)
+    query = select(LibraryProduct).where(LibraryProduct.archived_at.is_(None))
     if price_status not in ("all", "quoted", "unquoted"):
         error(422, "invalid_product", "报价状态无效")
+    from sqlalchemy import func
+    from app.models import LibrarySimpleQuoteKey, LibrarySimpleQuoteVersion, LibrarySimpleSource
+    eligible = select(LibrarySimpleQuoteVersion.amount_cents).join(LibrarySimpleQuoteKey).where(
+        LibrarySimpleQuoteKey.product_id == LibraryProduct.id, LibrarySimpleQuoteVersion.is_current.is_(True),
+        LibrarySimpleQuoteVersion.eligibility == 'eligible', LibrarySimpleQuoteVersion.currency == 'CNY', LibrarySimpleQuoteVersion.unit == '件')
     if price_status != "all":
-        from app.models import LibraryProductPrice
-        from app.product_library_details import PURCHASE_TYPES
-        quoted = select(LibraryProductPrice.id).where(LibraryProductPrice.product_id == LibraryProduct.id, LibraryProductPrice.amount_text.is_not(None), LibraryProductPrice.currency_code == 'CNY', LibraryProductPrice.price_type.in_(PURCHASE_TYPES)).exists()
+        quoted = eligible.exists()
         query = query.where(~quoted if price_status == "unquoted" else quoted)
     if price_mode not in (None, "below", "above", "between"):
         error(422, "invalid_product", "价格条件无效")
@@ -543,7 +546,7 @@ def list_products_service(q, manufacturer, sort, page, page_size, db,
             raise ValueError("价格边界缺失或与所选条件不一致")
     except ValueError as exc:
         error(422, "invalid_product", str(exc))
-    amount = LibraryProduct.wholesale_price_cents
+    amount = eligible.with_only_columns(func.min(LibrarySimpleQuoteVersion.amount_cents)).scalar_subquery()
     if low is not None:
         cents = int(Decimal(low) * 100)
         query = query.where(amount > cents if price_mode == "above" else amount >= cents)
@@ -563,9 +566,10 @@ def list_products_service(q, manufacturer, sort, page, page_size, db,
                         "name",
                         "parameters",
                         "selling_points",
-                        "manufacturer_name",
                     )
-                )
+                ),
+                select(LibrarySimpleSource.id).where(LibrarySimpleSource.product_id == LibraryProduct.id,
+                    LibrarySimpleSource.archived_at.is_(None), LibrarySimpleSource.supplier_name.like(f"%{literal}%", escape="\\")).exists(),
             )
         )
     if manufacturer is not None:
@@ -573,21 +577,19 @@ def list_products_service(q, manufacturer, sort, page, page_size, db,
             manufacturer = normalized_text(manufacturer, "manufacturer_name")
         except ValueError as exc:
             error(422, "invalid_product", str(exc))
-        from app.models import LibraryProductSource
-        sources = select(LibraryProductSource.id).where(LibraryProductSource.product_id == LibraryProduct.id)
-        query = query.where(sources.where(LibraryProductSource.source_company == manufacturer).exists() | (~sources.exists() & (LibraryProduct.manufacturer_name == manufacturer)))
-    from sqlalchemy import func
+        sources = select(LibrarySimpleSource.id).where(LibrarySimpleSource.product_id == LibraryProduct.id, LibrarySimpleSource.supplier_name == manufacturer, LibrarySimpleSource.archived_at.is_(None))
+        query = query.where(sources.exists())
 
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     ordering = (
         [LibraryProduct.updated_at.desc(), LibraryProduct.id.desc()]
         if sort == "updated_desc"
         else [
-            LibraryProduct.wholesale_price_cents.is_(None),
+            amount.is_(None),
             (
-                LibraryProduct.wholesale_price_cents.asc()
+                amount.asc()
                 if sort == "price_asc"
-                else LibraryProduct.wholesale_price_cents.desc()
+                else amount.desc()
             ),
             LibraryProduct.id.desc(),
         ]
@@ -626,9 +628,10 @@ def batch_delete_service(payload, db):
         rows = []
         for item in items:
             product = db.get(LibraryProduct, item["id"])
-            outcome = "missing" if product is None else "stale" if product.version != item["version"] else "deleted"
+            outcome = "missing" if product is None or product.archived_at is not None else "stale" if product.version != item["version"] else "deleted"
             if outcome == "deleted":
-                db.delete(product)
+                from app.product_library_simple_quotes import archive_product
+                archive_product(product, db)
             rows.append({**item, "outcome": outcome})
         db.commit()
         return {"items": rows, **{key: sum(row["outcome"] == key for row in rows) for key in ("deleted", "missing", "stale")}}
@@ -637,38 +640,51 @@ def batch_delete_service(payload, db):
 
 
 def manufacturers_service(db):
-    from app.models import LibraryProductSource
-    companies = set(db.scalars(select(LibraryProductSource.source_company).where(LibraryProductSource.source_company.is_not(None))))
-    sources = select(LibraryProductSource.id).where(LibraryProductSource.product_id == LibraryProduct.id).exists()
-    companies.update(db.scalars(select(LibraryProduct.manufacturer_name).where(~sources)))
+    from app.models import LibrarySimpleSource
+    companies = set(db.scalars(select(LibrarySimpleSource.supplier_name).join(LibraryProduct).where(LibraryProduct.archived_at.is_(None), LibrarySimpleSource.archived_at.is_(None))))
     return {"items": sorted(companies)}
 
 
 def get_product_service(product_id, db):
-    from app.product_library_details import product_details, ATTACHMENT_WARNING
+    from app.product_library_simple_quotes import simple_details
     product = product_or_404(db, product_id)
-    return {**product_view(product), **product_details(db, product), "structured_attributes": product.structured_attributes, "attachment_warning": ATTACHMENT_WARNING}
+    return {**product_view(product), **simple_details(product, db), "attachment_warning": "原始文件和图片不会保存，请自行保留原件。"}
+
+
+def simple_product_payload(payload, editing=False):
+    limits = {"category": 200, "model": 200, "name": 200, "parameters": 10000, "control_price": 2000, "selling_points": 10000}
+    allowed = set(limits) | {"allow_suspected_duplicate"} | ({"version", "confirm_model_completion"} if editing else set())
+    if set(payload) - allowed or "name" not in payload:
+        error(422, "invalid_product", "产品字段缺失或含未知字段")
+    if "allow_suspected_duplicate" in payload and type(payload["allow_suspected_duplicate"]) is not bool:
+        error(422, "invalid_product", "重复确认必须是布尔值")
+    if "confirm_model_completion" in payload and type(payload["confirm_model_completion"]) is not bool:
+        error(422, "invalid_product", "补充型号确认必须是布尔值")
+    values = {}
+    for field, limit in limits.items():
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            error(422, "invalid_product", f"{field}必须是文本", field=field)
+        value = value.replace('\r\n', '\n').replace('\r', '\n').strip() if value is not None else None
+        if len(value or '') > limit or field == 'name' and not value:
+            error(422, "invalid_product", f"{field}为空或超过{limit}字符", field=field)
+        values[field] = value or None
+    return values
 
 
 def create_product_service(payload, db):
-    values = manual_payload(payload)
+    values = simple_product_payload(payload)
     try:
         begin_write(db)
         require_identity_schema(db)
         check_duplicates(db, values)
+        potential = [p for p in all_products(db) if p.name == values['name'] and (p.model is None) != (values['model'] is None)]
+        if potential and payload.get('allow_suspected_duplicate') is not True:
+            error(409, 'potential_duplicate', '存在同名且型号为空的潜在重复产品，请核对后明确确认独立新增', candidates=[product_view(p) for p in potential])
         product = LibraryProduct(created_at=now(), updated_at=now(), version=1)
-        from app.product_library_details import attributes, legacy_source, legacy_price
-        amount = values.pop('wholesale_price', None)
-        if 'structured_attributes' in values:
-            try:
-                values['structured_attributes'] = attributes(values['structured_attributes'], db, None)
-            except ValueError as exc:
-                error(422, 'invalid_product', str(exc))
         assign(product, values)
         db.add(product)
         db.flush()
-        legacy_source(db, product)
-        legacy_price(db, product, amount, creating=True)
         result = get_product_service(product.id, db)
         db.commit()
         return result
@@ -680,7 +696,7 @@ def create_product_service(payload, db):
 
 
 def update_product_service(product_id, payload, db):
-    values = manual_payload(payload, editing=True)
+    values = simple_product_payload(payload, editing=True)
     version = version_value(payload)
     try:
         begin_write(db)
@@ -689,17 +705,13 @@ def update_product_service(product_id, payload, db):
         if product.version != version:
             error(409, "product_stale", "产品已变化，请重新读取")
         check_duplicates(db, values, product_id)
-        if values['manufacturer_name'] != product.manufacturer_name and payload.get('confirm_manufacturer_change') is not True:
-            error(409, 'first_company_confirmation_required', '修改首录资料公司须明确确认；新增报价来源请在来源资料操作')
-        old = {**product_view(product), "structured_attributes": product.structured_attributes}
-        from app.product_library_details import attributes, legacy_price
-        if 'structured_attributes' in values:
-            try:
-                values['structured_attributes'] = attributes(values['structured_attributes'], db, product_id)
-            except ValueError as exc:
-                error(422, 'invalid_product', str(exc))
-        if any((old[field] != value for field, value in values.items())):
-            legacy_price(db, product, values.pop('wholesale_price'))
+        if (product.model, product.name) != (values['model'], values['name']):
+            potential = [p for p in all_products(db) if p.id != product_id and p.name == values['name'] and (p.model is None) != (values['model'] is None)]
+            if potential and payload.get('allow_suspected_duplicate') is not True:
+                error(409, 'potential_duplicate', '存在同名且型号为空的潜在重复产品，请核对后明确确认', candidates=[product_view(p) for p in potential])
+        if product.model is None and values['model'] is not None and payload.get('confirm_model_completion') is not True:
+            error(409, 'model_completion_confirmation_required', '补充型号前请确认更新原产品')
+        if any(getattr(product, field) != value for field, value in values.items()):
             assign(product, values)
             product.version += 1
             product.updated_at = now()
@@ -723,7 +735,8 @@ def delete_product_service(product_id, payload, db):
         product = product_or_404(db, product_id)
         if product.version != version:
             error(409, "product_stale", "产品已变化，请重新读取")
-        db.delete(product)
+        from app.product_library_simple_quotes import archive_product
+        archive_product(product, db)
         db.commit()
         return Response(status_code=204)
     except HTTPException:
