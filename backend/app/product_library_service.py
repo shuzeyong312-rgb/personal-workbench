@@ -36,7 +36,8 @@ LIMITS = {
     "selling_points": 10000,
     "price_note": 2000,
 }
-IDENTITY_RULE_VERSION = 3
+IDENTITY_RULE_VERSION = 4
+V2_IMPORT_PLAN_VERSION = 2
 MIB = 1024 * 1024
 
 
@@ -111,7 +112,16 @@ def validate(data, *, excel=False):
 
 
 def product_view(product):
+    from sqlalchemy.orm import object_session
+    from app.product_library_details import records, PURCHASE_TYPES
+    db = object_session(product)
+    prices = records(db, product.id, 'prices') if db else []
+    source_companies = sorted({row.source_company for row in records(db, product.id, 'sources') if row.source_company}) if db else []
+    quoted = any(row.amount_text is not None and row.currency_code == 'CNY' and row.price_type in PURCHASE_TYPES for row in prices)
     return {
+        "category": product.category,
+        "source_companies": source_companies,
+        "price_state": "default" if product.wholesale_price_cents is not None else "multiple" if quoted else "unquoted",
         "id": product.id,
         "manufacturer_name": product.manufacturer_name,
         **{
@@ -146,8 +156,10 @@ def begin_write(db):
 
 def database_error(db, exc, code):
     db.rollback()
-    if isinstance(exc, IntegrityError) and "UNIQUE constraint failed: library_products.manufacturer_name, library_products.model, library_products.name" in str(exc):
+    if isinstance(exc, IntegrityError) and "UNIQUE constraint failed: library_products." in str(exc):
         error(409, "identity_conflict", "精确产品身份已存在，本次未保存，全部回滚；请重新预览核对")
+    if isinstance(exc, IntegrityError):
+        error(409, 'related_record_conflict', '关联记录重复或约束冲突，本次全部回滚；请重新核对')
     if isinstance(exc, OperationalError) and (
         "locked" in str(exc).lower() or "busy" in str(exc).lower()
     ):
@@ -165,17 +177,25 @@ def product_or_404(db, product_id):
 
 
 def require_identity_schema(db):
-    indexes = inspect(db.connection()).get_indexes("library_products")
-    exact = next((index for index in indexes if index["name"] == "uq_library_products_manufacturer_model_name"), None)
-    collations = [row[4] for row in db.execute(text("PRAGMA index_xinfo(\"uq_library_products_manufacturer_model_name\")")) if row[5]]
-    if (collations != ["BINARY", "BINARY", "BINARY"] or any(index["unique"] and index["column_names"] == ["manufacturer_name", "model"] for index in indexes)
-        or not exact or not exact["unique"] or exact["column_names"] != ["manufacturer_name", "model", "name"]
-        or str(exact.get("dialect_options", {}).get("sqlite_where", "")).strip().upper() != "MODEL IS NOT NULL"):
-        error(503, "identity_schema_required", "产品身份规则尚未启用：数据库需完成授权迁移；本次未写入")
+    schema = inspect(db.connection())
+    if not {'library_product_variants','library_product_sources','library_product_prices'}.issubset(schema.get_table_names()) or not {'category','structured_attributes'}.issubset({column['name'] for column in schema.get_columns('library_products')}):
+        error(503, 'identity_schema_required', '产品库V2尚未完成授权迁移；本次未写入')
+    indexes = {row[1]: row for row in db.execute(text('PRAGMA index_list("library_products")'))}
+    for name, columns, predicate in (
+        ("uq_library_products_model_name", ["model", "name"], "MODEL IS NOT NULL"),
+        ("uq_library_products_null_model_name", ["name"], "MODEL IS NULL"),
+    ):
+        info = list(db.execute(text(f'PRAGMA index_xinfo("{name}")')))
+        sql = db.scalar(text("SELECT sql FROM sqlite_master WHERE name=:name"), {"name": name}) or ""
+        if (name not in indexes or not indexes[name][2]
+            or [r[2] for r in info if r[5]] != columns
+            or any(r[4] != "BINARY" for r in info if r[5])
+            or sql.upper().split("WHERE")[-1].strip() != predicate):
+            error(503, "identity_schema_required", "产品身份规则尚未启用：数据库需完成授权迁移；本次未写入")
 
 
 def candidates_for(db, values, exclude=None):
-    products = [p for p in manufacturer_products(db, values["manufacturer_name"]) if p.id != exclude]
+    products = [p for p in all_products(db) if p.id != exclude]
     return [p for p in products if p.model == values["model"] and p.name == values["name"]]
 
 
@@ -183,7 +203,7 @@ def manual_payload(payload, editing=False):
     required = (
         {"manufacturer_name", *FIELDS} if editing else {"manufacturer_name", "name"}
     )
-    allowed = {"manufacturer_name", *FIELDS, "allow_suspected_duplicate"} | (
+    allowed = {"manufacturer_name", *FIELDS, "allow_suspected_duplicate", "category", "structured_attributes", "confirm_manufacturer_change"} | (
         {"version"} if editing else set()
     )
     if set(payload) - allowed or not required.issubset(payload):
@@ -192,9 +212,19 @@ def manual_payload(payload, editing=False):
         payload["allow_suspected_duplicate"], bool
     ):
         error(422, "invalid_product", "重复确认必须是布尔值")
+    if 'confirm_manufacturer_change' in payload and type(payload['confirm_manufacturer_change']) is not bool:
+        error(422, 'invalid_product', '首录资料公司确认必须为布尔值')
     values, errors = validate(payload)
     if errors:
         error(422, "invalid_product", "产品字段校验失败", errors=errors)
+    if "category" in payload:
+        from app.product_library_details import text_value
+        try:
+            values['category'] = text_value(payload['category'], 'category')
+        except ValueError as exc:
+            error(422, 'invalid_product', str(exc))
+    if "structured_attributes" in payload:
+        values['structured_attributes'] = payload['structured_attributes']
     return values
 
 
@@ -211,12 +241,12 @@ def check_duplicates(db, values, exclude=None):
         error(
             409,
             "product_exists",
-            "同厂家同型号同名称产品已存在，请编辑已有产品",
+            "同型号同名称产品已存在，请编辑已有产品",
             candidates=[product_view(p) for p in exact],
         )
 
 
-def read_excel(content):
+def read_excel(content, parser=None):
     if len(content) > 5 * MIB:
         error(413, "file_too_large", "文件不能超过 5 MiB")
     try:
@@ -281,6 +311,10 @@ def read_excel(content):
             keep_vba=False,
         )
         try:
+            if parser is not None:
+                return parser(wb, content)
+            if any(name in wb.sheetnames for name in ("参数明细", "规格款式", "价格明细", "资料索引")):
+                error(400, "invalid_structure", "混合版本：请使用完整V2模板")
             if "产品数据" not in wb.sheetnames:
                 error(400, "invalid_structure", "缺少产品数据工作表")
             ws = wb["产品数据"]
@@ -363,7 +397,7 @@ def read_excel(content):
                                 "message": "公式或错误单元格不可导入",
                             }
                         )
-                rows.append({"row_number": number, **values, "errors": errors})
+                rows.append({"row_number": number, **values, "errors": errors, "raw_values": {field: value if isinstance(value, (str, int, float, bool)) or value is None else str(value) for field, value in raw.items()}})
             if not rows:
                 error(400, "no_product_rows", "没有可导入的非空产品行")
             return rows, blank
@@ -383,23 +417,29 @@ def digest(value):
     ).hexdigest()
 
 
-def manufacturer_products(db, manufacturer):
+def all_products(db):
     return db.scalars(
         select(LibraryProduct)
-        .where(LibraryProduct.manufacturer_name == manufacturer)
         .order_by(LibraryProduct.id)
     ).all()
 
 
 def baseline(products):
-    return digest([product_view(product) for product in products])
+    from sqlalchemy.orm import object_session
+    from app.product_library_details import product_details
+    return digest([{**product_view(product), **product_details(object_session(product),product)} for product in products])
+
+
+def identity_products(db, rows):
+    identities = {(row['model'], row['name']) for row in rows if not row['errors']}
+    return [product for product in db.scalars(select(LibraryProduct).order_by(LibraryProduct.id)) if (product.model, product.name) in identities]
 
 
 def field_diff(row, product):
     old = product_view(product)
     return {field: {"old": old[field], "incoming": row[field],
-                    "effective": row[field] if row[field] is not None else old[field],
-                    "changed": row[field] is not None and row[field] != old[field],
+                    "effective": row[field] if field != "wholesale_price" and row[field] is not None else old[field],
+                    "changed": field != "wholesale_price" and row[field] is not None and row[field] != old[field],
                     "preserved": row[field] is None} for field in FIELDS}
 
 
@@ -425,15 +465,15 @@ def preview_rows(rows, products):
             diff = field_diff(row, product)
             can_update = any(value["changed"] for value in diff.values())
             row["candidate"].append({"id": product.id, "version": product.version, "name": product.name, "model": product.model,
-                                     "reason": "同厂家、同型号、同名称", "can_update": can_update, "diff": diff})
+                                     "reason": "同型号、同名称", "can_update": can_update, "diff": diff})
         update_candidates = [c for c in row["candidate"] if c["can_update"]]
         if exact or duplicate_of:
-            reason = "同厂家、同型号、同名称已存在" if exact else f"与文件第 {duplicate_of['row_number']} 行重复"
+            reason = "同型号、同名称已存在" if exact else f"与文件第 {duplicate_of['row_number']} 行重复"
             row.update(category="duplicate", identity_reason=reason)
             if exact:
                 row.update(existing_id=exact[0].id, version=exact[0].version, diff=field_diff(row, exact[0]))
         else:
-            row.update(category="new", identity_reason="同厂家、同型号、同名称不存在", allowed_actions=["insert", "skip"], default_action="insert")
+            row.update(category="new", identity_reason="同型号、同名称不存在", allowed_actions=["insert", "skip"], default_action="insert")
         if update_candidates:
             row["allowed_actions"].append("update")
             if len(update_candidates) == 1:
@@ -452,24 +492,29 @@ def receipt(db, import_id):
         error(404, "import_not_found", "导入预览不存在")
     if item.status == "ready" and (item.preview or {}).get("identity_rule_version") != IDENTITY_RULE_VERSION:
         error(409, "preview_rule_changed", "预览使用旧身份规则，不能继续确认；请重新上传并核对")
+    if (item.status == "ready" and (item.preview or {}).get("template_version") == 2
+            and (item.preview or {}).get("import_plan_version") != V2_IMPORT_PLAN_VERSION):
+        error(409, "preview_rule_changed", "预览使用旧来源保存规则，请重新上传并核对原文归属")
     if item.status == "ready" and utc(item.expires_at) <= now():
         error(410, "preview_expired", "预览已过期，请重新上传")
     return item
 
 
 def decisions(payload):
-    if set(payload) != {"decisions"} or not isinstance(payload["decisions"], list):
+    if set(payload) - {"decisions", "confirmed_attachments_not_imported"} or not isinstance(payload.get("decisions"), list):
         error(422, "invalid_decisions", "必须提供逐行决策")
+    if 'confirmed_attachments_not_imported' in payload and type(payload['confirmed_attachments_not_imported']) is not bool:
+        error(422, 'invalid_decisions', '附件确认必须为布尔值')
     result = {}
     for decision in payload["decisions"]:
         if (not isinstance(decision, dict) or not {"row_number", "action"}.issubset(decision)
             or set(decision) - {"row_number", "action", "target_id", "target_version"}
             or type(decision["row_number"]) is not int or decision["row_number"] < 1
-            or not isinstance(decision["action"], str) or decision["action"] not in ("insert", "update", "skip")
+            or not isinstance(decision["action"], str) or decision["action"] not in ("insert", "update", "append_source", "skip")
             or decision["row_number"] in result):
             error(422, "invalid_decisions", "决策行号或动作无效/重复")
         target = {key: decision[key] for key in ("target_id", "target_version") if key in decision}
-        if target and (decision["action"] != "update" or set(target) != {"target_id", "target_version"} or any(type(value) is not int or value < 1 for value in target.values())):
+        if target and (decision["action"] not in ("update", "append_source") or set(target) != {"target_id", "target_version"} or any(type(value) is not int or value < 1 for value in target.values())):
             error(422, "invalid_decisions", "更新目标ID和版本必须为正整数，且仅限更新操作")
         result[decision["row_number"]] = {"action": decision["action"], **target}
     return result
@@ -483,7 +528,10 @@ def list_products_service(q, manufacturer, sort, page, page_size, db,
     if price_status not in ("all", "quoted", "unquoted"):
         error(422, "invalid_product", "报价状态无效")
     if price_status != "all":
-        query = query.where(LibraryProduct.wholesale_price_cents.is_(None) if price_status == "unquoted" else LibraryProduct.wholesale_price_cents.is_not(None))
+        from app.models import LibraryProductPrice
+        from app.product_library_details import PURCHASE_TYPES
+        quoted = select(LibraryProductPrice.id).where(LibraryProductPrice.product_id == LibraryProduct.id, LibraryProductPrice.amount_text.is_not(None), LibraryProductPrice.currency_code == 'CNY', LibraryProductPrice.price_type.in_(PURCHASE_TYPES)).exists()
+        query = query.where(~quoted if price_status == "unquoted" else quoted)
     if price_mode not in (None, "below", "above", "between"):
         error(422, "invalid_product", "价格条件无效")
     try:
@@ -525,7 +573,9 @@ def list_products_service(q, manufacturer, sort, page, page_size, db,
             manufacturer = normalized_text(manufacturer, "manufacturer_name")
         except ValueError as exc:
             error(422, "invalid_product", str(exc))
-        query = query.where(LibraryProduct.manufacturer_name == manufacturer)
+        from app.models import LibraryProductSource
+        sources = select(LibraryProductSource.id).where(LibraryProductSource.product_id == LibraryProduct.id)
+        query = query.where(sources.where(LibraryProductSource.source_company == manufacturer).exists() | (~sources.exists() & (LibraryProduct.manufacturer_name == manufacturer)))
     from sqlalchemy import func
 
     total = db.scalar(select(func.count()).select_from(query.subquery()))
@@ -587,17 +637,17 @@ def batch_delete_service(payload, db):
 
 
 def manufacturers_service(db):
-    return {
-        "items": db.scalars(
-            select(LibraryProduct.manufacturer_name)
-            .distinct()
-            .order_by(LibraryProduct.manufacturer_name)
-        ).all()
-    }
+    from app.models import LibraryProductSource
+    companies = set(db.scalars(select(LibraryProductSource.source_company).where(LibraryProductSource.source_company.is_not(None))))
+    sources = select(LibraryProductSource.id).where(LibraryProductSource.product_id == LibraryProduct.id).exists()
+    companies.update(db.scalars(select(LibraryProduct.manufacturer_name).where(~sources)))
+    return {"items": sorted(companies)}
 
 
 def get_product_service(product_id, db):
-    return product_view(product_or_404(db, product_id))
+    from app.product_library_details import product_details, ATTACHMENT_WARNING
+    product = product_or_404(db, product_id)
+    return {**product_view(product), **product_details(db, product), "structured_attributes": product.structured_attributes, "attachment_warning": ATTACHMENT_WARNING}
 
 
 def create_product_service(payload, db):
@@ -607,10 +657,19 @@ def create_product_service(payload, db):
         require_identity_schema(db)
         check_duplicates(db, values)
         product = LibraryProduct(created_at=now(), updated_at=now(), version=1)
+        from app.product_library_details import attributes, legacy_source, legacy_price
+        amount = values.pop('wholesale_price', None)
+        if 'structured_attributes' in values:
+            try:
+                values['structured_attributes'] = attributes(values['structured_attributes'], db, None)
+            except ValueError as exc:
+                error(422, 'invalid_product', str(exc))
         assign(product, values)
         db.add(product)
         db.flush()
-        result = product_view(product)
+        legacy_source(db, product)
+        legacy_price(db, product, amount, creating=True)
+        result = get_product_service(product.id, db)
         db.commit()
         return result
     except HTTPException:
@@ -630,13 +689,22 @@ def update_product_service(product_id, payload, db):
         if product.version != version:
             error(409, "product_stale", "产品已变化，请重新读取")
         check_duplicates(db, values, product_id)
-        old = product_view(product)
+        if values['manufacturer_name'] != product.manufacturer_name and payload.get('confirm_manufacturer_change') is not True:
+            error(409, 'first_company_confirmation_required', '修改首录资料公司须明确确认；新增报价来源请在来源资料操作')
+        old = {**product_view(product), "structured_attributes": product.structured_attributes}
+        from app.product_library_details import attributes, legacy_price
+        if 'structured_attributes' in values:
+            try:
+                values['structured_attributes'] = attributes(values['structured_attributes'], db, product_id)
+            except ValueError as exc:
+                error(422, 'invalid_product', str(exc))
         if any((old[field] != value for field, value in values.items())):
+            legacy_price(db, product, values.pop('wholesale_price'))
             assign(product, values)
             product.version += 1
             product.updated_at = now()
         db.flush()
-        result = product_view(product)
+        result = get_product_service(product.id, db)
         db.commit()
         return result
     except HTTPException:
@@ -665,7 +733,7 @@ def delete_product_service(product_id, payload, db):
         database_error(db, exc, "product_save_failed")
 
 
-def preview_import_service(content, manufacturer_name, db):
+def preview_import_service(content, manufacturer_name, db, workbook_name=None):
     try:
         manufacturer = normalized_text(manufacturer_name, "manufacturer_name")
     except ValueError as exc:
@@ -674,9 +742,20 @@ def preview_import_service(content, manufacturer_name, db):
     try:
         db.execute(text("BEGIN"))
         require_identity_schema(db)
-        products = manufacturer_products(db, manufacturer)
+        for row in rows:
+            row['workbook_name'] = workbook_name
+        products = identity_products(db, rows)
         stamp = baseline(products)
         rows = preview_rows(rows, products)
+        from app.product_library_details import records
+        for row in rows:
+            if row['errors'] or not row['existing_id'] or row['file_candidates']:
+                continue
+            source = v1_source_values(row, manufacturer)
+            existing = next((r for r in records(db,row['existing_id'],'sources') if r.source_company == manufacturer and r.source_excerpt == source['source_excerpt']), None)
+            if existing is None:
+                row['allowed_actions'].append('append_source')
+                row['default_action'] = 'append_source'
         db.rollback()
         created = now()
         import_id = str(uuid4())
@@ -690,7 +769,11 @@ def preview_import_service(content, manufacturer_name, db):
             planned_insert=counts["new"],
             planned_update=0,
         )
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            attachments = any('/media/' in name.lower() or '/drawings/' in name.lower() or name.lower().endswith('.rels') and b'/hyperlink' in archive.read(name) for name in archive.namelist())
+        from app.product_library_details import ATTACHMENT_WARNING
         result = {
+            "attachment_warning": ATTACHMENT_WARNING if attachments else None,
             "import_id": import_id,
             "status": "ready",
             "identity_rule_version": IDENTITY_RULE_VERSION,
@@ -728,12 +811,14 @@ def get_import_service(import_id, db):
 def confirm_import_service(import_id, payload, db):
     selected = decisions(payload)
     decision_hash = digest(sorted(selected.items()))
+    if 'confirmed_attachments_not_imported' in payload:
+        decision_hash = digest([sorted(selected.items()),payload['confirmed_attachments_not_imported']])
     try:
         begin_write(db)
         item = receipt(db, import_id)
         if item.status == "committed":
             if (item.result or {}).get("identity_rule_version") != IDENTITY_RULE_VERSION:
-                if (item.result or {}).get("identity_rule_version") == 2:
+                if (item.result or {}).get("identity_rule_version") in (2, 3):
                     pass
                 else:
                     if any(set(value) != {"action"} for value in selected.values()):
@@ -746,6 +831,8 @@ def confirm_import_service(import_id, payload, db):
             return result
         require_identity_schema(db)
         rows = item.preview["rows"]
+        if item.preview.get('attachment_warning') and payload.get('confirmed_attachments_not_imported') is not True:
+            error(422,'attachments_not_confirmed',item.preview['attachment_warning'])
         if set(selected) != {row["row_number"] for row in rows} or any(
             (selected[row["row_number"]]["action"] not in row["allowed_actions"] for row in rows)
         ):
@@ -753,19 +840,19 @@ def confirm_import_service(import_id, payload, db):
         if not any((value["action"] != "skip" for value in selected.values())):
             error(422, "no_changes_selected", "没有选择新增或更新")
         if (
-            baseline(manufacturer_products(db, item.manufacturer_name))
+            baseline(identity_products(db, item.preview["rows"]))
             != item.baseline_digest
         ):
             error(409, "preview_stale", "该厂家产品已变化，请重新上传并确认")
         # Validate the whole plan against the immutable preview, before any writes.
         used_targets = set()
-        reserved = {(p.model, p.name) for p in manufacturer_products(db, item.manufacturer_name)}
+        reserved = {(p.model, p.name) for p in all_products(db)}
         for row in rows:
             choice = selected[row["row_number"]]
             if choice["action"] == "skip":
                 continue
-            if choice["action"] == "update":
-                candidate = next((c for c in row["candidate"] if c["id"] == choice.get("target_id") and c["version"] == choice.get("target_version") and c["can_update"]), None)
+            if choice["action"] in ("update", "append_source"):
+                candidate = next((c for c in row["candidate"] if c["id"] == choice.get("target_id") and c["version"] == choice.get("target_version") and (c["can_update"] or choice['action']=='append_source')), None)
                 if candidate is None:
                     error(422, "invalid_update_target", "请明确选择预览中的可更新产品及版本")
                 if candidate["id"] in used_targets:
@@ -784,6 +871,7 @@ def confirm_import_service(import_id, payload, db):
             "import_id": import_id,
             "status": "committed",
             "identity_rule_version": IDENTITY_RULE_VERSION,
+            "attachments_not_imported": bool(item.preview.get("attachment_warning")),
             "inserted": 0,
             "updated": 0,
             "skipped": 0,
@@ -807,21 +895,19 @@ def confirm_import_service(import_id, payload, db):
                         updated_at=now(),
                         version=1,
                     )
+                    amount = values.pop('wholesale_price', None)
                     assign(product, values)
                     db.add(product)
+                    db.flush()
+                    save_v1_source(db, product, row, item.manufacturer_name, amount, creating=True)
                     outcome = "inserted"
                 else:
                     product = db.get(LibraryProduct, choice["target_id"])
                     if product is None or product.version != choice["target_version"]:
                         error(409, "preview_stale", "更新目标已变化，请重新预览")
-                    assign(
-                        product,
-                        {
-                            field: value
-                            for field, value in values.items()
-                            if value is not None
-                        },
-                    )
+                    if action == 'update':
+                        assign(product, {field:value for field,value in values.items() if value is not None and field!='wholesale_price'})
+                    save_v1_source(db, product, row, item.manufacturer_name, values.get('wholesale_price'))
                     product.version += 1
                     product.updated_at = now()
                     outcome = "updated"
@@ -852,3 +938,24 @@ def confirm_import_service(import_id, payload, db):
         raise
     except SQLAlchemyError as exc:
         database_error(db, exc, "import_save_failed")
+
+
+def v1_source_values(row, company):
+    return dict(source_company=company,source_type='quote',notes=f'整理工作簿：{row.get("workbook_name") or "未提供"}；原件文件名未知',source_excerpt='\n'.join(f'{header}: {row.get('raw_values',row).get(field) if row.get('raw_values',row).get(field) is not None else ''}' for header,field in zip(HEADERS,FIELDS)).strip())
+
+
+def save_v1_source(db, product, row, company, amount, *, creating=False):
+    from app.models import LibraryProductSource, LibraryProductPrice
+    from app.product_library_details import records, decimal_text, project_price
+    data = v1_source_values(row,company)
+    source = next((r for r in records(db,product.id,'sources') if r.source_company==company and r.source_excerpt==data['source_excerpt']),None)
+    if source is None:
+        source = LibraryProductSource(product_id=product.id,**data,created_at=now(),updated_at=now(),version=1)
+        db.add(source)
+        db.flush()
+    if amount is not None:
+        candidate = next((r for r in records(db,product.id,'prices') if r.source_id==source.id and r.price_type=='批发价' and r.variant_id is None),None)
+        if candidate is None:
+            db.add(LibraryProductPrice(product_id=product.id,source_id=source.id,price_type='批发价',amount_text=decimal_text(amount,currency='CNY'),currency_code='CNY',price_unit='件',tax_mode='unknown',freight_mode='unknown',is_default_wholesale=creating,terms_text=row.get('price_note'),created_at=now(),updated_at=now(),version=1))
+    db.flush()
+    project_price(db,product)

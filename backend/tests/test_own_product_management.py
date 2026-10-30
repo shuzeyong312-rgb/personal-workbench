@@ -880,7 +880,7 @@ def test_ownership_migration_uses_created_at_before_legacy_group_role(caplog):
 def test_ownership_migration_downgrade_refuses_existing_self_data():
     with TemporaryDirectory() as directory:
         database_url = f"sqlite:///{Path(directory, 'migration.db').as_posix()}"
-        _run_revision(database_url, "head")
+        _run_revision(database_url, "20261004_12")
         engine = create_engine(database_url)
         with engine.begin() as connection:
             connection.execute(text(

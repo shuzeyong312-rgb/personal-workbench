@@ -1,14 +1,18 @@
 import { useState } from "react";
 import { api, json, LibraryDialog, type LibraryProduct } from "./ProductLibrary";
 
+import type { DetailRecord } from "./ProductLibraryDetails";
+type PriceSelection = { variant_id?: number; price_id?: number; price_version?: number };
 type Rules = { markup_mode: string; markup_value: string; tax_mode: string; tax_value: string; freight_mode: string; freight_value: string; rounding: string };
 type Item = { id: number; version: number };
-type QuoteRow = Item & { model: string | null; name: string; parameters: string | null; selling_points: string | null; original_price: string | null; final_price: string | null; automatic_price?: string | null; risks: string[]; text_risks: { field: string; word: string; snippet: string }[]; error: string | null; manual: boolean };
+type QuoteRow = Item & { variants?: DetailRecord[]; prices?: DetailRecord[]; sources?: DetailRecord[]; conditions?: string[]; model: string | null; name: string; parameters: string | null; selling_points: string | null; original_price: string | null; final_price: string | null; automatic_price?: string | null; risks: string[]; text_risks: { field: string; word: string; snippet: string }[]; error: string | null; manual: boolean };
 type Preview = { items: Item[]; rules: Rules; digest: string; rows: QuoteRow[]; moq: number; note: string; terms: string; note_risks: { word: string; snippet: string }[] };
 const defaults: Rules = { markup_mode: "none", markup_value: "0.00", tax_mode: "excluded", tax_value: "0.00", freight_mode: "separate", freight_value: "0.00", rounding: "cents" };
 const customerFieldLabels: Record<string, string> = { model: "产品型号", name: "产品名称", parameters: "产品参数", selling_points: "产品卖点" };
 
 export function ProductQuotation({ selected, filters, onClose }: { selected: Item[]; filters: Record<string, string>; onClose: () => void }) {
+  const [selections, setSelections] = useState<Record<string, PriceSelection>>({});
+  const [conditions, setConditions] = useState<number[]>([]);
   const [moq, setMoq] = useState("1");
   const [note, setNote] = useState("");
   const [confirmedNote, setConfirmedNote] = useState(false);
@@ -46,7 +50,7 @@ export function ProductQuotation({ selected, filters, onClose }: { selected: Ite
         items = items.flatMap(item => affected.some(row => row.id === item.id) ? replacements.has(item.id) ? [replacements.get(item.id)!] : [] : [item]);
         if (scope === "selected") setSelection(items);
       }
-      const next = await api<Preview>("/customer-quotations/preview", json("POST", { scope: preview ? "selected" : scope, items, filters, rules, include_unquoted: includeUnquoted, overrides, moq: Number(moq), note }));
+      const next = await api<Preview>("/customer-quotations/preview", json("POST", { scope: preview ? "selected" : scope, items, filters, rules, include_unquoted: includeUnquoted, overrides, moq: Number(moq), note, selections, conditions_confirmed_ids: conditions }));
       setPreview(next); setMoq(String(next.moq)); setNote(next.note); setConfirmedNote(false); setConfigOpen(false); setRules(next.rules); setConfirmed([]); setAllText(false); setValid(true); setAffected([]); setPage(1);
     } catch (caught) { setError((caught as Error).message); const changed = (caught as { items?: Item[] }).items; if (changed) setAffected(changed); }
     finally { setBusy(false); }
@@ -55,7 +59,7 @@ export function ProductQuotation({ selected, filters, onClose }: { selected: Ite
     if (!preview || !valid) return;
     setBusy(true); setError(null); setDownloaded(false);
     try {
-      const response = await fetch("/api/product-library/customer-quotations/export", json("POST", { items: preview.items, rules: preview.rules, digest: preview.digest, overrides: Object.fromEntries(Object.entries(overrides).filter(([id]) => preview.items.some(item => String(item.id) === id))), confirmed_risk_ids: confirmed, confirmed_all_text: allText, moq: preview.moq, note: preview.note, confirmed_note: confirmedNote }));
+      const response = await fetch("/api/product-library/customer-quotations/export", json("POST", { items: preview.items, rules: preview.rules, digest: preview.digest, overrides: Object.fromEntries(Object.entries(overrides).filter(([id]) => preview.items.some(item => String(item.id) === id))), confirmed_risk_ids: confirmed, confirmed_all_text: allText, moq: preview.moq, note: preview.note, confirmed_note: confirmedNote, selections, conditions_confirmed_ids: conditions }));
       if (!response.ok) {
         const failure = await response.json();
         if (failure.items) setAffected(failure.items);
@@ -98,7 +102,12 @@ export function ProductQuotation({ selected, filters, onClose }: { selected: Ite
       <div className="table-scroll quotation-preview" role="region" aria-label="报价明细" tabIndex={0}><table className="library-audit-table quotation-audit-table"><thead><tr><th>型号 / 名称</th><th>原始报价<small>仅内部，不导出</small></th><th>最终报价<small>元 / 件，可直接修改</small></th></tr></thead>{filteredRows.slice((visiblePage - 1) * 20, visiblePage * 20).map(row => <tbody key={row.id}>
         <tr><td><strong>{row.model ?? "未提供型号"}</strong><p>{row.name}</p><button className="text-button" aria-expanded={expanded === row.id} onClick={() => setExpanded(expanded === row.id ? null : row.id)}>{expanded === row.id ? "收起客户资料" : "查看客户可见参数和卖点"}</button>
           {row.risks.map(risk => <small className="library-row-error" key={risk}>{risk}</small>)}{row.text_risks.length > 0 && <small className="library-row-error">客户文本{confirmed.includes(row.id) ? "已核查" : "待核查"}</small>}{row.error && <p role="alert">{row.error}</p>}</td>
-        <td className="library-money">{row.original_price ?? "未提供"}</td>
+        <td className="library-money">{row.original_price ?? "未提供"}
+          {!!row.variants?.length && <label>本次规格<select disabled={busy} value={selections[row.id]?.variant_id ?? ""} onChange={event => { setSelections(current => ({ ...current, [row.id]: { variant_id: Number(event.target.value) || undefined } })); setConditions(current => current.filter(id => id !== row.id)); invalidate(); }}><option value="">请选择规格</option>{row.variants.map(variant => <option key={variant.id} value={variant.id}>{String(variant.variant_name)} {String(variant.color ?? '')}</option>)}</select></label>}
+          {!!row.prices?.length && <label>采购基准价<select disabled={busy} value={selections[row.id]?.price_id ?? ""} onChange={event => { const price = row.prices?.find(item => item.id === Number(event.target.value)); setSelections(current => ({ ...current, [row.id]: { ...current[row.id], price_id: price?.id, price_version: price?.version } })); setConditions(current => current.filter(id => id !== row.id)); invalidate(); }}><option value="">仅沿用产品级默认批发价</option>{row.prices.filter(price => ['出厂价','批发价','一件代发价'].includes(String(price.price_type)) && price.currency_code === 'CNY' && price.price_unit === '件' && price.amount_text != null && (price.variant_id == null || price.variant_id === selections[row.id]?.variant_id)).map(price => <option key={price.id} value={price.id}>{String(price.price_type)} ¥{String(price.amount_text)} · {String(price.price_channel ?? '未注明渠道')} · {String(row.sources?.find(source => source.id === price.source_id)?.source_company ?? '未知来源')} · {String(price.quote_date ?? '日期未知')}</option>)}</select></label>}
+          {row.prices?.filter(price => price.id === selections[row.id]?.price_id || !selections[row.id]?.price_id && price.is_default_wholesale && price.variant_id == null).map(price => <details key={price.id}><summary>采购条件（仅内部）</summary><p className="library-hint">起订量：{String(price.min_order_quantity ?? '未知')} {String(price.min_order_unit ?? '')}<br />税费：{String(price.tax_mode)} · 运费：{String(price.freight_mode)}<br />定制：{String(price.customization_terms ?? '未注明')}<br />条件原文：{String(price.terms_text ?? '未注明')}</p></details>)}
+          {!!row.conditions?.length && <><p className="library-hint">{row.conditions.join('；')}</p><label className="library-check"><input type="checkbox" disabled={busy} checked={conditions.includes(row.id)} onChange={event => { setConditions(current => event.target.checked ? [...current, row.id] : current.filter(id => id !== row.id)); invalidate(); }} />已核对本产品采购MOQ、税运费及条件</label></>}
+        </td>
         <td><label className="library-visually-hidden" htmlFor={`quote-price-${row.id}`}>最终报价 {row.id}</label><input id={`quote-price-${row.id}`} inputMode="decimal" disabled={busy} value={(valid ? row.final_price : overrides[row.id] ?? row.final_price) ?? ""} placeholder="待报价" onChange={event => { const value = event.target.value; setOverrides(current => ({ ...current, [row.id]: value })); invalidate(); }} />
           <small className="library-match" aria-live="polite">{!valid ? "待重新核算" : row.manual ? "已人工改价" : "按规则计算"}</small><button className="text-button" disabled={busy || overrides[row.id] === undefined} onClick={() => { setOverrides(current => { const next = { ...current }; delete next[row.id]; return next; }); invalidate(); }}>恢复自动计算</button></td></tr>
         {expanded === row.id && <tr><td colSpan={3}><div className="library-row-detail"><p>产品型号：{row.model ?? "未提供型号"} · 产品名称：{row.name}</p><p className="library-text">{row.parameters ?? "未提供参数"}</p><p className="library-text">{row.selling_points ?? "未提供卖点"}</p><p>最终报价：{valid ? row.final_price ?? "待报价" : "待重新核算"} · MOQ {preview.moq}</p>{row.text_risks.map((risk, index) => <p role="alert" key={index}>{customerFieldLabels[risk.field] ?? risk.field} · {risk.word}：{risk.snippet}</p>)}{row.text_risks.length > 0 && <label className="library-check"><input type="checkbox" disabled={busy || !valid} checked={confirmed.includes(row.id)} onChange={event => setConfirmed(current => event.target.checked ? [...current, row.id] : current.filter(id => id !== row.id))} />已逐项核查此产品客户文本 · {row.name}</label>}</div></td></tr>}

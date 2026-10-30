@@ -105,6 +105,14 @@
 .library-detail-identity > span { font-size: 14px; color: var(--ui-muted, #626b78); overflow-wrap: anywhere; }
 .library-detail-section { border-top: 1px solid var(--ui-border, #dde1e6); padding: 20px 0; }
 .library-detail-section h3, .library-section-title { margin: 0; font-size: 16px; font-weight: 650; }
+.library-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.library-related-record { padding: 12px 0; border-bottom: 1px solid var(--ui-border); }
+.library-related-record summary { cursor: pointer; overflow-wrap: anywhere; }
+.library-related-record[open] summary { margin-bottom: 12px; font-weight: 600; }
+.library-detail-section label { display: grid; gap: 6px; min-width: 0; }
+.library-detail-section .library-check { display: flex; }
+.library-detail-section input, .library-detail-section select, .library-detail-section textarea { width: 100%; min-width: 0; }
+.library-attribute-list { display: grid; gap: 12px; margin: 12px 0; }
 .library-copy-actions { margin-top: 16px; }
 .library-copy-status { font-size: 12px; color: var(--ui-accent, #2563eb); }
 .library-details { margin: 20px 0 0; }
@@ -158,9 +166,9 @@
 .library-row-detail > p { max-width: 75ch; }
 .library-money { font-variant-numeric: tabular-nums; font-weight: 650; }
 .quotation-audit-table { min-width: 0; width: 100%; table-layout: fixed; }
-.quotation-audit-table > thead > tr > th:first-child { width: 45%; }
-.quotation-audit-table > thead > tr > th:nth-child(2) { width: 20%; text-align: right; }
-.quotation-audit-table > thead > tr > th:nth-child(3) { width: 35%; }
+.quotation-audit-table > thead > tr > th:first-child { width: 30%; }
+.quotation-audit-table > thead > tr > th:nth-child(2) { width: 40%; text-align: right; }
+.quotation-audit-table > thead > tr > th:nth-child(3) { width: 30%; }
 .quotation-audit-table input { max-width: 100%; }
 .library-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (max-width: 680px) {
@@ -300,7 +308,26 @@
 .quotation-audit-table > tbody > tr > td.library-money { text-align: right; }
 .quotation-audit-table td { overflow-wrap: anywhere; }
 .quotation-audit-table td p { margin-block: 4px; }
+.quotation-audit-table .library-money label { display: grid; gap: 6px; margin-top: 12px; text-align: left; font-weight: 400; }
+.quotation-audit-table select { min-width: 0; width: 100%; }
+.library-import-review .library-v2-audit > thead > tr > th:first-child { width: 20%; }
+.library-import-review .library-v2-audit > thead > tr > th:nth-child(2) { width: 58%; }
+.library-import-review .library-v2-audit > thead > tr > th:last-child { width: 22%; }
+.library-import-review .library-v2-audit > tbody > tr > td:first-child { white-space: normal; }
+.library-v2-audit .library-details > div + div { margin-top: 12px; }
+.library-v2-audit .library-details { margin-top: 0; }
 .quotation-preview { overflow: clip; }
+@media (max-width: 640px) {
+  .quotation-audit-table, .quotation-audit-table > tbody, .quotation-audit-table > tbody > tr,
+  .library-import-review .library-v2-audit > tbody, .library-import-review .library-v2-audit > tbody > tr { display: block; }
+  .quotation-audit-table > thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .quotation-audit-table > tbody, .library-v2-audit > tbody > tr { border-bottom: 1px solid var(--ui-border); padding: 12px 0; }
+  .quotation-audit-table > tbody > tr > td, .library-import-review .library-v2-audit > tbody > tr > td { display: block; width: auto; padding: 10px 0; border: 0; }
+  .quotation-audit-table > tbody > tr > td.library-money { text-align: left; }
+  .quotation-audit-table .library-money::before { content: '采购基准（仅内部）'; display: block; color: var(--ui-muted); font-weight: 400; }
+  .quotation-audit-table td:has(input[id^="quote-price-"])::before { content: '客户报价（元 / 件）'; display: block; margin-bottom: 6px; color: var(--ui-muted); }
+  .quotation-audit-table input:not([type="checkbox"]) { width: 100%; max-width: none; }
+}
 .quotation-audit-table input { font-variant-numeric: tabular-nums; text-align: right; }
 @media (max-width: 600px) {
   .quotation-audit-table > thead > tr > th:first-child { width: 38%; }

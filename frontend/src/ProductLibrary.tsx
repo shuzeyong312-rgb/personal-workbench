@@ -1,5 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import "./ProductLibrary.css";
+import { ProductLibraryDetails, type ProductDetail } from "./ProductLibraryDetails";
+import { V2ImportReview, type V2Preview } from "./ProductLibraryV2Import";
 import { ProductQuotation } from "./ProductQuotation";
 import { PaginationBar } from "./PaginationBar";
 import { useProductSearchQuery } from "./WorkspaceTools";
@@ -8,8 +10,8 @@ export type ProductFields = {
   manufacturer_name: string; model: string | null; name: string; parameters: string | null;
   selling_points: string | null; wholesale_price: string | null; price_note: string | null;
 };
-export type LibraryProduct = ProductFields & { id: number; version: number; created_at: string; updated_at: string };
-type Action = "insert" | "update" | "skip";
+export type LibraryProduct = ProductFields & { source_companies?: string[]; price_state?: "default" | "multiple" | "unquoted"; category?: string | null; id: number; version: number; created_at: string; updated_at: string };
+type Action = "insert" | "update" | "append_source" | "skip";
 type FieldDiff = Record<string, { old: string | null; incoming: string | null; effective: string | null; changed: boolean }>;
 type Candidate = { id: number; name: string; model: string | null; version?: number; reason?: string; can_update?: boolean; diff?: FieldDiff };
 export type PreviewRow = Partial<ProductFields> & {
@@ -20,7 +22,7 @@ export type PreviewRow = Partial<ProductFields> & {
   diff: FieldDiff;
   allowed_actions: Action[]; default_action: Action;
 };
-type Preview = { identity_rule_version?: number; import_id: string; status: "ready"; expires_at: string; manufacturer_name: string; counts: Record<string, number>; rows: PreviewRow[] };
+type Preview = { attachment_warning?: string | null; identity_rule_version?: number; import_id: string; status: "ready"; expires_at: string; manufacturer_name: string; counts: Record<string, number>; rows: PreviewRow[] };
 type Result = { import_id: string; status: "committed"; inserted: number; updated: number; skipped: number; invalid: number; rows: { row_number: number; outcome: string; product_id: number | null; reason_code: string; model?: string | null; name?: string | null; errors?: { field: string; message: string }[] }[] };
 type Receipt = Preview | Result;
 type ApiError = Error & { code?: string; candidates?: Candidate[]; errors?: { field: string; message: string }[]; uncertain?: boolean };
@@ -28,7 +30,7 @@ const base = "/api/product-library";
 export const emptyProduct: ProductFields = { manufacturer_name: "", model: null, name: "", parameters: null, selling_points: null, wholesale_price: null, price_note: null };
 const labels: Record<keyof ProductFields, string> = { manufacturer_name: "厂家名称", model: "产品型号", name: "产品名称", parameters: "产品参数", selling_points: "产品卖点", wholesale_price: "批发价", price_note: "价格备注" };
 const categories = { new: "新增", duplicate: "重复", invalid: "异常" };
-const actions = { insert: "新增", update: "确认更新", skip: "跳过" };
+const actions = { insert: "新增", update: "确认更新主资料", append_source: "追加来源/价格", skip: "跳过" };
 const display = (value: string | null | undefined) => value ?? "未提供";
 
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -63,7 +65,7 @@ function TemplateDownload() {
 
 export function plannedCounts(rows: PreviewRow[], decisions: Record<number, Action>) {
   const counts = { insert: 0, update: 0, skip: 0 };
-  for (const row of rows) counts[decisions[row.row_number] ?? row.default_action]++;
+  for (const row of rows) { const action = decisions[row.row_number] ?? row.default_action; counts[action === 'append_source' ? 'update' : action]++; }
   return counts;
 }
 
@@ -95,10 +97,13 @@ export function ProductEditor({ product, onClose, onSaved, returnFocus }: { prod
   const dirty = (Object.keys(emptyProduct) as (keyof ProductFields)[]).some(key => fields[key] !== (product ?? emptyProduct)[key]);
   function close() { if (!dirty || window.confirm(uncertain ? "保存结果待确认，请关闭后刷新列表核对。确认关闭？" : "有未保存的修改，确认放弃并关闭？")) onClose(); }
   async function save(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError(null);
+    event.preventDefault();
+    const companyChanged = !!product && fields.manufacturer_name !== product.manufacturer_name;
+    if (companyChanged && !window.confirm('确认修改首录资料公司？这不会替换已有来源资料；新增报价来源请在详情添加。')) return;
+    setBusy(true); setError(null);
     try {
       const payload = Object.fromEntries(Object.keys(emptyProduct).map(key => [key, fields[key as keyof ProductFields]]));
-      await api(product ? `/products/${product.id}` : "/products", json(product ? "PUT" : "POST", { ...payload, ...(product ? { version: product.version } : {}) }));
+      await api(product ? `/products/${product.id}` : "/products", json(product ? "PUT" : "POST", { ...payload, ...(product ? { version: product.version } : {}), ...(companyChanged ? { confirm_manufacturer_change: true } : {}) }));
       onSaved();
     } catch (caught) {
       const failure = caught as ApiError; setError(failure);
@@ -126,6 +131,8 @@ export function ProductEditor({ product, onClose, onSaved, returnFocus }: { prod
 function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [manufacturer, setManufacturer] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [attachmentsConfirmed, setAttachmentsConfirmed] = useState(false);
+  const [v2Preview, setV2Preview] = useState<V2Preview | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [decisions, setDecisions] = useState<Record<number, Action>>({});
   const [busy, setBusy] = useState(false);
@@ -154,10 +161,12 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     event.preventDefault(); if (!file) return;
     if (!/\.xlsx$/i.test(file.name)) { setError("仅支持 .xlsx 文件"); return; }
     if (file.size > 5 * 1024 * 1024) { setError("文件不能超过 5 MiB"); return; }
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setAttachmentsConfirmed(false);
     try {
-      const next = await api<Preview>(`/imports/preview?manufacturer_name=${encodeURIComponent(manufacturer)}`, { method: "POST", headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Filename": encodeURIComponent(file.name) }, body: file });
-      setReceipt(next); setSourceRows(next.rows); setDecisions({}); setTargets({}); setComparisons({}); setReviewFilter(""); setReviewQuery(""); setReviewAction(""); setExpanded(null); setPage(1);
+      const next = await api<Preview | V2Preview>(`/imports/preview?manufacturer_name=${encodeURIComponent(manufacturer)}`, { method: "POST", headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Filename": encodeURIComponent(file.name) }, body: file });
+      if ('template_version' in next && next.template_version === 2) { setV2Preview(next as V2Preview); return; }
+      const legacy = next as Preview;
+      setReceipt(legacy); setSourceRows(legacy.rows); setDecisions({}); setTargets({}); setComparisons({}); setReviewFilter(""); setReviewQuery(""); setReviewAction(""); setExpanded(null); setPage(1);
     } catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
   }
@@ -177,10 +186,10 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     const submitted = retryDecisions ?? preview.rows.map(row => {
       const action = decisions[row.row_number] ?? row.default_action;
       const target = updateTarget(row);
-      return { row_number: row.row_number, action, ...(action === "update" && preview.identity_rule_version === 3 && target ? { target_id: target.id, target_version: target.version } : {}) };
+      return { row_number: row.row_number, action, ...((action === "update" || action === "append_source") && (preview.identity_rule_version ?? 0) >= 3 && target ? { target_id: target.id, target_version: target.version } : {}) };
     });
     try {
-      const next = await api<Result>(`/imports/${preview.import_id}/confirm`, json("POST", { decisions: submitted }));
+      const next = await api<Result>(`/imports/${preview.import_id}/confirm`, json("POST", { decisions: submitted, ...(preview.attachment_warning ? { confirmed_attachments_not_imported: attachmentsConfirmed } : {}) }));
       setReceipt(next); setReviewFilter(""); setReviewQuery(""); setPage(1); onSaved();
     } catch (caught) {
       const failure = caught as ApiError;
@@ -191,11 +200,11 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     } finally { setBusy(false); }
   }
   function updateTarget(row: PreviewRow) {
-    return row.candidate.find(candidate => candidate.id === (targets[row.row_number] ?? row.existing_id) && candidate.can_update);
+    return row.candidate.find(candidate => candidate.id === (targets[row.row_number] ?? row.existing_id) && (candidate.can_update || row.allowed_actions.includes("append_source")));
   }
   function choose(row: PreviewRow, action: Action) {
     const target = updateTarget(row);
-    if (action === "update" && preview?.identity_rule_version === 3) {
+    if (action === "update" && (preview?.identity_rule_version ?? 0) >= 3) {
       if (!target) { setError(`请先为第 ${row.row_number} 行选择明确的更新目标。`); setExpanded(row.row_number); return; }
       if (expanded !== row.row_number || (comparisons[row.row_number] != null && comparisons[row.row_number] !== target.id)) { setComparisons(current => ({ ...current, [row.row_number]: target.id })); setExpanded(row.row_number); setError(`请核对第 ${row.row_number} 行目标 #${target.id} 的完整差异，再选择确认更新。`); return; }
     }
@@ -225,28 +234,30 @@ function ImportDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const expired = !!preview && Date.parse(preview.expires_at) <= Date.now();
   const [, tick] = useState(0);
   useEffect(() => { if (!preview) return; const timer = setInterval(() => tick(value => value + 1), 1000); return () => clearInterval(timer); }, [preview]);
+  if (v2Preview) return <V2ImportReview preview={v2Preview} onClose={onClose} onSaved={onSaved} onReupload={() => setV2Preview(null)} />;
   return <LibraryDialog wide review={!!preview} title={`批量导入 · 步骤 ${receipt?.status === "committed" ? 3 : preview ? 2 : 1}/3`} busy={busy} onClose={close}>
     <ol className="library-steps" aria-label="导入进度">{["上传文件", "核对与决策", "导入结果"].map((label, index) => <li key={label} aria-current={(receipt?.status === "committed" ? 2 : preview ? 1 : 0) === index ? "step" : undefined}><span>{index + 1}</span>{label}</li>)}</ol>
     {error && <div className="feedback feedback-server-error" role="alert">{error}</div>}
     {!receipt && <form className="library-form" onSubmit={upload}>
-      <p>仅 .xlsx，最多 5 MiB、1000 行。使用固定六列表头；文本列须为文本，禁止公式。确认前不写入产品。</p>
-      <TemplateDownload />
-      <label>厂家名称 *<input required maxLength={200} value={manufacturer} onChange={event => setManufacturer(event.target.value)} /></label>
+      <p>仅 .xlsx，最多 5 MiB、1000 行。支持原六列 V1 与五工作表 V2；文本列须为文本，禁止公式。确认前不写入产品。</p>
+      <TemplateDownload /><a className="secondary-button" href="/api/product-library/template?template_version=2" download="产品库V2模板.xlsx">下载 V2 多规格/多价格模板</a>
+      <label>批次资料公司（V1 必填，未知请留空）<input maxLength={200} value={manufacturer} onChange={event => setManufacturer(event.target.value)} /></label>
       <label>Excel 文件 *<span className="library-file-control"><span className="library-file-button" aria-hidden="true">选择 Excel 文件</span><span aria-hidden="true">{file?.name ?? "尚未选择文件 · .xlsx · 最多 5 MiB"}</span><input required={!file} type="file" accept=".xlsx" onChange={event => { const next = event.target.files?.[0]; if (next) setFile(next); }} /></span></label>
       <div className="dialog-actions"><button className="primary-button" disabled={busy}>{busy ? "校验中…" : "上传并预览"}</button></div>
     </form>}
     {preview && <>
+      {preview.attachment_warning && <label className="library-check"><input type="checkbox" disabled={locked} checked={attachmentsConfirmed} onChange={event => setAttachmentsConfirmed(event.target.checked)} />{preview.attachment_warning} 已知晓并将自行保留原件。</label>}
       <section className="library-review-overview" aria-label="整批导入概况">
         <div className="library-review-heading"><div><h3>核对与决策</h3><p>厂家：<strong>{preview.manufacturer_name}</strong><span>共 {preview.rows.length} 行 · 忽略空行 {preview.counts.ignored_blank_rows ?? 0}</span></p></div><span className="library-hint">确认前不会写入产品</span></div>
         <div className="library-review-categories" aria-label="按审核状态快速定位">{[["", "全部", preview.rows.length], ...Object.entries(categories).map(([key, label]) => [key, label, preview.counts[key] ?? 0])].map(([key, label, count]) => <button key={key} aria-pressed={reviewFilter === key} onClick={() => { setReviewFilter(String(key)); setPage(1); }}><span>{label}</span><strong>{count}</strong></button>)}</div>
-        <p className="library-review-guidance">{preview.counts.invalid > 0 ? `${preview.counts.invalid} 行异常不会导入，可筛选查看原因，修改文件后重新预览。` : preview.counts.duplicate > 0 ? "重复行默认跳过；如需更新，请展开核对完整差异并确认更新目标。" : "新增行已默认加入导入计划，可直接核对或调整计划操作。"} <span>重复仅指同厂家、同型号、同名称。</span></p>
+        <p className="library-review-guidance">{preview.counts.invalid > 0 ? `${preview.counts.invalid} 行异常不会导入，可筛选查看原因，修改文件后重新预览。` : preview.counts.duplicate > 0 ? "重复行默认跳过；如需更新，请展开核对完整差异并确认更新目标。" : "新增行已默认加入导入计划，可直接核对或调整计划操作。"} <span>重复仅指同型号、同名称，不按来源公司拆分。</span></p>
       </section>
       {uncertain && <p role="status">结果待确认：导入编号 {preview.import_id}。先查询回执，不能重新上传或更改决策。</p>}
       {controls}
       <div className="library-review-bulk"><span>整批新增行 · 不受当前筛选影响</span>{(["insert", "skip"] as Action[]).map(action => <button className="secondary-button" disabled={locked || !preview.counts.new} key={action} onClick={() => setDecisions(current => ({ ...current, ...Object.fromEntries(preview.rows.filter(row => row.category === "new").map(row => [row.row_number, action])) }))}>{action === "insert" ? "新增全部新增行" : "跳过全部新增行"}</button>)}</div>
       <div ref={auditScroll} className="table-scroll library-audit-scroll" role="region" aria-label="导入明细，可横向滚动" tabIndex={0}><table className="library-audit-table"><thead><tr><th>Excel 行</th><th>型号 / 名称</th><th>审核状态</th><th>计划操作</th><th>核对</th></tr></thead>{(rows as PreviewRow[]).map(row => <tbody className={`library-preview-row${expanded === row.row_number ? " is-expanded" : ""}`} key={row.row_number}>
         <tr><td>第 {row.row_number} 行</td><td><strong>{display(row.model)}</strong><span className="library-review-name">{display(row.name)}</span></td><td><span className={`library-review-badge is-${row.category}`}>{categories[row.category]}</span>{row.identity_reason && row.category !== "new" && <small className="library-match">{row.identity_reason}</small>}{row.errors.map((item, index) => <small className="library-row-error" key={index}>{labels[item.field as keyof ProductFields] ?? item.field}：{item.message}</small>)}</td>
-        <td>{preview.identity_rule_version === 3 && row.allowed_actions.includes("update") && <label>第 {row.row_number} 行更新目标<select aria-label={`第 ${row.row_number} 行更新目标`} disabled={locked} value={targets[row.row_number] ?? row.existing_id ?? ""} onChange={event => { setTargets(current => ({ ...current, [row.row_number]: Number(event.target.value) })); setComparisons(current => ({ ...current, [row.row_number]: Number(event.target.value) })); setDecisions(current => ({ ...current, [row.row_number]: "skip" })); setExpanded(row.row_number); setError(null); }}><option value="">请选择目标，不自动覆盖</option>{row.candidate.filter(candidate => candidate.can_update).map(candidate => <option value={candidate.id} key={candidate.id}>#{candidate.id} · {candidate.name} · v{candidate.version}</option>)}</select></label>}<label className="library-visually-hidden" htmlFor={`import-action-${row.row_number}`}>第 {row.row_number} 行操作</label><select id={`import-action-${row.row_number}`} disabled={locked || row.category === "invalid"} value={decisions[row.row_number] ?? row.default_action} onChange={event => choose(row, event.target.value as Action)}>{row.allowed_actions.map(action => <option key={action} value={action}>{actions[action]}</option>)}</select></td>
+        <td>{(preview.identity_rule_version ?? 0) >= 3 && row.allowed_actions.includes("update") && <label>第 {row.row_number} 行更新目标<select aria-label={`第 ${row.row_number} 行更新目标`} disabled={locked} value={targets[row.row_number] ?? row.existing_id ?? ""} onChange={event => { setTargets(current => ({ ...current, [row.row_number]: Number(event.target.value) })); setComparisons(current => ({ ...current, [row.row_number]: Number(event.target.value) })); setDecisions(current => ({ ...current, [row.row_number]: "skip" })); setExpanded(row.row_number); setError(null); }}><option value="">请选择目标，不自动覆盖</option>{row.candidate.filter(candidate => candidate.can_update).map(candidate => <option value={candidate.id} key={candidate.id}>#{candidate.id} · {candidate.name} · v{candidate.version}</option>)}</select></label>}<label className="library-visually-hidden" htmlFor={`import-action-${row.row_number}`}>第 {row.row_number} 行操作</label><select id={`import-action-${row.row_number}`} disabled={locked || row.category === "invalid"} value={decisions[row.row_number] ?? row.default_action} onChange={event => choose(row, event.target.value as Action)}>{row.allowed_actions.map(action => <option key={action} value={action}>{actions[action]}</option>)}</select></td>
         <td><button className="text-button" aria-expanded={expanded === row.row_number} onClick={() => setExpanded(expanded === row.row_number ? null : row.row_number)}>核对第 {row.row_number} 行</button></td></tr>
         {expanded === row.row_number && <tr><td colSpan={5}><div className="library-row-detail">
           {row.errors.map((item, index) => <p role="alert" key={index}>{labels[item.field as keyof ProductFields] ?? item.field}：{item.message}</p>)}
@@ -279,7 +290,7 @@ export function ProductLibrary() {
   const [manufacturers, setManufacturers] = useState<string[]>([]);
   const [status, setStatus] = useState("loading"); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState<string | null>(null);
   const [reload, setReload] = useState(0); const [editor, setEditor] = useState<LibraryProduct | "new" | null>(null);
-  const [detail, setDetail] = useState<LibraryProduct | null>(null); const [detailBusy, setDetailBusy] = useState(false);
+  const [detail, setDetail] = useState<ProductDetail | null>(null); const [detailBusy, setDetailBusy] = useState(false);
   const [deleting, setDeleting] = useState<LibraryProduct | null>(null); const [deleteError, setDeleteError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
   const [priceStatus, setPriceStatus] = useState("all"); const [priceMode, setPriceMode] = useState("");
@@ -323,7 +334,8 @@ export function ProductLibrary() {
   async function copyProduct(kind: "parameters" | "selling_points" | "full") {
     if (!detail) return;
     const text = kind === "full" ? customerCopy(detail) : detail[kind] ?? "";
-    if (sensitiveText(kind === "full" ? `${detail.parameters ?? ""}\n${detail.selling_points ?? ""}` : text) && !window.confirm("参数或卖点包含采购成本敏感风险词，请核查客户资料。确认后按原文复制。")) return;
+    const risk = sensitiveText(text) || detail.sources?.some(source => typeof source.source_company === 'string' && text.includes(source.source_company));
+    if (!window.confirm(risk ? "资料可能包含采购成本或来源公司，请确认已全文核对客户可见内容，再按原文复制。" : "请确认已全文核对客户可见内容，可复制给客户。")) return;
     try { await navigator.clipboard.writeText(text); setCopyStatus("复制成功"); } catch { setCopyStatus("复制失败，请手动选择并复制资料"); }
   }
   const saved = useRef(false);
@@ -343,7 +355,7 @@ export function ProductLibrary() {
   async function openProduct(id: number, edit: boolean) {
     detailOpener.current = document.activeElement as HTMLElement | null;
     setDetailBusy(true); setError(null);
-    try { const product = await api<LibraryProduct>(`/products/${id}`); if (edit) setEditor(product); else { setDetail(product); setCopyStatus(null); } }
+    try { const product = await api<LibraryProduct>(`/products/${id}`); if (edit) setEditor(product); else { setDetail(product as ProductDetail); setCopyStatus(null); } }
     catch (caught) { setError((caught as Error).message); }
     finally { setDetailBusy(false); }
   }
@@ -366,16 +378,17 @@ export function ProductLibrary() {
       {batchResults.filter(row => row.outcome !== "deleted").map(row => <p role="status" key={row.id}>产品 #{row.id}：{row.outcome === "missing" ? "已不存在" : "版本已变化"}，请刷新后重新选择</p>)}
       {status === "loading" && <p role="status" className="state-panel">正在加载产品…</p>}
       {status === "error" && <div className="state-panel state-error"><p>产品列表加载失败</p><button className="secondary-button" onClick={() => setReload(value => value + 1)}>重试</button></div>}
-      {status === "ready" && data && <>{data.items.length === 0 ? <div className="state-panel"><h2>没有符合条件的产品</h2><p>调整搜索和筛选条件，或通过手动新增、批量导入建立产品资料。</p></div> : <div className="table-scroll"><table className="library-table"><thead><tr><th><input aria-label="选择本页" type="checkbox" ref={node => { if (node) node.indeterminate = data.items.some(item => selected[item.id]) && !data.items.every(item => selected[item.id]); }} checked={!!data.items.length && data.items.every(item => selected[item.id])} onChange={event => { const checked = event.target.checked; setSelected(current => { const next = { ...current }; for (const item of data.items) { if (checked) { if (!next[item.id]) next[item.id] = { id: item.id, version: item.version }; } else delete next[item.id]; } return next; }); }} /></th><th>厂家</th><th>型号</th><th>名称</th><th>批发价</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{data.items.map(product => <tr key={product.id}><td><input aria-label={`选择产品 ${product.id}`} type="checkbox" checked={!!selected[product.id]} onChange={event => toggle(product, event.target.checked)} /></td><td>{product.manufacturer_name}</td><td>{display(product.model)}</td><td>{product.name}{q.trim() && <small className="library-match">{searchSummary(product, q)}</small>}</td><td className={`library-price${product.wholesale_price == null ? " library-price-unknown" : ""}`}>{product.wholesale_price == null ? "未提供" : `¥${product.wholesale_price}`}</td><td className="library-updated">{new Date(product.updated_at).toLocaleString()}</td><td><div className="library-actions"><button className="detail-button" disabled={detailBusy} onClick={() => void openProduct(product.id, false)}>查看</button><button className="detail-button" disabled={detailBusy} onClick={() => void openProduct(product.id, true)}>编辑</button><button className="text-button" onClick={() => { setDeleteError(null); setDeleting(product); }}>删除</button></div></td></tr>)}</tbody></table></div>}
+      {status === "ready" && data && <>{data.items.length === 0 ? <div className="state-panel"><h2>没有符合条件的产品</h2><p>调整搜索和筛选条件，或通过手动新增、批量导入建立产品资料。</p></div> : <div className="table-scroll"><table className="library-table"><thead><tr><th><input aria-label="选择本页" type="checkbox" ref={node => { if (node) node.indeterminate = data.items.some(item => selected[item.id]) && !data.items.every(item => selected[item.id]); }} checked={!!data.items.length && data.items.every(item => selected[item.id])} onChange={event => { const checked = event.target.checked; setSelected(current => { const next = { ...current }; for (const item of data.items) { if (checked) { if (!next[item.id]) next[item.id] = { id: item.id, version: item.version }; } else delete next[item.id]; } return next; }); }} /></th><th>资料来源公司</th><th>型号</th><th>名称</th><th>批发价</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{data.items.map(product => <tr key={product.id}><td><input aria-label={`选择产品 ${product.id}`} type="checkbox" checked={!!selected[product.id]} onChange={event => toggle(product, event.target.checked)} /></td><td>{product.source_companies?.join("、") || product.manufacturer_name}</td><td>{display(product.model)}</td><td>{product.name}{q.trim() && <small className="library-match">{searchSummary(product, q)}</small>}</td><td className={`library-price${product.wholesale_price == null ? " library-price-unknown" : ""}`}>{product.wholesale_price == null ? (product.price_state === "multiple" ? "多价格 / 需选择" : "未提供") : `¥${product.wholesale_price}`}</td><td className="library-updated">{new Date(product.updated_at).toLocaleString()}</td><td><div className="library-actions"><button className="detail-button" disabled={detailBusy} onClick={() => void openProduct(product.id, false)}>查看</button><button className="detail-button" disabled={detailBusy} onClick={() => void openProduct(product.id, true)}>编辑</button><button className="text-button" onClick={() => { setDeleteError(null); setDeleting(product); }}>删除</button></div></td></tr>)}</tbody></table></div>}
         <PaginationBar total={data.total} itemLabel="款产品" pageSize={20} page={page} totalPages={Math.max(1, Math.ceil(data.total / 20))} onPrevious={() => setPage(page - 1)} onNext={() => setPage(page + 1)} previousDisabled={page === 1} nextDisabled={page * 20 >= data.total} /></>}
     </section>
     {detailBusy && <p role="status">正在加载产品详情…</p>}
     {editor && <ProductEditor product={editor === "new" ? null : editor} returnFocus={editor === "new" ? undefined : detailOpener.current} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); refresh(); }} />}
     {detail && <LibraryDialog side title="产品详情" returnFocus={detailOpener.current} onClose={() => setDetail(null)}>
-      <div className="library-detail-identity"><p>{detail.manufacturer_name}</p><h3>{detail.name}</h3><span>{display(detail.model)}</span></div>
+      <div className="library-detail-identity"><p>首录资料公司（兼容字段）：{detail.manufacturer_name}</p><h3>{detail.name}</h3><span>{display(detail.model)}</span></div>
       <section className="library-detail-section"><h3>客户产品资料</h3><p className="library-hint">完整资料仅复制型号、名称、参数和卖点。</p><div className="library-actions library-copy-actions"><button className="secondary-button" onClick={() => void copyProduct("parameters")}>复制参数</button><button className="secondary-button" onClick={() => void copyProduct("selling_points")}>复制卖点</button><button className="primary-button" onClick={() => void copyProduct("full")}>复制完整资料</button></div>{copyStatus && <p role="status" className="library-copy-status">{copyStatus}</p>}
       <dl className="library-details">{(["parameters", "selling_points"] as const).map(key => <div key={key}><dt>{labels[key]}</dt><dd>{display(detail[key])}</dd></div>)}</dl></section>
       <section className="library-detail-section"><h3>内部价格信息</h3><p className="library-hint">以下字段不包含在完整资料复制和客户 Excel 中。</p><dl className="library-details library-details-price">{(["wholesale_price", "price_note"] as const).map(key => <div key={key}><dt>{labels[key]}</dt><dd>{key === "wholesale_price" && detail[key] != null ? `¥${detail[key]}` : display(detail[key])}</dd></div>)}</dl></section>
+      <ProductLibraryDetails product={detail} onChanged={next => { setDetail(next); refresh(); }} />
       <p className="library-hint">创建：{new Date(detail.created_at).toLocaleString()}<br />更新：{new Date(detail.updated_at).toLocaleString()}</p>
     </LibraryDialog>}
     {deleting && <LibraryDialog title="永久删除产品" busy={busy} onClose={() => setDeleting(null)}><p>厂家：{deleting.manufacturer_name}</p><p>型号：{display(deleting.model)}</p><p>名称：{deleting.name}</p><p>此产品将永久删除，无法恢复。</p>{deleteError && <p role="alert">{deleteError}</p>}<div className="dialog-actions"><button className="secondary-button" disabled={busy} onClick={() => setDeleting(null)}>取消</button><button className="danger-button" disabled={busy} onClick={() => void remove()}>确认删除</button></div></LibraryDialog>}

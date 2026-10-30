@@ -22,8 +22,13 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        # SQLite's legacy driver otherwise commits between revisions and leaves DDL
+        # outside transactions. Keep the entire requested upgrade and stamp atomic.
+        context.configure(connection=connection, target_metadata=target_metadata,
+                          transactional_ddl=connection.dialect.name == "sqlite")
         with context.begin_transaction():
+            if connection.dialect.name == "sqlite" and not connection.connection.driver_connection.in_transaction:
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
             context.run_migrations()
 
 

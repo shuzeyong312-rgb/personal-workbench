@@ -31,6 +31,25 @@ from app.product_library_quotations import preview_quotation_service, export_quo
 router = APIRouter(prefix="/api/product-library", tags=["product-library"])
 
 
+@router.post("/products/{product_id}/{kind}", status_code=201)
+def create_detail(product_id: int, kind: str, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_details import mutate_detail
+    return mutate_detail(product_id, kind, None, payload, "POST", db)
+
+
+@router.put("/products/{product_id}/{kind}/{record_id}")
+def update_detail(product_id: int, kind: str, record_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_details import mutate_detail
+    return mutate_detail(product_id, kind, record_id, payload, "PUT", db)
+
+
+@router.delete("/products/{product_id}/{kind}/{record_id}", status_code=204)
+def delete_detail(product_id: int, kind: str, record_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    from app.product_library_details import mutate_detail
+    mutate_detail(product_id, kind, record_id, payload, "DELETE", db)
+    return Response(status_code=204)
+
+
 @router.get("/products")
 def list_products(
     q: str = Query("", max_length=200),
@@ -95,7 +114,12 @@ def delete_product(
 
 
 @router.get("/template")
-def template():
+def template(template_version: int = 1):
+    if template_version not in (1, 2):
+        error(422, 'invalid_template_version', '模板版本仅支持1或2')
+    if template_version == 2:
+        from app.product_library_v2_import import template_bytes
+        return Response(template_bytes(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition': 'attachment; filename="product-library-v2.xlsx"'})
     wb = Workbook()
     ws = wb.active
     ws.title = "产品数据"
@@ -145,14 +169,18 @@ async def preview_import(
     filename = request.headers.get("X-Filename")
     if not filename or not unquote(filename).lower().endswith(".xlsx"):
         error(415, "unsupported_excel_format", "请提供 .xlsx 文件名（X-Filename）")
+    if len(unquote(filename)) > 500:
+        error(422, "invalid_product", "工作簿文件名最多500字符", field="X-Filename")
     content = bytearray()
     async for chunk in request.stream():
         content.extend(chunk)
         if len(content) > 5 * MIB:
             error(413, "file_too_large", "文件不能超过5 MiB")
-    return await run_in_threadpool(
-        preview_import_service, bytes(content), manufacturer_name, db
-    )
+    def preview():
+        from app.product_library_v2_import import preview as preview_v2
+        result = preview_v2(bytes(content), manufacturer_name, db, unquote(filename))
+        return result if result is not None else preview_import_service(bytes(content), manufacturer_name, db, unquote(filename))
+    return await run_in_threadpool(preview)
 
 
 @router.get("/imports/{import_id}")
@@ -164,4 +192,11 @@ def get_import(import_id: str, db: Session = Depends(get_db)):
 def confirm_import(
     import_id: str, payload: dict = Body(...), db: Session = Depends(get_db)
 ):
+    from app.models import LibraryImport
+    item = db.get(LibraryImport, import_id)
+    version = ((item.result if item.status == 'committed' else item.preview) or {}).get('template_version') if item else None
+    db.rollback()
+    if version == 2:
+        from app.product_library_v2_import import confirm as confirm_v2
+        return confirm_v2(import_id, payload, db)
     return confirm_import_service(import_id=import_id, payload=payload, db=db)
