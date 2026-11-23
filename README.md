@@ -95,6 +95,10 @@ git diff --check
 - `.browser-profile/` 包含登录状态，`.env*` 可能含凭证，禁止提交或随意重置；`.venv/` 是 Python 运行依赖。
 - `logs/`、`.artifacts/`、`docs/qa/` 和 `.tmp/` 可能保存排障证据或验证副本，先确认用途再清理；不要把隐藏于 VS Code 当成可删除。
 
+## 本机工作库状态
+
+2026-11-23 已完成退役切换，当前 revision 为 `20261123_23`，停写验收通过。本机工作库可按上文正常启动。下方切换步骤供仍使用旧版数据库的环境使用。 [实施与验收记录](docs/specs/personal-workbench-scope-v1.md)
+
 ## 旧工作库切换
 
 现有 `20261029_21` 或 `20261030_22` 工作库须显式升级至 `20261123_23`。普通启动会拒绝旧库，删除范围及停写验收见 [退役 Spec](docs/specs/personal-workbench-scope-v1.md)。

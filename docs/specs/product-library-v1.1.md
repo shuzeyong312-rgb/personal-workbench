@@ -1,5 +1,7 @@
 # Product Library V1.1 — 列表效率、批量管理与客户报价导出
 
+> 历史文档。产品库、客户报价和客户触达已退役。文中的操作与验收适用于旧版本，现行范围见 [个人工作台第一阶段](personal-workbench-scope-v1.md)。
+
 - 状态：Frozen。
 - ChatGPT Final Spec Review：PASS；审查基准 `fbbf710aa29d20dd65ed93620c9fbfca43b60308`；P0/P1/P2/P3 = 0/0/0/0。
 - 冻结日期：2026-10-18。

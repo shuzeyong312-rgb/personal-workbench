@@ -1,5 +1,7 @@
 # 客户触达 V1：开发态使用说明
 
+> 历史文档。产品库、客户报价和客户触达已退役。文中的操作与验收适用于旧版本，现行范围见 [个人工作台第一阶段](specs/personal-workbench-scope-v1.md)。
+
 ## 启动
 
 1. 在 `backend` 下安装现有 requirements。只有隔离开发数据库才运行 `alembic upgrade head`；不要把迁移直接应用到正式工作库。

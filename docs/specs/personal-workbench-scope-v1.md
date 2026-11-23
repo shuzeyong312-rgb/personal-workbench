@@ -1,8 +1,14 @@
 # 个人工作台第一阶段：收敛到竞品监控与采集
 
-- 状态：草稿，已按 `e51a263` 的独立 Spec Review 修订，待复审
+- 状态：已实施，本机正式工作库已切换并通过停写验收
 - 风险：L，涉及现有 SQLite 的不可逆数据删除与共享入口调整
 - 源码基线：`codex/product-library-v2-simple-implementation` 的 `9a63160a3b8041d538b85efe543ccca632364e3d`
+
+## 实施记录
+
+- `b7ec2cc` 实施模块退役，`5e03351` 修复跨范围外键预检。独立 Code Review 通过 `5e03351e9bc0f2a9229a8395e9df638ec25b4cac`，独立运行的退役测试 17 项通过。
+- 2026-11-23，本机工作库从 `20261029_21` 显式升级到 `20261123_23`。停写验收确认退役对象已删除，保留表结构和数据一致。完整性及外键检查通过，已验证的临时恢复点在验收后清理。
+- 实施时的 [产品说明](../product.md)、[架构](../architecture.md)、[数据模型](../data-model.md) 与 [启动及旧库切换](../../README.md) 是接手入口。正式切换验收覆盖数据库，实际登录采集需在使用时核验。
 
 ## 目标与范围
 
@@ -74,4 +80,4 @@
 
 实施验证包括后端全量 pytest、前端 Vitest、Typecheck、Build 和涉及启动脚本时的 PowerShell 检查。人工浏览器验收使用隔离环境。产品范围、迁移和故障恢复通过独立 Spec Review 后进入实施。
 
-参考 [现有工作台合同](workbench-experience-v1.md)、[采集触发合同](collection-trigger-unification-v1.3.md)、[自动采集策略](daily-auto-collection-strategy-v2.md)、[产品库简化版合同](product-library-v2.md)及[工作浏览器合同](work-browser-issue-3.md)。本草稿通过审查并实施后，替代这些历史合同中涉及本期退役入口和业务的条款。
+参考 [现有工作台合同](workbench-experience-v1.md)、[采集触发合同](collection-trigger-unification-v1.3.md)、[自动采集策略](daily-auto-collection-strategy-v2.md)、[产品库简化版合同](product-library-v2.md)及[工作浏览器合同](work-browser-issue-3.md)。本 Spec 替代旧合同中涉及本期退役入口和业务的条款。保留模块继续适用各自的业务合同。

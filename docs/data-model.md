@@ -407,9 +407,9 @@ Group Summary、Group Detail、Group Attention 都是派生读取，没有额外
 
 ## 10. 尚未实现的模型
 
-正式 ORM / API 没有销量快照、销量事件、企业主体、成交/口碑/标签观察或新经营指标。详情销量只是占位；不存在 `sales_increase` 事件。研究来源验证不代表已经入库。
+`operating_metric_observations` 存放已接入的经营指标观测及读取状态。详情销量趋势仍为占位，当前没有单独的销量快照、销量变化事件或企业主体模型。
 
-后续 Track A 先用现有事实定义组内竞争位置；Track B 经营指标增量 POC 可并行，不阻塞 A，仅作为新指标产品化 Gate。未来表、字段和事件必须由独立正式 Spec 决定，本文不预设模型。见 [重构计划书](roadmap/competition-intelligence-restructuring-plan.md) 与 [Spec 索引](specs/README.md)。
+组内竞争位置由现有采集事实计算。后续新增经营字段、模型或事件应以对应业务 Spec 为准。 [Spec 索引](specs/README.md)
 
 ---
 
@@ -492,13 +492,8 @@ BatchRuntime
 
 不要在多个表中重复维护同一份业务事实，也不要把后续规划描述成当前已经存在的字段、实体或变化类型。
 
+## 工作库版本与退役边界
 
-## 产品库 V2（Issue #8）
+本机工作库已切换至 Alembic `20261123_23`。现行数据围绕竞品与分组、商品和 SKU 快照、变化事件、采集批次与明细、经营指标观测和系统设置。历史工具箱表 `toolbox_items` 随迁移保留。
 
-独立产品库的 `library_products` 保留历史字段、ID 和 version，新增 category 与 structured_attributes JSON。身份为型号+名称（含无型号同名的部分唯一索引），不含资料来源公司。`manufacturer_name` 为首录资料公司兼容字段。
-
-- `library_product_variants`：可选规格、颜色及规格参数 JSON；编码或无编码名称/颜色精确匹配。
-- `library_product_sources`：来源公司、明确标注的厂家、原件名/页码/日期及摘录；不保存文件本体。
-- `library_product_prices`：规格、来源、价型/渠道、十进制金额文本、币种、计价单位、采购 MOQ、税运费及原文条件。复合外键阻止跨产品关联。
-
-价格明细是价格事实的权威来源。`wholesale_price_cents` 只投影明确的产品级人民币/件默认批发价；多个价格不自动选最低价。关联资料变化递增所属产品 version，使旧导入和报价预览失效。细节、约束及恢复边界见 [产品库 V2 Spec](specs/product-library-v2.md)。新增 revision 为 `20261029_20` / `20261029_21`；正式库尚未迁移。
+产品库、客户报价和客户触达的数据表、历史副本及其附属数据库对象已从工作库移除。旧迁移保留用于重放，普通启动会拒绝待切换的旧库。表级清单、外键保护和恢复窗口见 [第一阶段 Spec](specs/personal-workbench-scope-v1.md)。

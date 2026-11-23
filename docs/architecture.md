@@ -2,7 +2,7 @@
 
 ## 1. 架构目标
 
-当前 V1 只服务一个人、本地运行、每天采集一次 1688 竞品数据。
+当前工作台面向个人，在 Windows 本机运行，支持手动采集和可配置的 1688 定时采集。
 
 优先级：
 
@@ -63,7 +63,7 @@ Playwright + 1688
 
 ## 4. 模块边界
 
-V1 建议拆成以下业务模块：
+当前核心业务按竞品、分组、采集、快照、变化和大屏聚合组织。
 
 ```text
 competitors
@@ -79,12 +79,12 @@ dashboard
 - competitors：竞品商品本身；
 - groups：竞品分组；
 - collection：采集 1688 数据；
-- snapshots：保存每天采集到的事实数据；
+- snapshots：保存每次成功采集产生的事实数据；
 - changes：比较前后快照并生成变化记录；
-- dashboard：首页查询和聚合；今日变化在 Backend 按 active Competitor 聚合 ChangeEvent，Frontend 只展示聚合后的 item；
+- dashboard：默认大屏的变化聚合与组级关注排序由后端计算，前端展示结果；
 - shared：少量真正跨模块共享的基础能力。
 
-不要提前创建大量抽象层。
+系统设置和工作浏览器服务于监控与采集。全局搜索匹配前端的页面与设置入口，采集任务通知保存在浏览器本地存储。产品库和客户触达 API 已退役。后端启动会先检查数据库 revision，再恢复中断的采集任务和启动调度。旧库显式切换路径见 [第一阶段 Spec](specs/personal-workbench-scope-v1.md)。
 
 ## 5. 后端分层
 

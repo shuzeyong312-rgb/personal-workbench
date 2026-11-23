@@ -1,5 +1,7 @@
 # Product Library V1 — 厂家产品资料库
 
+> 历史文档。产品库、客户报价和客户触达已退役。文中的操作与验收适用于旧版本，现行范围见 [个人工作台第一阶段](personal-workbench-scope-v1.md)。
+
 - 状态：Frozen / ChatGPT 最终独立 Spec Review PASS；已冻结、未实施。
 - 审查基准：`f7719ef9295b8ce9bb3f44ccd814cd38ad540d9c`；P0/P1/P2 = 0/0/0，原 P2 已关闭；两项 P3 为非阻塞实施注意事项。
 - 日期：2026-10-18。

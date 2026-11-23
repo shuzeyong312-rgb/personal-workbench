@@ -1,5 +1,7 @@
 # 产品库 V2 简化设计（冻结实施合同）
 
+> 历史文档。产品库、客户报价和客户触达已退役。文中的操作与验收适用于旧版本，现行范围见 [个人工作台第一阶段](personal-workbench-scope-v1.md)。
+
 用户已确认本合同并授权实施；实现基线为 `52f794c709789a47ad05c296304e7089613a871d`，代码审查修复基线为 `364772d4e4984eeffbb7c1d1841e1b3c34849c4f`。本状态记录不改变以下业务规则。
 
 - [Issue #11](https://github.com/shuzeyong312-rgb/personal-workbench/issues/11)；PR #7 源码基线 `81dac9bbb01e1e0c5927791f55e74aeec612e946`；本次 Review 修订基线 `b3b2df0f9ad8668cca508b04b9bae1cb6982a97f`。风险 L：身份、金额与迁移。

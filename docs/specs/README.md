@@ -1,6 +1,13 @@
 # Spec 状态索引
 
-核对日期：2026-10-08。基线：`main` 的 `4822b4a`（本轮纯文档治理前），当前 ORM、API、Frontend、12 条 Alembic revision 和 Git 历史。索引覆盖现有全部 **30 份 Spec**，不改写冻结业务正文，不删除或重命名历史合同。
+下方逐份状态表以 2026-10-08 的 30 份 Spec 盘点为基础，核对基线为 `main` 的 `4822b4a`。后续追加的条目与本文顶部的现行范围优先于该历史盘点。
+
+## 当前工作台范围（2026-11-23）
+
+[个人工作台第一阶段](personal-workbench-scope-v1.md) 已实施，独立 Code Review 通过，本机工作库已完成停写切换。当前默认入口为竞品监控大屏，保留竞品与我方商品、分组分析、采集记录、任务通知和设置。新工具的范围另行决定。
+
+- 退役业务的历史合同：[产品库 V1](product-library-v1.md)、[V1.1](product-library-v1.1.md)、[V2](product-library-v2.md)、[身份规则](product-library-identity-v2.md)、[操作改造](product-library-vnext-operations.md)、[界面升级](product-library-ui-refresh-v1.md)、[客户报价](customer-quotation-upgrade.md)、[客户触达](../customer-reach-v1.md)。
+- 旧首页和模块入口的设计见 [工作台体验 V1](workbench-experience-v1.md) 和 [旧首页升级](home-command-center.md)。入口和搜索的现行范围以第一阶段 Spec 与 [UI 规范](../ui-system.md) 为准。
 
 ## 阅读顺序与优先级
 
@@ -106,8 +113,3 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | Spec | 状态 | 范围与 Gate |
 | --- | --- | --- |
 | [group-analysis-dynamics-first-v1.md](group-analysis-dynamics-first-v1.md) | 草稿，待独立 Spec Review；未冻结，未授权实施 | 大屏按现有关注等级分区并折叠一般变化；组分析以竞品动态为默认标签，与商品对比共用工作区；相关 SKU 变化合并呈现并保留原事件证据。 |
-
-
-## 草稿 Spec（2026-11-23）
-
-- [个人工作台第一阶段](personal-workbench-scope-v1.md) — L 级，已按独立 Spec Review 修订，待复审。保留竞品监控与采集，移除产品库、客户报价和客户触达，明确工作库迁移与验收。
