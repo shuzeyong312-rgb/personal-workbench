@@ -107,3 +107,7 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 | --- | --- | --- |
 | [group-analysis-dynamics-first-v1.md](group-analysis-dynamics-first-v1.md) | 草稿，待独立 Spec Review；未冻结，未授权实施 | 大屏按现有关注等级分区并折叠一般变化；组分析以竞品动态为默认标签，与商品对比共用工作区；相关 SKU 变化合并呈现并保留原事件证据。 |
 
+
+## 草稿 Spec（2026-11-23）
+
+- [个人工作台第一阶段](personal-workbench-scope-v1.md) — L 级，待独立 Spec Review。保留竞品监控与采集，移除产品库、客户报价和客户触达，明确工作库迁移与验收。
