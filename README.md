@@ -1,20 +1,17 @@
 # Personal Workbench
 
-面向个人的 Windows 本地 Web 工作台，主要用于 1688 竞争情报、厂家产品库与客户报价，并提供开发态客户触达工具。数据保存在本机 SQLite。
+面向个人的 Windows 本地 Web 工作台，用于 1688 竞品监控与采集。数据保存在本机 SQLite。
 
 ## 当前能力与边界
 
 - **竞争情报**：我方商品 / 竞品管理、分组与基准商品绑定、监控生命周期、商品快照、SKU / 库存 / 主图变化及采集历史。
 - **组内分析**：关注组排序、今日重要动态、历史动作、价格 / MOQ / SKU / 库存比较与组内竞争位置排名；经营指标按证据与可用性展示，上架时间、月成交、年成交、评论和履约等字段不保证每个商品都有值。库存变化不能推算销量。
 - **采集任务**：串行批次、间隔与休息、验证冷却和有限续采；自动采集支持滚动 24 小时、每日 1–8 个时间点及有每日次数上限的固定间隔，可配置补采 / 跳过。调度依赖后端持续运行，休眠期间不执行。
-- **产品库与报价**：厂家商品维护、canonical-package-v1 ZIP 导入预览 / 确认、搜索与高级筛选、Identity V2 商品身份、客户报价计算与 Excel 导出。客户导出隔离内部字段，具体合同见 Spec。
-- **客户触达（开发态）**：持久化任务、模拟演练、暂停 / 跳过 / 取消与结果记录；可选 Windows 桌面执行器的客户端依赖、确认方式和适用边界见[客户触达说明](docs/customer-reach-v1.md)。默认 simulated，不操作客户端；真实发送需另行明确授权，不能把模拟测试当作实机验收。
 
-首页与自动上架仍有占位入口。AI 建议、自动定价、自动选品、自动上架、多用户、多平台及通知尚未作为正式业务实现。`experiments/` 是实验与历史证据，不是正式服务；[旧重构计划](docs/roadmap/competition-intelligence-restructuring-plan.md)仅供历史背景，已落地的排名与经营指标不再列为待实现。
 
 ## 技术栈与目录
 
-React 19、TypeScript、Vite 6、CSS / SVG；FastAPI / Uvicorn 模块化单体；SQLite / SQLAlchemy / Alembic；Python Playwright + 本机 Google Chrome 采集；openpyxl 处理 Excel。自动验证使用 pytest、Vitest、Typecheck 和 Build；必要时人工检查浏览器交互与视觉。调度在 FastAPI lifespan 内运行，复用 Batch Runner。
+React 19、TypeScript、Vite 6、CSS / SVG；FastAPI / Uvicorn 模块化单体；SQLite / SQLAlchemy / Alembic；Python Playwright + 本机 Google Chrome 采集。自动验证使用 pytest、Vitest、Typecheck 和 Build；必要时人工检查浏览器交互与视觉。调度在 FastAPI lifespan 内运行，复用 Batch Runner。
 
 ```text
 personal-workbench/
@@ -53,7 +50,7 @@ npm --prefix frontend ci
 .\dev.ps1
 ```
 
-脚本执行策略受限时可用 `powershell.exe -ExecutionPolicy Bypass -File .\dev.ps1`。脚本不安装依赖，启动前会在 backend 执行 `alembic upgrade head`，**会升级本地工作库，已有数据先备份**；工程验证不要用此脚本。
+脚本执行策略受限时可用 `powershell.exe -ExecutionPolicy Bypass -File .\dev.ps1`。脚本不安装依赖，启动前会在 backend 执行 `alembic upgrade head`。空库可自动初始化，含退役业务的现有工作库需要走下方显式切换流程。工程验证请使用隔离环境。
 
 - 后端固定 `http://127.0.0.1:8200`，启用 reload；前端由 Windows 分配可绑定端口并打开浏览器，实际地址见控制台与 `logs/frontend.log`，`/api` 代理到 8200。
 - 两服务都运行时再次执行脚本会强制停止；只有一个存在时清理项目残留并重新启动。日志在 `logs/backend.log` 和 `logs/frontend.log`，脚本不会杀掉占用端口的无关进程。
@@ -94,9 +91,24 @@ git diff --check
 
 ## 本地数据与备份
 
-- `backend/data/personal_workbench.db`、备份、SQLite sidecar 和客户触达运行数据均保留原路径。运行中的 SQLite 不应只复制主文件；使用 SQLite 在线备份，或安全停写后完整备份并验证可恢复性。
+- `backend/data/personal_workbench.db`、备份和 SQLite sidecar（如存在）位于数据目录。运行中的 SQLite 不应只复制主文件；使用 SQLite 在线备份，或安全停写后完整备份并验证可恢复性。
 - `.browser-profile/` 包含登录状态，`.env*` 可能含凭证，禁止提交或随意重置；`.venv/` 是 Python 运行依赖。
 - `logs/`、`.artifacts/`、`docs/qa/` 和 `.tmp/` 可能保存排障证据或验证副本，先确认用途再清理；不要把隐藏于 VS Code 当成可删除。
-- Identity V2 之后的多商品写入不能靠直接 downgrade 恢复，参见[Identity V2 Spec](docs/specs/product-library-identity-v2.md)的备份恢复约束。
+
+## 旧工作库切换
+
+现有 `20261029_21` 或 `20261030_22` 工作库须显式升级至 `20261123_23`。普通启动会拒绝旧库，删除范围及停写验收见 [退役 Spec](docs/specs/personal-workbench-scope-v1.md)。
+
+1. 停止工作台及其他写入方。确认数据库路径为 `backend/data/personal_workbench.db`，使用 SQLite 在线备份接口制作临时恢复点，并恢复到另一个文件验证版本和完整性。
+2. 保持停写，从仓库根目录进入后端，显式执行升级。
+
+   ```powershell
+   Push-Location backend
+   ..\.venv\Scripts\python.exe -m alembic -x retire_legacy_modules=1 upgrade head
+   Pop-Location
+   ```
+
+3. 用只读连接核验 revision、退役对象、保留数据和约束，并检查 `PRAGMA integrity_check` 与 `PRAGMA foreign_key_check`。需要启动应用的检查在隔离副本上完成。
+4. 所有检查通过后放行工作台启动，随后清理本次临时恢复点和演练副本。放行写入前可用临时恢复点恢复旧工作库。放行写入后如需回退，先停写并保全当前库和新增监控数据。
 
 更多入口：[产品](docs/product.md) · [架构](docs/architecture.md) · [数据模型](docs/data-model.md) · [业务 Spec 索引](docs/specs/README.md) · [UI 规范](docs/ui-system.md) · [编码规则](docs/coding-rules.md)。

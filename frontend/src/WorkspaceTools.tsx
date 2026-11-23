@@ -1,6 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { BatchState, Page } from "./App";
-import type { LibraryProduct } from "./ProductLibrary";
 import "./WorkspaceTools.css";
 
 type Notification = { id: string; title: string; body: string; tone: "success" | "warning" | "error"; time: string; read: boolean };
@@ -23,36 +22,28 @@ export function notificationForBatch(batch: BatchState): Notification | null {
   }
   return { id: batch.task_id, title: tone === "success" ? "竞品采集已完成" : tone === "warning" ? "竞品采集部分完成" : "竞品采集需处理", body: `已完成 ${batch.completed} / ${batch.total} · 成功 ${batch.succeeded} · 失败 ${batch.failed} · 剩余 ${batch.remaining}`, tone, time: new Date().toISOString(), read: false };
 }
-type ToolsContextValue = { stored: Stored; update: (fn: (s: Stored) => Stored) => void; productQuery: { text: string; version: number }; setProductQuery: (q: string) => void };
+type ToolsContextValue = { stored: Stored; update: (fn: (s: Stored) => Stored) => void };
 const ToolsContext = createContext<ToolsContextValue | null>(null);
 export function WorkspaceToolsProvider({ batch, children }: { batch: BatchState; children: ReactNode }) {
   const [stored, setStored] = useState<Stored>(readStored);
-  const [productQuery, setProductQueryState] = useState({ text: "", version: 0 });
-  const setProductQuery = (text: string) => setProductQueryState(current => ({ text, version: current.version + 1 }));
   const update = (fn: (s: Stored) => Stored) => setStored(current => { const next = fn(current); if (next !== current) { try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* keep session state */ } } return next; });
   useEffect(() => { const item = notificationForBatch(batch); if (item) update(current => current.seen.includes(item.id) ? current : { items: [item, ...current.items].slice(0, 100), seen: [item.id, ...current.seen].slice(0, 500) }); }, [batch]);
-  return <ToolsContext.Provider value={{ stored, update, productQuery, setProductQuery }}>{children}</ToolsContext.Provider>;
+  return <ToolsContext.Provider value={{ stored, update }}>{children}</ToolsContext.Provider>;
 }
-export function useProductSearchQuery() { return useContext(ToolsContext)?.productQuery ?? { text: "", version: 0 }; }
-const entries: { label: string; page: Page; kind: "页面" | "功能"; tags: string; section?: string; planned?: boolean }[] = [
-  { label: "工作台首页", page: "home", kind: "页面", tags: "首页 工作空间" },
+const entries: { label: string; page: Page; kind: "页面" | "功能"; tags: string; section?: string }[] = [
   { label: "竞品监控大屏", page: "dashboard", kind: "页面", tags: "竞品 总览 采集" },
   { label: "我方商品", page: "own-products", kind: "页面", tags: "自家 商品" },
   { label: "竞品列表", page: "competitors", kind: "页面", tags: "竞争对手 商品" },
   { label: "竞品分组", page: "groups", kind: "页面", tags: "竞争分析 商品组" },
   { label: "采集记录", page: "collection-tasks", kind: "页面", tags: "任务 批次 日志" },
-  { label: "产品库", page: "product-library", kind: "页面", tags: "商品资料 型号" },
-  { label: "客户触达", page: "customer-reach", kind: "页面", tags: "客户 推广" },
   { label: "系统设置", page: "settings", kind: "页面", tags: "配置" },
   { label: "店铺识别", page: "settings", kind: "功能", tags: "店铺名称", section: "settings-basic" },
   { label: "采集策略", page: "settings", kind: "功能", tags: "自动计划 定时", section: "settings-monitoring" },
   { label: "工作浏览器", page: "settings", kind: "功能", tags: "1688 Chrome 登录 插件", section: "settings-browser" },
-  ...([ ["AI智能助手", "ai-assistant"], ["全网比价", "price-compare"], ["自动询价", "auto-inquiry"], ["自动上架", "auto-listing"] ] as const).map(([label, page]) => ({ label, page, kind: "页面" as const, tags: "规划中", planned: true }))
 ];
 
 function ToolIcon({ name }: { name: string }) {
   const paths: Record<string, ReactNode> = {
-    home: <><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9M9 20v-6h6v6"/></>,
     dashboard: <><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></>,
     product: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></>,
     groups: <><rect x="3" y="5" width="8" height="6" rx="1.5"/><rect x="13" y="5" width="8" height="6" rx="1.5"/><rect x="8" y="14" width="8" height="6" rx="1.5"/></>,
@@ -72,7 +63,6 @@ function ToolIcon({ name }: { name: string }) {
 function entryIcon(page: Page, section?: string) {
   if (section === "settings-browser") return "browser";
   if (page === "settings") return "settings";
-  if (page === "home") return "home";
   if (page === "dashboard") return "dashboard";
   if (page === "groups") return "groups";
   if (page === "collection-tasks") return "tasks";
@@ -86,29 +76,20 @@ function notificationTime(value: string) {
 export function WorkspaceTools({ onNavigate }: { onNavigate: (page: Page) => void | boolean }) {
   const context = useContext(ToolsContext);
   const [search, setSearch] = useState(false); const [panel, setPanel] = useState(false); const [unreadOnly, setUnreadOnly] = useState(false);
-  const [q, setQ] = useState(""); const [products, setProducts] = useState<LibraryProduct[]>([]); const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [q, setQ] = useState("");
   const trigger = useRef<HTMLButtonElement>(null); const input = useRef<HTMLInputElement>(null); const notificationAnchor = useRef<HTMLDivElement>(null);
   function closeSearch() { setSearch(false); trigger.current?.focus(); }
   function openSearch() { if (document.querySelector('dialog[open], [role="dialog"]')) return; setPanel(false); setQ(""); setSearch(true); }
   useEffect(() => { const handler = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); if (search) closeSearch(); else openSearch(); } else if (e.key === "Escape") { if (search) closeSearch(); else setPanel(false); } }; document.addEventListener("keydown", handler); return () => document.removeEventListener("keydown", handler); }, [search]);
   useEffect(() => { if (search) input.current?.focus(); }, [search]);
   useEffect(() => { if (!panel) return; const dismiss = (event: MouseEvent) => { if (!notificationAnchor.current?.contains(event.target as Node)) setPanel(false); }; document.addEventListener("mousedown", dismiss); return () => document.removeEventListener("mousedown", dismiss); }, [panel]);
-  useEffect(() => {
-    const query = q.trim(); setProducts([]);
-    if (!search || !query) { setStatus("idle"); return; }
-    const controller = new AbortController(); setStatus("loading");
-    const timer = window.setTimeout(() => { const params = new URLSearchParams({ q: query, page: "1", page_size: "8" });
-      void fetch(`/api/product-library/products?${params}`, { signal: controller.signal }).then(response => { if (!response.ok) throw new Error(); return response.json(); }).then(data => { if (!controller.signal.aborted) { setProducts(data.items); setStatus("ready"); } }).catch(() => { if (!controller.signal.aborted) setStatus("error"); });
-    }, 250);
-    return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [q, search]);
   if (!context) return null;
   const { stored, update } = context; const unread = stored.items.filter(item => !item.read).length;
-  const filtered = entries.filter(item => q.trim() ? `${item.label} ${item.tags}`.toLowerCase().includes(q.trim().toLowerCase()) : ["dashboard", "product-library", "groups", "collection-tasks", "settings"].includes(item.page) && !item.section);
-  function go(page: Page, section?: string, product?: string) { if (onNavigate(page) === false) return; if (product !== undefined) context!.setProductQuery(product); setSearch(false); setPanel(false); if (section) window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ block: "start" }), 100); }
+  const filtered = entries.filter(item => q.trim() ? `${item.label} ${item.tags}`.toLowerCase().includes(q.trim().toLowerCase()) : ["dashboard", "own-products", "groups", "collection-tasks", "settings"].includes(item.page) && !item.section);
+  function go(page: Page, section?: string) { if (onNavigate(page) === false) return; setSearch(false); setPanel(false); if (section) window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ block: "start" }), 100); }
   const visibleNotifications = stored.items.filter(item => !unreadOnly || !item.read);
   return <div className="workspace-tools">
-    <button ref={trigger} type="button" className="global-search-trigger" aria-label="搜索页面、功能或商品" onClick={openSearch}><ToolIcon name="search"/><span>搜索页面、功能或商品</span><kbd>Ctrl K</kbd></button>
+    <button ref={trigger} type="button" className="global-search-trigger" aria-label="搜索页面或功能" onClick={openSearch}><ToolIcon name="search"/><span>搜索页面或功能</span><kbd>Ctrl K</kbd></button>
     <div ref={notificationAnchor} className="notification-anchor">
       <button type="button" className="notification-trigger" aria-label={`任务通知，${unread} 条未读`} aria-expanded={panel} onClick={() => setPanel(!panel)}><ToolIcon name="bell"/>{unread > 0 && <b>{unread > 99 ? "99+" : unread}</b>}</button>
       {panel && <section className="notification-panel" aria-label="任务通知中心">
@@ -120,9 +101,9 @@ export function WorkspaceTools({ onNavigate }: { onNavigate: (page: Page) => voi
       </section>}
     </div>
     {search && <div className="global-search-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) closeSearch(); }}><section className="global-search-dialog" role="dialog" aria-modal="true" aria-label="全局搜索" onKeyDown={event => { if (event.key !== "Tab") return; const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('input, button:not(:disabled)')); const first = controls[0], last = controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } }}>
-      <div className="global-search-input"><span className="search-input-icon"><ToolIcon name="search"/></span><input ref={input} aria-label="搜索页面、功能或商品" placeholder="搜索页面、功能或商品" value={q} onChange={e => setQ(e.target.value)} /><button type="button" onClick={closeSearch} aria-label="关闭搜索">Esc</button></div>
-      <div className="global-search-results">{(["页面", "功能"] as const).map(kind => { const rows = filtered.filter(item => item.kind === kind); return rows.length > 0 && <div className="search-group" key={kind}><h2>{q.trim() ? kind : "常用入口"}</h2>{rows.map(item => <button className="search-result" type="button" key={item.label} aria-label={`${item.label} ${item.planned ? "规划中" : item.kind}`} onClick={() => go(item.page, item.section)}><span className={`search-result-icon ${item.kind === "功能" ? "feature" : item.page === "product-library" ? "library" : ""}`}><ToolIcon name={entryIcon(item.page, item.section)}/></span><span className="search-result-copy"><strong>{item.label}</strong><small>{item.planned ? "此功能正在规划" : item.kind === "功能" ? "系统设置 · 竞品监控" : item.tags.split(" ").slice(0, 2).join(" / ")}</small></span><span className="search-result-kind">{item.planned ? "规划中" : item.kind}</span><span className="search-result-arrow"><ToolIcon name="arrow"/></span></button>)}</div>; })}
-      {q.trim() && <div className="search-group"><h2>商品资料</h2>{status === "loading" && <p className="search-state" role="status">正在搜索商品…</p>}{status === "error" && <p className="search-state error" role="alert">商品搜索失败，请检查服务后重试。</p>}{status === "ready" && products.map(product => <button className="search-result" type="button" key={product.id} onClick={() => go("product-library", undefined, product.model || product.name)}><span className="search-result-icon library"><ToolIcon name="product"/></span><span className="search-result-copy"><strong>{product.name}</strong><small>{product.model || "未提供型号"} · {product.source_companies?.join("、") || "无供应商来源"}</small></span><span className="search-result-kind">商品</span><span className="search-result-arrow"><ToolIcon name="arrow"/></span></button>)}{status === "ready" && !products.length && <p className="search-state">没有匹配的商品</p>}</div>}{!filtered.length && status !== "loading" && !products.length && <p className="search-state">没有找到匹配的页面或功能</p>}</div>
+      <div className="global-search-input"><span className="search-input-icon"><ToolIcon name="search"/></span><input ref={input} aria-label="搜索页面或功能" placeholder="搜索页面或功能" value={q} onChange={e => setQ(e.target.value)} /><button type="button" onClick={closeSearch} aria-label="关闭搜索">Esc</button></div>
+      <div className="global-search-results">{(["页面", "功能"] as const).map(kind => { const rows = filtered.filter(item => item.kind === kind); return rows.length > 0 && <div className="search-group" key={kind}><h2>{q.trim() ? kind : "常用入口"}</h2>{rows.map(item => <button className="search-result" type="button" key={item.label} aria-label={`${item.label} ${item.kind}`} onClick={() => go(item.page, item.section)}><span className={`search-result-icon ${item.kind === "功能" ? "feature" : ""}`}><ToolIcon name={entryIcon(item.page, item.section)}/></span><span className="search-result-copy"><strong>{item.label}</strong><small>{item.kind === "功能" ? "系统设置 · 竞品监控" : item.tags.split(" ").slice(0, 2).join(" / ")}</small></span><span className="search-result-kind">{item.kind}</span><span className="search-result-arrow"><ToolIcon name="arrow"/></span></button>)}</div>; })}
+      {!filtered.length && <p className="search-state">没有找到匹配的页面或功能</p>}</div>
     </section></div>}
   </div>;
 }

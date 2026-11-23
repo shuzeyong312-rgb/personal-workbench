@@ -386,7 +386,7 @@ def test_lifespan_releases_lease_and_stops_browser_when_scheduler_disabled(tmp_p
     monkeypatch.setattr(main, "_project_root", lambda: tmp_path)
     monkeypatch.setenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER", "1")
     monkeypatch.setattr(main, "recover_interrupted_batches", lambda _: None)
-    monkeypatch.setattr(main, "recover_customer_reach_tasks", lambda _: None)
+    monkeypatch.setattr(main, "require_current_schema", lambda _: None)
     calls = []
     async def stopped():
         calls.append("browser")
@@ -410,7 +410,7 @@ def test_lifespan_releases_lease_when_shutdown_fails(tmp_path, monkeypatch, fail
     monkeypatch.setattr(main, "_project_root", lambda: tmp_path)
     monkeypatch.setenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER", "1")
     monkeypatch.setattr(main, "recover_interrupted_batches", lambda _: None)
-    monkeypatch.setattr(main, "recover_customer_reach_tasks", lambda _: None)
+    monkeypatch.setattr(main, "require_current_schema", lambda _: None)
     calls = []
     async def stop_batch():
         calls.append("batch")

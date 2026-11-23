@@ -30,7 +30,8 @@ def test_real_alembic_upgrade_is_repeatable_and_keeps_favorites(tmp_path):
     with engine.begin() as connection:
         connection.execute(text("INSERT INTO competitor_groups (name, created_at) VALUES ('existing', '2026-01-01')"))
     run_command(url, "20261027_19")
-    run_command(url, "head")
+    run_command(url, "20261029_21")
+    run_command(url, "head", args=("retire_legacy_modules=1",))
     with engine.begin() as connection:
         connection.execute(text("UPDATE toolbox_items SET favorite = 0 WHERE name = 'iLovePDF'"))
     run_command(url, "head")

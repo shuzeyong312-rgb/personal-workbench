@@ -1,4 +1,5 @@
 from pathlib import Path
+from argparse import Namespace
 
 from alembic import command
 from alembic.config import Config
@@ -10,13 +11,13 @@ import app.database as database
 BACKEND_ROOT = Path(__file__).parents[1]
 
 
-def run_command(database_url: str, revision: str, *, downgrade: bool = False) -> None:
-    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+def run_command(database_url: str, revision: str, *, downgrade: bool = False, args: tuple[str, ...] = (), sql: bool = False) -> None:
+    config = Config(str(BACKEND_ROOT / "alembic.ini"), cmd_opts=Namespace(x=list(args)))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     original_url = database.DATABASE_URL
     database.DATABASE_URL = database_url
     try:
-        (command.downgrade if downgrade else command.upgrade)(config, revision)
+        (command.downgrade if downgrade else command.upgrade)(config, revision, sql=sql)
     finally:
         database.DATABASE_URL = original_url
 

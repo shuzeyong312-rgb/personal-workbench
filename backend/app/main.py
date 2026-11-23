@@ -8,8 +8,6 @@ from threading import Event
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from fastapi.exception_handlers import request_validation_exception_handler
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
@@ -25,10 +23,9 @@ from app.competitor_groups import router as competitor_groups_router
 from app.group_detail import router as group_detail_router
 from app.group_attention import router as group_attention_router
 from app.database import engine
+from app.retirement import require_current_schema
 from app.dashboard import router as dashboard_router
 from app.settings import router as settings_router
-from app.product_library import router as product_library_router
-from app.customer_reach import recover_customer_reach_tasks, router as customer_reach_router
 from app.work_browser import WORK_BROWSER, acquire_backend_lease, router as work_browser_router
 from app.collection.collector_1688 import _project_root
 
@@ -92,13 +89,13 @@ async def _daily_collection_loop(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    require_current_schema(engine)
     lease = acquire_backend_lease(_project_root() / ".browser-profile")
     _app.state.browser_lease = lease
     scheduler_task = None
     try:
         session_factory = getattr(_app.state, "collection_session_factory", None) or _session_factory
         recover_interrupted_batches(session_factory)
-        recover_customer_reach_tasks(session_factory)
         stop_event = asyncio.Event()
         thread_stop_event = Event()
         if os.getenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER") != "1":
@@ -131,17 +128,7 @@ app.include_router(group_detail_router)
 app.include_router(group_attention_router)
 app.include_router(dashboard_router)
 app.include_router(settings_router)
-app.include_router(product_library_router)
-app.include_router(customer_reach_router)
 app.include_router(work_browser_router)
-
-
-@app.exception_handler(RequestValidationError)
-async def product_library_validation_error(request: Request, exc: RequestValidationError):
-    if request.url.path.startswith("/api/product-library/"):
-        code = "invalid_decisions" if request.url.path.endswith("/confirm") else "invalid_product"
-        return JSONResponse(status_code=422, content={"code": code, "message": "请求字段或格式无效"})
-    return await request_validation_exception_handler(request, exc)
 
 
 @app.exception_handler(HTTPException)

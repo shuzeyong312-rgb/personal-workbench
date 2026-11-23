@@ -794,7 +794,7 @@ def test_ownership_migration_preserves_history_and_resolves_legacy_roles():
                     "SELECT id, competitor_id, snapshot_id, change_type, entity_key, old_value, new_value, detected_at FROM change_events"
                 )).all(),
             }
-        _run_revision(database_url, "head")
+        _run_revision(database_url, "20261004_12")
         with engine.begin() as connection:
             rows = connection.execute(text("SELECT offer_id, ownership, group_role FROM competitors ORDER BY id")).all()
             assert rows == [("legacy-null", "self", "own"), ("known-self", "self", "competitor")]
@@ -841,7 +841,7 @@ def test_ownership_migration_logs_group_conflict_and_moves_loser_to_unassigned(c
                 "VALUES (2, 1, 'competitor', '1688', 'migration-loser', 'u2', '二', '广州莓有科技有限公司', 'unknown', 1, '2026-01-02', '2026-01-02')"
             ))
         with caplog.at_level(logging.WARNING):
-            _run_revision(database_url, "head")
+            _run_revision(database_url, "20261004_12")
         assert "count=1" in caplog.text
         assert "group_id=1" in caplog.text
         assert "winner=1" in caplog.text
@@ -868,7 +868,7 @@ def test_ownership_migration_uses_created_at_before_legacy_group_role(caplog):
                 "VALUES (2, 1, 'own', '1688', 'legacy-role-first', 'u2', '二', '广州莓有科技有限公司', 'unknown', 1, '2026-01-02', '2026-01-02')"
             ))
         with caplog.at_level(logging.WARNING):
-            _run_revision(database_url, "head")
+            _run_revision(database_url, "20261004_12")
         assert "winner=1" in caplog.text
         assert "losing_self_ids=[2]" in caplog.text
         with engine.begin() as connection:

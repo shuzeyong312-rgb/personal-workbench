@@ -19,6 +19,7 @@ from app.models import Base, CollectionBatch
 def test_lifespan_starts_and_cancels_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[str] = []
     monkeypatch.delenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER", raising=False)
+    monkeypatch.setattr(main, "require_current_schema", lambda _: None)
     monkeypatch.setattr(main, "recover_interrupted_batches", lambda _session_factory: 0)
     async def scheduler(stop: asyncio.Event, _thread: Event) -> None:
         events.append("started"); await stop.wait(); events.append("stopped")
@@ -33,6 +34,7 @@ def test_disabled_scheduler_still_runs_interrupted_batch_recovery(monkeypatch: p
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER", "1")
+    monkeypatch.setattr(main, "require_current_schema", lambda _: None)
     monkeypatch.setattr(main, "recover_interrupted_batches", lambda value: calls.append(value))
     main.app.state.collection_session_factory = factory
     try:
@@ -122,6 +124,7 @@ def test_scheduler_recovers_after_real_sqlite_lock(monkeypatch, tmp_path, caplog
 def test_failed_scheduler_still_shuts_down_runner(monkeypatch):
     events = []
     monkeypatch.delenv("PERSONAL_WORKBENCH_DISABLE_SCHEDULER", raising=False)
+    monkeypatch.setattr(main, "require_current_schema", lambda _: None)
     monkeypatch.setattr(main, "recover_interrupted_batches", lambda factory: 0)
     def fail(*args, **kwargs):
         raise RuntimeError("unexpected preparation failure")

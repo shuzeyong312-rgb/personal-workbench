@@ -7,9 +7,7 @@ import "./App.css";
 import "./CompetitorList.css";
 import "./Workspace.css";
 import "./Dashboard.css";
-import { ProductLibrarySimple as ProductLibrary } from "./ProductLibrarySimple";
 import { WorkspaceTools, WorkspaceToolsProvider } from "./WorkspaceTools";
-import { CustomerReachPage } from "./CustomerReach";
 
 type AddStatus = "initial" | "submitting" | "success" | "partial" | "failed" | "invalid" | "duplicate" | "server-error";
 type GroupCreateStatus = "initial" | "submitting" | "success" | "invalid" | "duplicate" | "server-error";
@@ -17,7 +15,7 @@ type ListStatus = "loading" | "error" | "ready";
 type DashboardStatus = "loading" | "error" | "ready";
 type GroupStatus = "loading" | "error" | "ready";
 export type BatchStatus = "idle" | "running" | "pausing" | "paused" | "stopping" | "stopped" | "resting" | "cooling_down" | "completed" | "verification_required";
-export type Page = "home" | "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "product-library" | "customer-reach" | "ai-assistant" | "price-compare" | "auto-inquiry" | "auto-listing" | "settings";
+export type Page = "dashboard" | "own-products" | "competitors" | "detail" | "groups" | "group-detail" | "collection-tasks" | "settings";
 type Notice = { message: string; type: "success" | "error" };
 export type LifecycleAction = "stop" | "resume" | "delete";
 type BatchAction = "selected" | "all_active" | "group" | "stop" | "resume" | "delete";
@@ -1056,17 +1054,11 @@ export function StatusBadge({ status }: { status: Competitor["status"] }) {
 }
 
 type ShellProps = { page: Page; onNavigate: (page: Page) => void | boolean; breadcrumb: string; children: ReactNode };
-type NavIconName = "home" | "monitoring" | "library" | "assistant" | "compare" | "inquiry" | "listing" | "settings";
+type NavIconName = "monitoring" | "settings";
 
 function NavIcon({ name }: { name: NavIconName }) {
   const paths: Record<NavIconName, ReactNode> = {
-    home: <><path d="m4 10 8-6 8 6" /><path d="M6 9v11h12V9" /><path d="M10 20v-6h4v6" /></>,
     monitoring: <><path d="M4 17V9" /><path d="M10 17V5" /><path d="M16 17v-4" /><path d="m4 7 5-3 5 5 6-5" /></>,
-    library: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22V5.5Z" /><path d="M4 5.5V22" /><path d="M8 7h8" /><path d="M8 11h8" /></>,
-    assistant: <><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" /><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z" /></>,
-    compare: <><path d="M5 7h12" /><path d="m14 4 3 3-3 3" /><path d="M19 17H7" /><path d="m10 14-3 3 3 3" /></>,
-    inquiry: <><path d="M5 5h14v10H9l-4 4V5Z" /><path d="M8 9h8" /><path d="M8 12h5" /></>,
-    listing: <><path d="M5 9v10h14V9" /><path d="M9 7l3-3 3 3" /><path d="M12 4v10" /></>,
     settings: <><circle cx="12" cy="12" r="3" /><path d="M12 3v2" /><path d="M12 19v2" /><path d="m5.64 5.64 1.42 1.42" /><path d="m16.94 16.94 1.42 1.42" /><path d="M3 12h2" /><path d="M19 12h2" /><path d="m5.64 18.36 1.42-1.42" /><path d="m16.94 7.06 1.42-1.42" /></>,
   };
   return <span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24">{paths[name]}</svg></span>;
@@ -1087,14 +1079,10 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
   const setMonitoringExpanded = navigationState?.setExpanded ?? setLocalExpanded;
   useEffect(() => { if (monitoringActive) setMonitoringExpanded(true); }, [monitoringActive, setMonitoringExpanded]);
   return <aside className={"sidebar workspace-sidebar" + (menuOpen ? " workspace-menu-open" : "")} onKeyDown={(event) => { if (event.key === "Escape" && menuOpen) { event.preventDefault(); closeMenu(); } }}>
-    <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>工作提效工具集</span></div></div>
+    <div className="brand"><span className="brand-mark">PW</span><div><strong>个人工作台</strong><span>竞品监控与采集</span></div></div>
     <button type="button" ref={menuButton} className="workspace-menu-toggle" aria-expanded={menuOpen} aria-controls="workspace-navigation" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? "收起导航" : "展开导航"}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d={menuOpen ? "m6 6 12 12M6 18 18 6" : "M4 6h16M4 12h16M4 18h16"} /></svg></button>
     <div id="workspace-navigation" className="workspace-navigation">
     <nav aria-label="主导航">
-      <button className={"nav-item" + (page === "home" ? " nav-active" : "")} onClick={() => selectPage("home")} aria-current={page === "home" ? "page" : undefined}><NavIcon name="home" />首页</button>
-      <p className="nav-section-label">工作工具</p>
-      <button className={"nav-item" + (page === "product-library" ? " nav-active" : "")} onClick={() => selectPage("product-library")} aria-current={page === "product-library" ? "page" : undefined}><NavIcon name="library" />产品库</button>
-      <button className={"nav-item" + (page === "customer-reach" ? " nav-active" : "")} onClick={() => selectPage("customer-reach")} aria-current={page === "customer-reach" ? "page" : undefined}><NavIcon name="monitoring" />客户触达</button>
       <div className={"nav-group" + (monitoringExpanded ? "" : " nav-group-collapsed")}>
         <button type="button" className={"nav-group-title" + (monitoringActive ? " nav-group-title-current" : "")} onClick={() => setMonitoringExpanded((expanded) => !expanded)} aria-expanded={monitoringExpanded} aria-controls="competitor-monitoring-nav"><NavIcon name="monitoring" />竞品监控<span className="nav-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 14 4-4 4 4" /></svg></span></button>
         <div className="nav-group-children" id="competitor-monitoring-nav" hidden={!monitoringExpanded}>
@@ -1105,22 +1093,17 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (page: P
           <button className={"nav-item nav-child" + (page === "collection-tasks" ? " nav-active" : "")} onClick={() => selectPage("collection-tasks")} aria-current={page === "collection-tasks" ? "page" : undefined}><span className="nav-dot" aria-hidden="true" />采集记录</button>
         </div>
       </div>
-      <p className="nav-section-label nav-section-planned">规划工具<span>规划中</span></p>
-      <button className={"nav-item" + (page === "ai-assistant" ? " nav-active" : "")} onClick={() => selectPage("ai-assistant")} aria-current={page === "ai-assistant" ? "page" : undefined}><NavIcon name="assistant" />AI智能助手</button>
-      <button className={"nav-item" + (page === "price-compare" ? " nav-active" : "")} onClick={() => selectPage("price-compare")} aria-current={page === "price-compare" ? "page" : undefined}><NavIcon name="compare" />全网比价</button>
-      <button className={"nav-item" + (page === "auto-inquiry" ? " nav-active" : "")} onClick={() => selectPage("auto-inquiry")} aria-current={page === "auto-inquiry" ? "page" : undefined}><NavIcon name="inquiry" />自动询价</button>
-      <button className={"nav-item" + (page === "auto-listing" ? " nav-active" : "")} onClick={() => selectPage("auto-listing")} aria-current={page === "auto-listing" ? "page" : undefined}><NavIcon name="listing" />自动上架</button>
       <button className={"nav-item" + (page === "settings" ? " nav-active" : "")} onClick={() => selectPage("settings")} aria-current={page === "settings" ? "page" : undefined}><NavIcon name="settings" />系统设置</button>
     </nav>
     </div>
-    <div className="sidebar-note"><strong>个人工作台</strong><span>商品资料与竞争情报</span></div>
+    <div className="sidebar-note"><strong>个人工作台</strong><span>竞品监控与采集</span></div>
   </aside>;
 }
 
 function AppShell({ page, onNavigate, breadcrumb, children }: ShellProps) {
   const monitoringPage = monitoringPages.has(page);
   return <div className={`app-shell workspace-shell${page === "settings" ? " settings-shell" : ""}${page === "group-detail" ? " group-detail-shell" : ""}`}><a className="workspace-skip" href="#workspace-main">跳至主内容</a><Sidebar page={page} onNavigate={onNavigate} /><main id="workspace-main" tabIndex={-1} className={`main-content${page === "dashboard" ? " main-content-dashboard" : ""}`} data-page={page}>
-    <div className="workspace-header"><nav className="breadcrumb" aria-label="当前位置"><button type="button" onClick={() => onNavigate("home")}>个人工作台</button><span aria-hidden="true">/</span>{monitoringPage && <><button type="button" aria-label="返回模块总览" onClick={() => onNavigate("dashboard")}>竞品监控</button><span aria-hidden="true">/</span></>}<strong aria-current="page">{breadcrumb}</strong></nav><WorkspaceTools onNavigate={onNavigate} /></div>
+    <div className="workspace-header"><nav className="breadcrumb" aria-label="当前位置"><button type="button" onClick={() => onNavigate("dashboard")}>个人工作台</button><span aria-hidden="true">/</span>{monitoringPage && <><button type="button" aria-label="返回模块总览" onClick={() => onNavigate("dashboard")}>竞品监控</button><span aria-hidden="true">/</span></>}<strong aria-current="page">{breadcrumb}</strong></nav><WorkspaceTools onNavigate={onNavigate} /></div>
     {children}
   </main></div>;
 }
@@ -2405,78 +2388,6 @@ export function AddDialog({ url, status, onUrlChange, onSubmit, onClose, groups,
   </section></div>;
 }
 
-type WorkspacePlaceholderPageProps = {
-  page: Page;
-  title: string;
-  description: string;
-  note: string;
-  icon: NavIconName;
-  onNavigate: (page: Page) => void;
-};
-
-export function WorkspacePlaceholderPage({ page, title, description, note, icon, onNavigate }: WorkspacePlaceholderPageProps) {
-  return <AppShell page={page} onNavigate={onNavigate} breadcrumb={title}>
-    <header className="page-header"><div><h1>{title}</h1><p className="page-description">{description}</p></div></header>
-    <section className="table-card module-placeholder-card">
-      <div className="module-placeholder-icon"><NavIcon name={icon} /></div>
-      <span className="module-placeholder-badge">规划中</span>
-      <strong>{title}模块已预留</strong>
-      <p>{note}</p>
-    </section>
-  </AppShell>;
-}
-
-export function HomePage({ onNavigate }: { onNavigate: (page: Page) => void }) {
-  return <AppShell page="home" breadcrumb="首页" onNavigate={onNavigate}>
-    <div className="workspace-home">
-      <header className="home-heading">
-        <div className="home-intro"><h1>首页</h1><p>从商品资料，<br />到竞争判断。</p><span>整理产品信息，跟进竞品变化。<br />在一个工作台，连接日常工作的每一步。</span></div>
-        <div className="home-architecture" aria-hidden="true">
-          <svg viewBox="0 0 440 232" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round">
-            <path className="home-diagram-guide" d="M12 24h22m-11-11v22M406 208h22m-11-11v22M12 208h22m-11-11v22M406 24h22m-11-11v22M72 116h296" />
-            <path className="home-diagram-wire" d="M85 114v49l135 58 135-58v-49M85 163l65-28m205 28-65-28M220 172v49" />
-            <path className="home-diagram-base" d="m85 114 135-58 135 58-135 58Z" />
-            <path className="home-diagram-layer" d="m117 100 103-44 103 44v26l-103 44-103-44Z" />
-            <path className="home-diagram-face" d="m117 100 103 44 103-44M220 144v26" />
-            <path className="home-diagram-core" d="m155 74 65-28 65 28v28l-65 28-65-28Z" />
-            <path className="home-diagram-face" d="m155 74 65 28 65-28M220 102v28" />
-            <path className="home-diagram-signal" d="m178 74 42-18 42 18-42 18ZM39 82h42l36 18m206 0 36-18h42" />
-            <circle cx="39" cy="82" r="3" className="home-diagram-node" /><circle cx="401" cy="82" r="3" className="home-diagram-node" />
-            <path className="home-diagram-guide" d="M185 193v8m18-1v8m34-8v8m18-15v8" />
-            <text x="38" y="65" stroke="none">商品资料</text><text x="347" y="65" stroke="none">竞争情报</text>
-          </svg>
-        </div>
-      </header>
-      <div className="home-workspaces">
-        <section className="home-monitoring" aria-labelledby="home-monitoring-title">
-          <div className="home-tool-heading"><NavIcon name="monitoring" /><h2 id="home-monitoring-title">竞争情报</h2><span>竞品监控</span></div>
-          <h3>先看变化，再查证据</h3>
-          <p>从今日关注的商品组开始，进入组内比较，回到单品查看价格、库存与变化记录。</p>
-          <button type="button" className="primary-button" onClick={() => onNavigate("dashboard")}>进入竞品监控大屏<HomeArrow /></button>
-          <div className="home-monitoring-links" aria-label="竞品监控快捷入口">
-            <button type="button" onClick={() => onNavigate("own-products")}><strong>我方商品</strong><span>管理监控与分组</span><HomeArrow /></button>
-            <button type="button" onClick={() => onNavigate("competitors")}><strong>竞品列表</strong><span>查找商品与证据</span><HomeArrow /></button>
-            <button type="button" onClick={() => onNavigate("groups")}><strong>竞品分组</strong><span>组织同组商品比较</span><HomeArrow /></button>
-            <button type="button" onClick={() => onNavigate("collection-tasks")}><strong>采集记录</strong><span>核查采集过程与结果</span><HomeArrow /></button>
-          </div>
-        </section>
-        <section className="home-library" aria-labelledby="home-library-title">
-          <div className="home-tool-heading"><NavIcon name="library" /><h2 id="home-library-title">商品资料</h2><span>产品库</span></div>
-          <h3>让产品资料有处可查</h3>
-          <p>集中整理产品与厂家信息，查找规格、图片和报价资料，为后续工作准备可靠依据。</p>
-          <button type="button" className="secondary-button" onClick={() => onNavigate("product-library")}>打开产品库<HomeArrow /></button>
-          <div className="home-library-guide"><span>资料导入</span><span>字段核对</span><span>客户报价</span></div>
-        </section>
-      </div>
-      <section className="home-task-section" aria-labelledby="home-task-title"><div><h2 id="home-task-title">开始之前</h2><p>让监控商品正确识别我方身份。</p></div><button type="button" className="home-settings-link" onClick={() => onNavigate("settings")}><NavIcon name="settings" /><span><strong>配置我方店铺与采集策略</strong><small>前往系统设置</small></span><HomeArrow /></button></section>
-      <section className="home-planned" aria-labelledby="home-planned-title"><div><h2 id="home-planned-title">工具拓展</h2><span>规划中，尚未开放</span></div><ul><li><NavIcon name="assistant" />AI智能助手</li><li><NavIcon name="compare" />全网比价</li><li><NavIcon name="inquiry" />自动询价</li><li><NavIcon name="listing" />自动上架</li></ul></section>
-    </div>
-  </AppShell>;
-}
-
-function HomeArrow() { return <svg className="home-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" /></svg>; }
-
-
 type AddInputSummary = { total: number; candidate_total: number | null; processed: number; remaining: number; pending: number; added: number; business_rejected: number; technical_failed: number; verification_required: number; interrupted: number; not_executed: number; anomaly_inputs: number };
 type BatchObservation = { metric_key: string; status: string; raw_value: string | null; reason: string | null; source?: string; observed_at?: string };
 type BatchAttempt = { id: number; attempt_number: number | null; attempt_kind: string | null; started_at: string | null; finished_at: string | null; status: string; operating_metrics_status: string; error_message: string | null; navigation_claimed_at?: string | null; navigation_confirmed_at?: string | null; duration_seconds?: number | null; observations: BatchObservation[] };
@@ -2763,12 +2674,11 @@ function WorkBrowserSettings({ onStatus }: { onStatus: (status: string) => void 
 }
 
 export function SettingsPage({ configured, value, status, error, saveError, submitting, onChange, onRetry, onReset, onSave, onNavigate, monitoring, monitoringStatus, monitoringError, monitoringSaveError, monitoringSubmitting, onMonitoringChange, onMonitoringOpen, onMonitoringRetry, onMonitoringReset, onMonitoringSave, basicDirty, monitoringDirty }: SettingsPageProps) {
-  const [planned, setPlanned] = useState("产品库");
   const [browserStatus, setBrowserStatus] = useState("未知");
   const [activeSection, setActiveSection] = useState("settings-overview");
   useEffect(() => {
     const root = document.getElementById("workspace-main");
-    const sections = ["settings-overview", "settings-basic", "settings-monitoring", "settings-browser", "settings-future"].map(id => document.getElementById(id)).filter((element): element is HTMLElement => element !== null);
+    const sections = ["settings-overview", "settings-basic", "settings-monitoring", "settings-browser"].map(id => document.getElementById(id)).filter((element): element is HTMLElement => element !== null);
     const observer = new IntersectionObserver(entries => {
       const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
       if (visible.length) setActiveSection(visible[0].target.id);
@@ -2826,7 +2736,7 @@ export function SettingsPage({ configured, value, status, error, saveError, subm
   };
   return <AppShell page="settings" onNavigate={navigate} breadcrumb="系统设置">
     <header className="page-header"><div><h1>系统设置</h1><p className="page-description">统一管理工作台的业务设置与使用偏好。</p></div></header>
-    <div className="settings-layout"><nav aria-label="设置模块" className="settings-side-nav"><strong>设置中心</strong><a href="#settings-overview" aria-current={activeSection === "settings-overview" ? "location" : undefined}>设置概览</a><span>竞品监控分析</span><a href="#settings-basic" aria-current={activeSection === "settings-basic" ? "location" : undefined}>店铺识别{basicDirty && " · 未保存"}</a><a href="#settings-monitoring" aria-current={activeSection === "settings-monitoring" ? "location" : undefined}>采集策略{monitoringDirty && " · 未保存"}</a><a href="#settings-browser" aria-current={activeSection === "settings-browser" ? "location" : undefined}>工作浏览器</a><span>其他模块 · 规划中</span>{["产品库", "客户触达", "AI 工具", "通用偏好"].map(name => <a href="#settings-future" key={name} onClick={() => setPlanned(name)}>{name}</a>)}</nav>
+    <div className="settings-layout"><nav aria-label="设置模块" className="settings-side-nav"><strong>设置中心</strong><a href="#settings-overview" aria-current={activeSection === "settings-overview" ? "location" : undefined}>设置概览</a><span>竞品监控分析</span><a href="#settings-basic" aria-current={activeSection === "settings-basic" ? "location" : undefined}>店铺识别{basicDirty && " · 未保存"}</a><a href="#settings-monitoring" aria-current={activeSection === "settings-monitoring" ? "location" : undefined}>采集策略{monitoringDirty && " · 未保存"}</a><a href="#settings-browser" aria-current={activeSection === "settings-browser" ? "location" : undefined}>工作浏览器</a></nav>
     <div className="settings-content"><section id="settings-overview" className="settings-overview"><div><h2>设置概览</h2><p>在这里管理工作台各模块的设置。已接入功能可独立保存，其他模块持续规划中。</p></div><div className="settings-overview-grid"><div><span>店铺识别</span><strong>{status === "ready" ? basicDirty ? "有未保存修改" : configured ? "已配置" : "尚未配置" : "状态未知"}</strong></div><div><span>自动采集</span><strong>{monitoringStatus === "ready" && monitoring ? monitoringDirty ? "有未保存修改" : monitoring.auto_collection_enabled ? "已开启" : "已关闭" : "状态未知"}</strong></div><div><span>工作浏览器</span><strong>{browserStatus}</strong></div></div></section>
     <div className="settings-group-heading"><h2>竞品监控分析</h2><p>管理店铺身份、采集策略与工作浏览器。</p></div>
     <section id="settings-basic" className="table-card settings-card"><div className="table-heading"><div><h2>店铺识别</h2><span>配置店铺身份，让监控中的我方商品与竞品准确归属。</span></div></div>
@@ -2848,12 +2758,12 @@ export function SettingsPage({ configured, value, status, error, saveError, subm
         <div className="settings-effect-note"><strong>生效范围</strong><span>采集节奏、风控与补采设置用于下一次新启动的批量采集，当前运行任务不变；自动调度设置对后续检查生效。</span></div>
         <div className="settings-monitoring-columns"><section className="monitoring-setting-group settings-automation"><header><h3>自动采集</h3><span>使用后端电脑本地时间，沿用上方采集节奏与风控设置。</span></header>{autoRow("每日自动采集", "开启后按所选策略自动发起批量采集", <><span className="settings-switch-state">{monitoring.auto_collection_enabled ? "已开启" : "已关闭"}</span><input className="monitoring-switch" aria-label="每日自动采集" type="checkbox" role="switch" aria-describedby="每日自动采集-description" checked={monitoring.auto_collection_enabled} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_enabled: event.target.checked })} /></>)}{autoRow("自动采集策略", "所有计划均使用后端电脑本地时间", radios("auto_collection_strategy", "自动采集策略", [{ value: "rolling_24h", label: "滚动 24 小时", description: "距商品最近一次正式尝试满 24 小时后进入自动采集范围；失败也算尝试。" }, { value: "fixed_daily", label: "每日固定时间", description: "每天在 1–8 个时间点各检查一次；每个商品每个时间点最多尝试一次。" }, { value: "fixed_interval", label: "每日固定间隔", description: "从开始时间按固定小时数采集，次数受每日上限约束，计划不会跨到次日。" }]))}{monitoring.auto_collection_strategy === "fixed_daily" && <>{monitoring.auto_collection_times.map((value, index) => autoRow(`时间点 ${index + 1}`, "后端电脑本地时间；每个时间点分别判断商品资格", <div className="settings-time-list-item"><input aria-label={`自动采集时间点 ${index + 1}`} type="time" required value={value} disabled={monitoringSubmitting} onChange={(event) => { if (event.target.value) changeTimes(monitoring.auto_collection_times.map((item, itemIndex) => itemIndex === index ? event.target.value : item)); }} /><button type="button" className="secondary-button" aria-label={`删除时间点 ${index + 1}`} disabled={monitoringSubmitting || monitoring.auto_collection_times.length <= 1} onClick={() => changeTimes(monitoring.auto_collection_times.filter((_, itemIndex) => itemIndex !== index))}>删除</button></div>))}{autoRow("新增时间点", "可设置 1–8 个不重复时间", <button type="button" className="secondary-button" disabled={monitoringSubmitting || monitoring.auto_collection_times.length >= 8} onClick={addTime}>新增时间点</button>)}</>}{monitoring.auto_collection_strategy === "fixed_interval" && <>{autoRow("每日开始时间", "后端电脑本地时间；作为当天第一个计划点", <input aria-label="每日开始时间" type="time" required value={monitoring.auto_collection_time} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_time: event.target.value })} />)}{autoRow("固定间隔小时数", "每次计划间隔 1–24 小时", <input aria-label="固定间隔小时数" type="number" min={1} max={24} step={1} required value={Number.isNaN(monitoring.auto_collection_interval_hours) ? "" : monitoring.auto_collection_interval_hours} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_interval_hours: event.target.value === "" ? NaN : Number(event.target.value) })} />)}{autoRow("每日最多采集次数", "最多 12 次；全部计划须落在当天", <input aria-label="每日最多采集次数" type="number" min={1} max={12} step={1} required value={Number.isNaN(monitoring.auto_collection_daily_limit) ? "" : monitoring.auto_collection_daily_limit} disabled={monitoringSubmitting} onChange={(event) => onMonitoringChange({ ...monitoring, auto_collection_daily_limit: event.target.value === "" ? NaN : Number(event.target.value) })} />)}</>}{monitoring.auto_collection_strategy !== "rolling_24h" && autoRow("错过计划", "决定进程启动或策略变更时如何处理已到期计划", radios("auto_collection_missed_policy", "错过计划", [{ value: "catch_up", label: "补采最新到期计划", description: "计划已错过时只补最新到期点；忙碌期间不排队，稍后重算未尝试商品。" }, { value: "skip", label: "跳过已错过计划", description: "进程或策略在计划后启用时跳过当天；已运行进程遇忙时保留最新计划等待重试。" }]))}</section><div className="settings-runtime"><section className="monitoring-setting-group"><header><h3>采集节奏</h3><span>控制每次访问之间的节奏与计划内休息。</span></header>{monitoringRows.slice(0, 3).map(field)}</section><section className="monitoring-setting-group"><header><h3>风控处理</h3><span>触发验证后，按当前设置等待并尝试恢复。</span></header>{monitoringRows.slice(3, 5).map(field)}</section><section className="monitoring-setting-group"><header><h3>经营指标补采</h3><span>默认关闭；只补采符合条件的技术异常，真实页面占位不会重试。</span></header>{monitoringRows.slice(5).map(field)}</section></div></div>{monitoringSaveError && <div className="feedback feedback-server-error" role="alert">{monitoringSaveError}</div>}{invalid && <p className="settings-validation" role="alert">{invalidMessage}</p>}<div className="settings-save-bar">{saveState(monitoringDirty, monitoringSubmitting, monitoringSaveError)}{monitoringDirty && <button type="button" className="secondary-button" onClick={() => { onMonitoringReset(); setInvalid(false); }} disabled={monitoringSubmitting}>撤销采集策略修改</button>}<button type="submit" className="primary-button" disabled={monitoringSubmitting}>{monitoringSubmitting ? "保存中…" : "保存设置"}</button></div></form>}</section>
     <div id="settings-browser"><WorkBrowserSettings onStatus={setBrowserStatus} /></div>
-    <section id="settings-future" className="settings-future"><h2>其他模块设置</h2><p>工作台后续业务设置在此统一接入。</p><div className="settings-future-grid">{["产品库", "客户触达", "AI 工具", "通用偏好"].map(name => <button type="button" key={name} aria-pressed={planned === name} onClick={() => setPlanned(name)}><strong>{name}</strong><small>{({ "产品库": "产品资料与导入相关设置", "客户触达": "客户运营相关设置", "AI 工具": "模型和工具使用偏好", "通用偏好": "界面与工作台通用设置" } as Record<string, string>)[name]}</small><span>规划中</span></button>)}</div><p role="status"><strong>{planned}设置 · 尚未开放</strong><br />具体设置将在需求确认后接入。</p></section></div></div>
+    </div></div>
   </AppShell>;
 }
 
 function App() {
-  const [page, setPage] = useState<Page>("home");
+  const [page, setPage] = useState<Page>("dashboard");
   const [monitoringExpanded, setMonitoringExpanded] = useState(() => monitoringPages.has("dashboard"));
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [ownProducts, setOwnProducts] = useState<Competitor[]>([]);
@@ -3590,13 +3500,6 @@ function App() {
     else void deleteCompetitor(lifecycleDialog.competitor);
   }
   return <WorkspaceToolsProvider batch={batchState}><MonitoringNavigationContext.Provider value={{ expanded: monitoringExpanded, setExpanded: setMonitoringExpanded }}><>
-    {page === "home" && <HomePage onNavigate={navigate} />}
-    {page === "product-library" && <AppShell page="product-library" breadcrumb="产品库" onNavigate={navigate}><ProductLibrary /></AppShell>}
-    {page === "customer-reach" && <AppShell page="customer-reach" breadcrumb="客户触达" onNavigate={navigate}><CustomerReachPage /></AppShell>}
-    {page === "ai-assistant" && <WorkspacePlaceholderPage page="ai-assistant" title="AI智能助手" description="智能辅助工作入口。" note="AI智能助手模块已预留，具体能力待规划。" icon="assistant" onNavigate={navigate} />}
-    {page === "price-compare" && <WorkspacePlaceholderPage page="price-compare" title="全网比价" description="统一检索并对比全网同款与相似商品价格。" note="后续将在这里承载商品检索、候选同款筛选、价格对比和结果沉淀。" icon="compare" onNavigate={navigate} />}
-    {page === "auto-inquiry" && <WorkspacePlaceholderPage page="auto-inquiry" title="自动询价" description="统一管理供应商询价任务与报价结果。" note="后续将在这里承载询价对象、询价话术、回复状态和供应商报价记录。" icon="inquiry" onNavigate={navigate} />}
-    {page === "auto-listing" && <WorkspacePlaceholderPage page="auto-listing" title="自动上架" description="统一管理商品资料校验、上架任务与执行结果。" note="后续将在这里承载商品资料准备、渠道映射、批量上架和失败结果处理。" icon="listing" onNavigate={navigate} />}
     {page === "dashboard" && <DashboardPage data={dashboard} attention={dashboardAttention} attentionStatus={dashboardAttentionStatus} attentionError={dashboardAttentionError} status={dashboardStatus} error={dashboardError} batchState={batchState} ownShopName={ownShopName} onAdd={openDashboardAddDialog} onCollect={() => void handleBatchAction("all_active")} onToggleBatchPause={toggleBatchPause} onEndBatch={() => void controlBatch("end")} onRetry={() => void loadDashboard()} onRetryAttention={() => void loadDashboardAttention()} onNavigate={navigate} onOpenGroupDetail={openGroupDetail} />}
     {page === "own-products" && <ListPage competitors={ownProducts} ownership="self" groups={groups} status={ownListStatus} error={ownListError} onRetry={() => void loadOwnProducts()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} paginationResetVersion={paginationResetVersion} />}
     {page === "competitors" && <ListPage competitors={competitors} ownership="competitor" groups={groups} status={listStatus} error={listError} onRetry={() => void loadCompetitors()} batchState={batchState} selectedIds={selectedIds} onToggleSelected={(competitorId) => setSelectedIds((current) => { const next = new Set(current); if (next.has(competitorId)) next.delete(competitorId); else next.add(competitorId); return next; })} onToggleAll={(checked, competitorIds) => setSelectedIds((current) => updatePageSelection(current, competitorIds, checked))} onReconcileSelection={reconcileSelection} onBatchAction={(mode, competitorIds) => void handleBatchAction(mode, competitorIds)} onOpenDetail={openDetail} onOpenGroupAssignment={openGroupAssignmentDialog} onNavigate={navigate} initialGroupFilter={listNavigationIntent.filter} navigationVersion={listNavigationIntent.version} paginationResetVersion={paginationResetVersion} />}

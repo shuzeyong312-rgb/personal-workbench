@@ -1,3 +1,4 @@
+import app.main as main
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -7,7 +8,8 @@ from app.main import app
 from app.models import Base
 
 
-def test_health_returns_ok() -> None:
+def test_health_returns_ok(monkeypatch) -> None:
+    monkeypatch.setattr(main, "require_current_schema", lambda _: None)
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     app.state.collection_session_factory = sessionmaker(bind=engine)

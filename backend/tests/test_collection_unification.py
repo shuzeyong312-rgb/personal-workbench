@@ -1,3 +1,4 @@
+import app.main as main
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from threading import Event, Thread
@@ -29,6 +30,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv('PERSONAL_WORKBENCH_DISABLE_SCHEDULER', '1')
     app.dependency_overrides[get_db] = database
     app.state.collection_session_factory = factory
+    monkeypatch.setattr(main, "require_current_schema", lambda _: None)
     with TestClient(app) as api:
         api.put('/api/settings/own-shop-name', json={'own_shop_name': '测试店铺'})
         yield api, factory
