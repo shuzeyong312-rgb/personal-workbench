@@ -211,3 +211,19 @@ def test_explicit_parameter_does_not_allow_stamping_retirement(existing, monkeyp
     with pytest.raises(RuntimeError, match="not a revision stamp"):
         command.stamp(config, "head")
     assert snapshot(path) == before
+
+
+def test_rejects_case_insensitive_cascading_foreign_key(existing):
+    url, engine, path = existing
+    with engine.begin() as db:
+        db.exec_driver_sql(
+            "CREATE TABLE retained_child(id INTEGER PRIMARY KEY, "
+            "product_id INTEGER NOT NULL REFERENCES LIBRARY_PRODUCTS(id) ON DELETE CASCADE)"
+        )
+        db.exec_driver_sql("INSERT INTO retained_child VALUES (1, 1)")
+    before = snapshot(path)
+
+    with pytest.raises(RuntimeError, match="Retained table references retired data: retained_child"):
+        run_command(url, "head", args=ALLOW)
+
+    assert snapshot(path) == before

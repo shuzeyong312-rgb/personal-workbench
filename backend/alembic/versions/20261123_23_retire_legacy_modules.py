@@ -63,7 +63,11 @@ def upgrade() -> None:
     if legacy_tables != targets:
         raise RuntimeError("Legacy retirement tables do not match the expected schema")
     for table in sorted(tables - targets):
-        if any(fk["referred_table"] in targets for fk in schema.get_foreign_keys(table)):
+        # SQLite folds ASCII case when resolving foreign-key table names.
+        referenced = bind.exec_driver_sql(
+            'SELECT lower("table") FROM pragma_foreign_key_list(?)', (table,)
+        ).scalars()
+        if not targets.isdisjoint(referenced):
             raise RuntimeError(f"Retained table references retired data: {table}")
     # A SQLite trigger or view may reference another table without declaring a foreign key.
     objects = bind.exec_driver_sql(
