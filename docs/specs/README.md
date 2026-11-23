@@ -110,4 +110,4 @@ Track A 优先定义现有事实的组内竞争位置；Track B 经营指标增�
 
 ## 草稿 Spec（2026-11-23）
 
-- [个人工作台第一阶段](personal-workbench-scope-v1.md) — L 级，待独立 Spec Review。保留竞品监控与采集，移除产品库、客户报价和客户触达，明确工作库迁移与验收。
+- [个人工作台第一阶段](personal-workbench-scope-v1.md) — L 级，已按独立 Spec Review 修订，待复审。保留竞品监控与采集，移除产品库、客户报价和客户触达，明确工作库迁移与验收。
